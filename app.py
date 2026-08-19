@@ -112,11 +112,12 @@ def get_all_kelas():
     docs = db.collection("kelas").stream()
     return sorted([d.id for d in docs])
 # ==========================================
-# 🧠 HELPER AI KOREKSI ESSAY AUTOMATIS (PERBAIKAN MODEL)
+# 🧠 HELPER AI KOREKSI ESSAY AUTOMATIS (AUTO-DETECT MODEL)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     """
-    Menggunakan Gemini API untuk menilai jawaban essay secara mandiri berdasarkan referensi internet/kurikulum nasional.
+    Menggunakan Gemini API untuk menilai jawaban essay secara mandiri.
+    Model dideteksi secara otomatis dari akun untuk menghindari error 404.
     """
     api_key = st.secrets.get("GEMINI_API_KEY") or (st.secrets.get("gemini", {}).get("api_key") if "gemini" in st.secrets else None)
     
@@ -126,9 +127,25 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
 
-        # Menggunakan daftar model generasi terbaru (gemini-2.5-flash & gemini-2.0-flash)
-        model_candidates = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro', 'gemini-1.5-pro']
-        
+        # 1. OTOMATIS: Cari model Gemini yang aktif di akun Anda
+        available_models = []
+        try:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    # Ambil nama model (menghapus prefix 'models/' jika ada)
+                    name = m.name.replace('models/', '')
+                    available_models.append(name)
+        except Exception as e:
+            pass
+
+        # Urutan prioritas model jika pencarian otomatis tidak menghasilkan apa-apa
+        if not available_models:
+            available_models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
+
+        # Utamakan jenis 'flash' karena lebih cepat dan hemat batas kuota
+        available_models.sort(key=lambda x: 0 if 'flash' in x else 1)
+
+        # 2. Susun Prompt Soal dan Jawaban Siswa
         prompt_soal_jawab = []
         for idx, (s, j) in enumerate(zip(soal_list, jawaban_list), 1):
             p_text = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
@@ -163,23 +180,24 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         response = None
         last_error = None
 
-        # Mencoba daftar model satu per satu hingga menemukan yang aktif
-        for m_name in model_candidates:
+        # 3. Eksekusi permintaan dengan model yang tersedia
+        for m_name in available_models:
             try:
                 model = genai.GenerativeModel(m_name)
                 response = model.generate_content(
                     prompt,
                     generation_config={"response_mime_type": "application/json"}
                 )
-                if response:
+                if response and response.text:
                     break
             except Exception as e:
                 last_error = e
                 continue
 
         if not response:
-            return None, f"Gagal menghubungkan ke model AI. Error: {last_error}"
+            return None, f"Gagal mengeksekusi AI. Model yang dicoba: {available_models}. Error terakhir: {last_error}"
 
+        # 4. Parsing Hasil JSON
         result_json = json.loads(response.text)
         nilai_ai = int(result_json.get("nilai", 0))
         feedback_ai = str(result_json.get("feedback", ""))
@@ -188,27 +206,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {e}"
-
-
-# ==========================================
-# 3. SEEDING DEFAULT SUPER ADMIN
-# ==========================================
-def init_super_admin():
-    admin_ref = db.collection("users").document("admin").get()
-    if not admin_ref.exists:
-        db.collection("users").document("admin").set({
-            "nama": "Super Admin",
-            "password": hash_pass("admin123"),
-            "password_plain": "admin123",
-            "role": "superadmin",
-            "created_at": firestore.SERVER_TIMESTAMP
-        })
-
-init_super_admin()
-
-if "user" not in st.session_state:
-    st.session_state["user"] = None
-
 # ==========================================
 # 4. HALAMAN LOGIN
 # ==========================================
