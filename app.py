@@ -11,7 +11,8 @@ import hashlib
 def init_firebase():
     if not firebase_admin._apps:
         key_dict = dict(st.secrets["firebase"])
-        key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+        if "\\n" in key_dict["private_key"]:
+            key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
         cred = credentials.Certificate(key_dict)
         firebase_admin.initialize_app(cred)
     return firestore.client()
@@ -54,14 +55,14 @@ if "user" not in st.session_state:
     st.session_state["user"] = None
 
 # ==========================================
-# 3. HALAMAN LOGIN (HANYA LOGIN)
+# 3. HALAMAN LOGIN
 # ==========================================
 if st.session_state["user"] is None:
     st.title("🇮🇩 LMS Pendidikan Pancasila")
     st.subheader("Silakan Login untuk Mengakses Sistem")
     
     with st.container():
-        st.info("💡 **Informasi**: Akun Siswa dan Guru dibuat secara resmi oleh **Super Admin**. Hubungi admin sekolah untuk mendapatkan akun.")
+        st.info("💡 **Informasi**: Akun Siswa dan Guru dibuat serta dikelola secara resmi oleh **Super Admin**.")
         
         with st.form("form_login"):
             username = st.text_input("Username").strip().lower()
@@ -77,7 +78,9 @@ if st.session_state["user"] is None:
                             st.session_state["user"] = {
                                 "username": username,
                                 "nama": user_data.get("nama"),
-                                "role": user_data.get("role")
+                                "role": user_data.get("role"),
+                                "kelas": user_data.get("kelas", ""),
+                                "kelas_ajar": user_data.get("kelas_ajar", [])
                             }
                             st.success(f"Selamat datang, {user_data.get('nama')}!")
                             st.rerun()
@@ -97,7 +100,16 @@ user_info = st.session_state["user"]
 role = user_info["role"]
 
 st.sidebar.title(f"👋 Halo, {user_info['nama']}")
-st.sidebar.caption(f"Role: **{role.upper()}** | @{user_info['username']}")
+
+# Menampilkan info kelas di sidebar
+caption_text = f"Role: **{role.upper()}** | @{user_info['username']}"
+if role == "siswa" and user_info.get("kelas"):
+    caption_text += f"\n\n🏫 Kelas: **{user_info['kelas']}**"
+elif role == "guru" and user_info.get("kelas_ajar"):
+    k_str = ", ".join(user_info['kelas_ajar']) if isinstance(user_info['kelas_ajar'], list) else user_info['kelas_ajar']
+    caption_text += f"\n\n🏫 Mengajar Kelas: **{k_str}**"
+
+st.sidebar.caption(caption_text)
 
 if st.sidebar.button("🚪 Keluar / Logout"):
     st.session_state["user"] = None
@@ -106,37 +118,71 @@ if st.sidebar.button("🚪 Keluar / Logout"):
 st.sidebar.divider()
 
 # ==========================================
-# 5. PANEL SUPER ADMIN (KELOLA AKUN)
+# 5. PANEL SUPER ADMIN (KELOLA AKUN & KELAS)
 # ==========================================
 if role == "superadmin":
-    st.title("⚙️ Panel Super Admin - Manajemen Akun")
-    tab_list_user, tab_add_user, tab_del_user = st.tabs(["👥 Daftar Pengguna", "➕ Buat Akun Baru", "🗑️ Hapus Akun"])
+    st.title("⚙️ Panel Super Admin - Manajemen Akun & Kelas")
+    tab_list_user, tab_add_user, tab_edit_kelas, tab_del_user = st.tabs([
+        "👥 Daftar Pengguna", 
+        "➕ Buat Akun Baru", 
+        "✏️ Atur Kelas Guru & Siswa",
+        "🗑️ Hapus Akun"
+    ])
 
-    # --- LIST USERS ---
+    # --- 5A. LIST USERS ---
     with tab_list_user:
         st.subheader("Daftar Akun Terdaftar")
         docs = db.collection("users").stream()
         users_list = []
         for d in docs:
             u = d.to_dict()
+            u_role = u.get("role", "").lower()
+            
+            # Keterangan kelas
+            info_kelas = "-"
+            if u_role == "siswa":
+                info_kelas = u.get("kelas", "-")
+            elif u_role == "guru":
+                k_list = u.get("kelas_ajar", [])
+                info_kelas = ", ".join(k_list) if isinstance(k_list, list) and k_list else (k_list if k_list else "-")
+
             users_list.append({
                 "Username": d.id,
                 "Nama Lengkap": u.get("nama"),
-                "Role": u.get("role").upper()
+                "Role": u_role.upper(),
+                "Kelas / Kelas Ajar": info_kelas
             })
         if users_list:
             st.dataframe(pd.DataFrame(users_list), use_container_width=True)
         else:
             st.info("Belum ada data pengguna.")
 
-    # --- ADD USER ---
+    # --- 5B. ADD USER ---
     with tab_add_user:
         st.subheader("Buat Akun Guru / Siswa / Admin Baru")
+        
+        # Pilihan role di luar form agar form bisa menyesuaikan field secara dinamis
+        new_role = st.selectbox("Role Akun", ["Siswa", "Guru", "Superadmin"])
+        
         with st.form("form_create_user", clear_on_submit=True):
             new_nama = st.text_input("Nama Lengkap")
             new_username = st.text_input("Username Baru").strip().lower()
             new_password = st.text_input("Password", type="password")
-            new_role = st.selectbox("Role Akun", ["Siswa", "Guru", "Superadmin"])
+            
+            # Input Spesifik Kelas berdasarkan Role
+            kelas_siswa = ""
+            kelas_guru_list = []
+            
+            if new_role == "Siswa":
+                kelas_siswa = st.text_input("Kelas Siswa", placeholder="Contoh: X IPA 1 / 10-A")
+            elif new_role == "Guru":
+                kelas_guru_str = st.text_input(
+                    "Kelas yang Diajar (pisahkan dengan koma jika lebih dari satu)", 
+                    placeholder="Contoh: X IPA 1, X IPA 2, XI IPS 1"
+                )
+                if kelas_guru_str:
+                    kelas_guru_list = [k.strip() for k in kelas_guru_str.split(",") if k.strip()]
+
             btn_create = st.form_submit_button("Buat Akun")
 
             if btn_create:
@@ -145,24 +191,87 @@ if role == "superadmin":
                     if u_check.exists:
                         st.error("Username sudah digunakan. Silakan pakai username lain.")
                     else:
-                        db.collection("users").document(new_username).set({
+                        data_user = {
                             "nama": new_nama,
                             "password": hash_pass(new_password),
                             "role": new_role.lower(),
                             "created_at": firestore.SERVER_TIMESTAMP
-                        })
-                        st.success(f"Akun {new_role} dengan username '{new_username}' berhasil dibuat!")
+                        }
+                        
+                        if new_role == "Siswa":
+                            data_user["kelas"] = kelas_siswa
+                        elif new_role == "Guru":
+                            data_user["kelas_ajar"] = kelas_guru_list
+
+                        db.collection("users").document(new_username).set(data_user)
+                        st.success(f"Akun {new_role} '{new_username}' berhasil dibuat!")
                         st.rerun()
                 else:
-                    st.warning("Mohon lengkapi semua isian formulir!")
+                    st.warning("Mohon lengkapi seluruh isian formulir!")
 
-    # --- DELETE USER ---
+    # --- 5C. EDIT KELAS USER ---
+    with tab_edit_kelas:
+        st.subheader("Atur / Perbarui Kelas Guru & Siswa")
+        docs = db.collection("users").stream()
+        all_non_admin = {}
+        for d in docs:
+            u = d.to_dict()
+            if u.get("role") in ["siswa", "guru"]:
+                all_non_admin[d.id] = f"{u.get('nama')} (@{d.id}) - [{u.get('role').upper()}]"
+
+        if all_non_admin:
+            selected_user_id = st.selectbox(
+                "Pilih Akun yang Ingin Diatur Kelasnya", 
+                list(all_non_admin.keys()), 
+                format_func=lambda x: all_non_admin[x]
+            )
+            
+            u_doc = db.collection("users").document(selected_user_id).get().to_dict()
+            u_role = u_doc.get("role")
+            
+            with st.form("form_edit_kelas"):
+                st.write(f"**Nama:** {u_doc.get('nama')}")
+                st.write(f"**Role:** {u_role.upper()}")
+                
+                if u_role == "siswa":
+                    kelas_lama = u_doc.get("kelas", "")
+                    new_kelas_siswa = st.text_input("Kelas Siswa", value=kelas_lama, placeholder="Contoh: X IPA 1")
+                    btn_save_kelas = st.form_submit_button("Simpan Perubahan Kelas")
+                    
+                    if btn_save_kelas:
+                        db.collection("users").document(selected_user_id).update({
+                            "kelas": new_kelas_siswa
+                        })
+                        st.success(f"Kelas untuk siswa {u_doc.get('nama')} berhasil diperbarui!")
+                        st.rerun()
+
+                elif u_role == "guru":
+                    kelas_ajar_lama = u_doc.get("kelas_ajar", [])
+                    str_kelas_ajar_lama = ", ".join(kelas_ajar_lama) if isinstance(kelas_ajar_lama, list) else str(kelas_ajar_lama)
+                    new_kelas_guru_str = st.text_input(
+                        "Kelas yang Diajar (pisahkan dengan koma)", 
+                        value=str_kelas_ajar_lama, 
+                        placeholder="Contoh: X IPA 1, X IPA 2"
+                    )
+                    btn_save_kelas = st.form_submit_button("Simpan Perubahan Kelas Ajar")
+                    
+                    if btn_save_kelas:
+                        list_k = [k.strip() for k in new_kelas_guru_str.split(",") if k.strip()]
+                        db.collection("users").document(selected_user_id).update({
+                            "kelas_ajar": list_k
+                        })
+                        st.success(f"Daftar kelas ajar untuk Guru {u_doc.get('nama')} berhasil diperbarui!")
+                        st.rerun()
+        else:
+            st.info("Belum ada akun Guru atau Siswa yang terdaftar.")
+
+    # --- 5D. DELETE USER ---
     with tab_del_user:
         st.subheader("Hapus Akun Pengguna")
         docs = db.collection("users").stream()
         all_users = {d.id: f"{d.to_dict().get('nama')} (@{d.id}) - [{d.to_dict().get('role').upper()}]" for d in docs}
         
-        # Hindari menghapus akun diri sendiri yang sedang login
+        # Hindari menghapus akun admin yang sedang login
         all_users_filtered = {k: v for k, v in all_users.items() if k != user_info["username"]}
 
         if all_users_filtered:
