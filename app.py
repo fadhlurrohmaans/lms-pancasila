@@ -3,6 +3,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import pandas as pd
 import hashlib
+import io
 
 # ==========================================
 # 1. CONFIG & CSS MOBILE RESPONSIVE
@@ -14,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-# Injeksi Custom CSS untuk Tampilan Android & iOS
+# Injeksi Custom CSS untuk Tampilan Responsive (HP Android & iOS)
 st.markdown("""
     <style>
     /* 1. Mencegah Auto-Zoom di iOS Safari & Menyesuaikan Input Mobile */
@@ -39,8 +40,8 @@ st.markdown("""
             margin-bottom: 0.5rem;
         }
 
-        /* 4. Tombol Touch-Friendly (Mudah ditekan dengan jari) */
-        .stButton > button {
+        /* 4. Tombol Touch-Friendly */
+        .stButton > button, .stDownloadButton > button {
             width: 100% !important;
             min-height: 48px !important;
             font-size: 16px !important;
@@ -51,15 +52,9 @@ st.markdown("""
         }
         
         /* 5. Judul & Subjudul Responsif */
-        h1 {
-            font-size: 1.8rem !important;
-        }
-        h2 {
-            font-size: 1.4rem !important;
-        }
-        h3 {
-            font-size: 1.2rem !important;
-        }
+        h1 { font-size: 1.8rem !important; }
+        h2 { font-size: 1.4rem !important; }
+        h3 { font-size: 1.2rem !important; }
     }
 
     /* 6. Membuat Tab Dapat Di-scroll Menyamping di HP */
@@ -169,7 +164,6 @@ role = user_info["role"]
 
 st.sidebar.title(f"👋 Halo, {user_info['nama']}")
 
-# Menampilkan info kelas di sidebar
 caption_text = f"Role: **{role.upper()}** | @{user_info['username']}"
 if role == "siswa" and user_info.get("kelas"):
     caption_text += f"\n\n🏫 Kelas: **{user_info['kelas']}**"
@@ -190,10 +184,11 @@ st.sidebar.divider()
 # ==========================================
 if role == "superadmin":
     st.title("⚙️ Panel Super Admin")
-    tab_master_kelas, tab_list_user, tab_add_user, tab_edit_kelas, tab_del_user = st.tabs([
+    tab_master_kelas, tab_list_user, tab_add_user, tab_import_export, tab_edit_kelas, tab_del_user = st.tabs([
         "🏫 Master Kelas",
         "👥 Daftar User", 
-        "➕ Buat Akun", 
+        "➕ Buat Akun",
+        "📥 Import & Ekspor",
         "✏️ Atur Kelas",
         "🗑️ Hapus Akun"
     ])
@@ -269,7 +264,7 @@ if role == "superadmin":
 
     # --- 6C. ADD USER ---
     with tab_add_user:
-        st.subheader("➕ Buat Akun Baru")
+        st.subheader("➕ Buat Akun Satuan (Manual)")
         
         daftar_kelas_pilihan = get_all_kelas()
         new_role = st.selectbox("Role Akun", ["Siswa", "Guru", "Superadmin"])
@@ -323,7 +318,139 @@ if role == "superadmin":
                 else:
                     st.warning("Mohon lengkapi seluruh isian formulir!")
 
-    # --- 6D. EDIT KELAS USER ---
+    # --- 6D. IMPORT & EKSPOR DATA SISWA ---
+    with tab_import_export:
+        st.subheader("📥 Import & 📤 Ekspor Data Siswa")
+        col_imp, col_exp = st.columns([1, 1])
+
+        # Sub-Bagian Import Data Siswa
+        with col_imp:
+            st.markdown("### 📥 Import Data Siswa Massal")
+            st.write("Gunakan file CSV atau Excel untuk memasukkan daftar siswa secara cepat.")
+            
+            # 1. Download Template CSV
+            df_template = pd.DataFrame([
+                {"nama": "Budi Santoso", "username": "budi123", "password": "siswa123", "kelas": "X IPA 1"},
+                {"nama": "Siti Aminah", "username": "siti123", "password": "siswa123", "kelas": "X IPA 2"}
+            ])
+            csv_template = df_template.to_csv(index=False).encode('utf-8')
+            
+            st.download_button(
+                label="📄 Download Template File (CSV)",
+                data=csv_template,
+                file_name="template_import_siswa.csv",
+                mime="text/csv"
+            )
+
+            st.divider()
+
+            # 2. Upload File Import
+            uploaded_file = st.file_uploader("Unggah File Siswa (.csv atau .xlsx)", type=["csv", "xlsx"])
+            if uploaded_file is not None:
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        df_import = pd.read_csv(uploaded_file)
+                    else:
+                        df_import = pd.read_excel(uploaded_file)
+
+                    # Rapikan nama kolom
+                    df_import.columns = [str(col).strip().lower() for col in df_import.columns]
+                    req_cols = ["nama", "username", "password", "kelas"]
+
+                    if not all(col in df_import.columns for col in req_cols):
+                        st.error(f"Format file tidak valid! Wajib memiliki kolom: **{', '.join(req_cols)}**")
+                    else:
+                        st.write("👀 **Pratinjau Data:**")
+                        st.dataframe(df_import, use_container_width=True)
+
+                        if st.button("🚀 Mulai Import Data Siswa", type="primary"):
+                            success_count = 0
+                            skipped_count = 0
+                            errors = []
+
+                            for idx, row in df_import.iterrows():
+                                u_name = str(row["username"]).strip().lower()
+                                p_word = str(row["password"]).strip()
+                                nama_s = str(row["nama"]).strip()
+                                kelas_s = str(row["kelas"]).strip()
+
+                                if not u_name or not p_word or not nama_s:
+                                    skipped_count += 1
+                                    continue
+
+                                # Cek username apakah sudah terdaftar
+                                u_check = db.collection("users").document(u_name).get()
+                                if u_check.exists:
+                                    skipped_count += 1
+                                    errors.append(f"Baris {idx+1}: Username '{u_name}' sudah dipakai.")
+                                    continue
+
+                                # Simpan data siswa ke Firestore
+                                db.collection("users").document(u_name).set({
+                                    "nama": nama_s,
+                                    "password": hash_pass(p_word),
+                                    "role": "siswa",
+                                    "kelas": kelas_s,
+                                    "created_at": firestore.SERVER_TIMESTAMP
+                                })
+                                success_count += 1
+
+                            st.success(f"✅ Selesai! **{success_count}** data siswa berhasil diimpor.")
+                            if skipped_count > 0:
+                                st.warning(f"⚠️ **{skipped_count}** data dilewati (username bentrok/kolom kosong).")
+                            if errors:
+                                with st.expander("Lihat Detail Alasan Dilewati"):
+                                    for err in errors:
+                                        st.write(f"- {err}")
+                            st.rerun()
+
+                except Exception as e:
+                    st.error(f"Gagal memproses file: {e}")
+
+        # Sub-Bagian Ekspor Data Siswa
+        with col_exp:
+            st.markdown("### 📤 Ekspor Data Siswa")
+            st.write("Unduh daftar siswa yang telah terdaftar di database.")
+
+            docs_siswa = db.collection("users").where("role", "==", "siswa").stream()
+            data_siswa = []
+            for d in docs_siswa:
+                u_dict = d.to_dict()
+                data_siswa.append({
+                    "Username": d.id,
+                    "Nama Lengkap": u_dict.get("nama", ""),
+                    "Kelas": u_dict.get("kelas", "")
+                })
+
+            if data_siswa:
+                df_export = pd.DataFrame(data_siswa)
+                st.write(f"Total Siswa Terdaftar: **{len(data_siswa)}**")
+                st.dataframe(df_export, use_container_width=True)
+
+                # Ekspor ke CSV
+                csv_data = df_export.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="💾 Unduh Data Siswa (CSV)",
+                    data=csv_data,
+                    file_name="daftar_siswa_lms.csv",
+                    mime="text/csv"
+                )
+
+                # Ekspor ke Excel (.xlsx)
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_export.to_excel(writer, index=False, sheet_name='Data Siswa')
+                
+                st.download_button(
+                    label="📊 Unduh Data Siswa (Excel .xlsx)",
+                    data=buffer.getvalue(),
+                    file_name="daftar_siswa_lms.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.info("Belum ada data siswa untuk diekspor.")
+
+    # --- 6E. EDIT KELAS USER ---
     with tab_edit_kelas:
         st.subheader("✏️ Atur / Perbarui Kelas Guru & Siswa")
         docs = db.collection("users").stream()
@@ -381,7 +508,7 @@ if role == "superadmin":
         else:
             st.info("Belum ada akun Guru atau Siswa yang terdaftar.")
 
-    # --- 6E. DELETE USER ---
+    # --- 6F. DELETE USER ---
     with tab_del_user:
         st.subheader("🗑️ Hapus Akun Pengguna")
         docs = db.collection("users").stream()
