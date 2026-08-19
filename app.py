@@ -27,6 +27,11 @@ except Exception as e:
 def hash_pass(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+# Helper untuk mengambil seluruh daftar master kelas
+def get_all_kelas():
+    docs = db.collection("kelas").stream()
+    return sorted([d.id for d in docs])
+
 # ==========================================
 # 2. SEEDING DEFAULT SUPER ADMIN
 # ==========================================
@@ -118,18 +123,61 @@ if st.sidebar.button("🚪 Keluar / Logout"):
 st.sidebar.divider()
 
 # ==========================================
-# 5. PANEL SUPER ADMIN (KELOLA AKUN & KELAS)
+# 5. PANEL SUPER ADMIN (KELOLA AKUN & MASTER KELAS)
 # ==========================================
 if role == "superadmin":
     st.title("⚙️ Panel Super Admin - Manajemen Akun & Kelas")
-    tab_list_user, tab_add_user, tab_edit_kelas, tab_del_user = st.tabs([
+    tab_master_kelas, tab_list_user, tab_add_user, tab_edit_kelas, tab_del_user = st.tabs([
+        "🏫 Master Data Kelas",
         "👥 Daftar Pengguna", 
         "➕ Buat Akun Baru", 
         "✏️ Atur Kelas Guru & Siswa",
         "🗑️ Hapus Akun"
     ])
 
-    # --- 5A. LIST USERS ---
+    # --- 5A. MASTER DATA KELAS ---
+    with tab_master_kelas:
+        st.subheader("🏫 Kelola Master Data Kelas")
+        st.caption("Tambahkan daftar kelas resmi sekolah di sini sebelum membuat akun Guru / Siswa.")
+        
+        col_k1, col_k2 = st.columns([1, 1])
+        daftar_kelas_aktif = get_all_kelas()
+
+        with col_k1:
+            st.write("📋 **Daftar Kelas Terdaftar saat ini:**")
+            if daftar_kelas_aktif:
+                for k in daftar_kelas_aktif:
+                    st.markdown(f"- 🏫 **{k}**")
+            else:
+                st.info("Belum ada data kelas. Silakan tambahkan kelas baru.")
+
+        with col_k2:
+            st.write("➕ **Tambah Kelas Baru**")
+            with st.form("form_add_kelas", clear_on_submit=True):
+                new_kelas_name = st.text_input("Nama Kelas Baru", placeholder="Contoh: X IPA 1 / 10-A").strip()
+                btn_add_k = st.form_submit_button("Tambah Kelas")
+                
+                if btn_add_k:
+                    if new_kelas_name:
+                        db.collection("kelas").document(new_kelas_name).set({
+                            "nama": new_kelas_name,
+                            "created_at": firestore.SERVER_TIMESTAMP
+                        })
+                        st.success(f"Kelas '{new_kelas_name}' berhasil ditambahkan!")
+                        st.rerun()
+                    else:
+                        st.warning("Nama kelas tidak boleh kosong!")
+
+            if daftar_kelas_aktif:
+                st.divider()
+                st.write("🗑️ **Hapus Kelas**")
+                del_k_name = st.selectbox("Pilih Kelas yang Ingin Dihapus", daftar_kelas_aktif)
+                if st.button("Hapus Kelas Ini", type="primary"):
+                    db.collection("kelas").document(del_k_name).delete()
+                    st.success(f"Kelas '{del_k_name}' berhasil dihapus!")
+                    st.rerun()
+
+    # --- 5B. LIST USERS ---
     with tab_list_user:
         st.subheader("Daftar Akun Terdaftar")
         docs = db.collection("users").stream()
@@ -157,11 +205,11 @@ if role == "superadmin":
         else:
             st.info("Belum ada data pengguna.")
 
-    # --- 5B. ADD USER ---
+    # --- 5C. ADD USER ---
     with tab_add_user:
         st.subheader("Buat Akun Guru / Siswa / Admin Baru")
         
-        # Pilihan role di luar form agar form bisa menyesuaikan field secara dinamis
+        daftar_kelas_pilihan = get_all_kelas()
         new_role = st.selectbox("Role Akun", ["Siswa", "Guru", "Superadmin"])
         
         with st.form("form_create_user", clear_on_submit=True):
@@ -169,57 +217,66 @@ if role == "superadmin":
             new_username = st.text_input("Username Baru").strip().lower()
             new_password = st.text_input("Password", type="password")
             
-            # Input Spesifik Kelas berdasarkan Role
-            kelas_siswa = ""
-            kelas_guru_list = []
+            # Input Spesifik Kelas berdasarkan Master Data Kelas
+            kelas_siswa_selected = ""
+            kelas_guru_selected = []
             
             if new_role == "Siswa":
-                kelas_siswa = st.text_input("Kelas Siswa", placeholder="Contoh: X IPA 1 / 10-A")
+                if daftar_kelas_pilihan:
+                    kelas_siswa_selected = st.selectbox("Pilih Kelas Siswa", options=daftar_kelas_pilihan)
+                else:
+                    st.warning("⚠️ Master data kelas masih kosong! Buat kelas terlebih dahulu di tab 'Master Data Kelas'.")
+            
             elif new_role == "Guru":
-                kelas_guru_str = st.text_input(
-                    "Kelas yang Diajar (pisahkan dengan koma jika lebih dari satu)", 
-                    placeholder="Contoh: X IPA 1, X IPA 2, XI IPS 1"
-                )
-                if kelas_guru_str:
-                    kelas_guru_list = [k.strip() for k in kelas_guru_str.split(",") if k.strip()]
+                if daftar_kelas_pilihan:
+                    kelas_guru_selected = st.multiselect("Pilih Kelas yang Diajar Guru", options=daftar_kelas_pilihan)
+                else:
+                    st.warning("⚠️ Master data kelas masih kosong! Buat kelas terlebih dahulu di tab 'Master Data Kelas'.")
 
             btn_create = st.form_submit_button("Buat Akun")
 
             if btn_create:
                 if new_nama and new_username and new_password:
-                    u_check = db.collection("users").document(new_username).get()
-                    if u_check.exists:
-                        st.error("Username sudah digunakan. Silakan pakai username lain.")
+                    if new_role in ["Siswa", "Guru"] and not daftar_kelas_pilihan:
+                        st.error("Gagal membuat akun. Silakan tambahkan kelas di tab 'Master Data Kelas' terlebih dahulu.")
                     else:
-                        data_user = {
-                            "nama": new_nama,
-                            "password": hash_pass(new_password),
-                            "role": new_role.lower(),
-                            "created_at": firestore.SERVER_TIMESTAMP
-                        }
-                        
-                        if new_role == "Siswa":
-                            data_user["kelas"] = kelas_siswa
-                        elif new_role == "Guru":
-                            data_user["kelas_ajar"] = kelas_guru_list
+                        u_check = db.collection("users").document(new_username).get()
+                        if u_check.exists:
+                            st.error("Username sudah digunakan. Silakan pakai username lain.")
+                        else:
+                            data_user = {
+                                "nama": new_nama,
+                                "password": hash_pass(new_password),
+                                "role": new_role.lower(),
+                                "created_at": firestore.SERVER_TIMESTAMP
+                            }
+                            
+                            if new_role == "Siswa":
+                                data_user["kelas"] = kelas_siswa_selected
+                            elif new_role == "Guru":
+                                data_user["kelas_ajar"] = kelas_guru_selected
 
-                        db.collection("users").document(new_username).set(data_user)
-                        st.success(f"Akun {new_role} '{new_username}' berhasil dibuat!")
-                        st.rerun()
+                            db.collection("users").document(new_username).set(data_user)
+                            st.success(f"Akun {new_role} '{new_username}' berhasil dibuat!")
+                            st.rerun()
                 else:
                     st.warning("Mohon lengkapi seluruh isian formulir!")
 
-    # --- 5C. EDIT KELAS USER ---
+    # --- 5D. EDIT KELAS USER ---
     with tab_edit_kelas:
         st.subheader("Atur / Perbarui Kelas Guru & Siswa")
         docs = db.collection("users").stream()
+        daftar_kelas_pilihan = get_all_kelas()
         all_non_admin = {}
+        
         for d in docs:
             u = d.to_dict()
             if u.get("role") in ["siswa", "guru"]:
                 all_non_admin[d.id] = f"{u.get('nama')} (@{d.id}) - [{u.get('role').upper()}]"
 
-        if all_non_admin:
+        if not daftar_kelas_pilihan:
+            st.warning("⚠️ Belum ada master data kelas! Silakan tambahkan data kelas di tab 'Master Data Kelas'.")
+        elif all_non_admin:
             selected_user_id = st.selectbox(
                 "Pilih Akun yang Ingin Diatur Kelasnya", 
                 list(all_non_admin.keys()), 
@@ -235,7 +292,9 @@ if role == "superadmin":
                 
                 if u_role == "siswa":
                     kelas_lama = u_doc.get("kelas", "")
-                    new_kelas_siswa = st.text_input("Kelas Siswa", value=kelas_lama, placeholder="Contoh: X IPA 1")
+                    idx_default = daftar_kelas_pilihan.index(kelas_lama) if kelas_lama in daftar_kelas_pilihan else 0
+                    
+                    new_kelas_siswa = st.selectbox("Pilih Kelas Siswa", options=daftar_kelas_pilihan, index=idx_default)
                     btn_save_kelas = st.form_submit_button("Simpan Perubahan Kelas")
                     
                     if btn_save_kelas:
@@ -247,25 +306,21 @@ if role == "superadmin":
 
                 elif u_role == "guru":
                     kelas_ajar_lama = u_doc.get("kelas_ajar", [])
-                    str_kelas_ajar_lama = ", ".join(kelas_ajar_lama) if isinstance(kelas_ajar_lama, list) else str(kelas_ajar_lama)
-                    new_kelas_guru_str = st.text_input(
-                        "Kelas yang Diajar (pisahkan dengan koma)", 
-                        value=str_kelas_ajar_lama, 
-                        placeholder="Contoh: X IPA 1, X IPA 2"
-                    )
+                    default_g = [k for k in kelas_ajar_lama if k in daftar_kelas_pilihan] if isinstance(kelas_ajar_lama, list) else []
+                    
+                    new_kelas_guru_list = st.multiselect("Pilih Kelas Ajar Guru", options=daftar_kelas_pilihan, default=default_g)
                     btn_save_kelas = st.form_submit_button("Simpan Perubahan Kelas Ajar")
                     
                     if btn_save_kelas:
-                        list_k = [k.strip() for k in new_kelas_guru_str.split(",") if k.strip()]
                         db.collection("users").document(selected_user_id).update({
-                            "kelas_ajar": list_k
+                            "kelas_ajar": new_kelas_guru_list
                         })
                         st.success(f"Daftar kelas ajar untuk Guru {u_doc.get('nama')} berhasil diperbarui!")
                         st.rerun()
         else:
             st.info("Belum ada akun Guru atau Siswa yang terdaftar.")
 
-    # --- 5D. DELETE USER ---
+    # --- 5E. DELETE USER ---
     with tab_del_user:
         st.subheader("Hapus Akun Pengguna")
         docs = db.collection("users").stream()
