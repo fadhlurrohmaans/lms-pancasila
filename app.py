@@ -209,7 +209,14 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 # ==========================================
 # 4. HALAMAN LOGIN
 # ==========================================
-if st.session_state["user"] is None:
+
+# ------------------------------------------
+# INISIALISASI SESSION STATE (Taruh di bagian atas app.py)
+# ------------------------------------------
+if "user" not in st.session_state:
+    st.session_state["user"] = None
+
+if st.session_state.get("user") is None:
     st.title("🇮🇩 LMS Pendidikan Pancasila")
     st.subheader("Silakan Login untuk Mengakses Sistem")
     
