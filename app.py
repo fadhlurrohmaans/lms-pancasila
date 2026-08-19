@@ -907,12 +907,12 @@ elif role == "guru":
             df_display = df_filtered[["Nama Siswa", "Kelas", "Nama Tugas", "Tipe", "Status", "Nilai", "Catatan Guru"]]
             st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-            # AREA KOREKSI ESSAY DENGAN AI INTEGRATED
+           # AREA KOREKSI ESSAY DENGAN AI INTEGRATED
             perlu_diperiksa = df_filtered[df_filtered["Status"] == "Belum Dinilai (Perlu Diperiksa)"]
             if not perlu_diperiksa.empty:
                 st.divider()
                 st.subheader("✏️ Form Penilaian Jawaban Essay (Perlu Diperiksa)")
-                st.info("💡 **Tips AI**: Klik tombol **'🤖 Koreksi Otomatis dengan AI'**. Gemini AI akan menganalisis soal & jawaban siswa serta mencocokkannya dengan referensi ideal Pendidikan Pancasila secara otomatis!")
+                st.info("💡 **Tips AI**: Klik tombol **'🤖 Koreksi Otomatis dengan AI'**. Gemini AI akan menganalisis soal & jawaban siswa secara otomatis!")
 
                 for idx, row in perlu_diperiksa.iterrows():
                     sub = row["sub_doc"]
@@ -928,18 +928,40 @@ elif role == "guru":
                             st.markdown(f"**{s_idx}. {q_text}**")
                             st.info(jawab if jawab else "*Siswa tidak mengisi jawaban*")
 
+                        # Inisialisasi awal nilai pada session state jika belum ada
+                        if f"n_in_{doc_id}" not in st.session_state:
+                            st.session_state[f"n_in_{doc_id}"] = 80
+                        if f"c_in_{doc_id}" not in st.session_state:
+                            st.session_state[f"c_in_{doc_id}"] = sub.get("catatan_guru", "")
+
                         col_ai, col_space = st.columns([1.5, 2.5])
                         with col_ai:
                             if st.button(f"🤖 Koreksi Otomatis dengan AI", key=f"btn_ai_{doc_id}"):
                                 with st.spinner("🤖 Gemini AI sedang menganalisis jawaban berdasarkan referensi ideal..."):
                                     val_ai, cat_ai = koreksi_essay_dengan_ai(soal_list, jwb_list)
                                     if val_ai is not None:
-                                        st.session_state[f"ai_score_{doc_id}"] = val_ai
-                                        st.session_state[f"ai_catatan_{doc_id}"] = cat_ai
-                                        st.success("✅ Penilaian AI berhasil dibuat! Silakan periksa rekomendasi di bawah.")
+                                        # PERBAIKAN: Langsung perbarui isi widget key di session state & rerun
+                                        st.session_state[f"n_in_{doc_id}"] = int(val_ai)
+                                        st.session_state[f"c_in_{doc_id}"] = str(cat_ai)
+                                        st.success("✅ Penilaian AI berhasil dibuat!")
+                                        st.rerun()
                                     else:
                                         st.error(cat_ai)
 
+                        # Form Penilaian yang nilainya sudah terhubung ke session state
+                        with st.form(f"form_nilai_quick_{doc_id}"):
+                            n_in = st.number_input("Input Nilai Akhir (0 - 100)", min_value=0, max_value=100, key=f"n_in_{doc_id}")
+                            c_in = st.text_area("Catatan / Feedback Guru", key=f"c_in_{doc_id}")
+                            btn_save = st.form_submit_button("💾 Simpan Nilai Ke Sistem")
+
+                            if btn_save:
+                                db.collection("jawaban_siswa").document(doc_id).update({
+                                    "nilai": n_in,
+                                    "catatan_guru": c_in,
+                                    "dinilai_pada": firestore.SERVER_TIMESTAMP
+                                })
+                                st.success("Nilai berhasil disimpan!")
+                                st.rerun()
                         # Nilai default (dari AI jika tombol diklik, atau bawaan)
                         default_n = st.session_state.get(f"ai_score_{doc_id}", 80)
                         default_c = st.session_state.get(f"ai_catatan_{doc_id}", sub.get("catatan_guru", ""))
