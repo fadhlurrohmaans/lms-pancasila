@@ -111,13 +111,13 @@ def generate_password(length=6):
 def get_all_kelas():
     docs = db.collection("kelas").stream()
     return sorted([d.id for d in docs])
+
 # ==========================================
-# 🧠 HELPER AI KOREKSI ESSAY AUTOMATIS (AUTO-DETECT MODEL)
+# 🧠 HELPER AI KOREKSI ESSAY AUTOMATIS
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     """
     Menggunakan Gemini API untuk menilai jawaban essay secara mandiri.
-    Model dideteksi secara otomatis dari akun untuk menghindari error 404.
     """
     api_key = st.secrets.get("GEMINI_API_KEY") or (st.secrets.get("gemini", {}).get("api_key") if "gemini" in st.secrets else None)
     
@@ -127,25 +127,20 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
 
-        # 1. OTOMATIS: Cari model Gemini yang aktif di akun Anda
         available_models = []
         try:
             for m in genai.list_models():
                 if 'generateContent' in m.supported_generation_methods:
-                    # Ambil nama model (menghapus prefix 'models/' jika ada)
                     name = m.name.replace('models/', '')
                     available_models.append(name)
-        except Exception as e:
+        except Exception:
             pass
 
-        # Urutan prioritas model jika pencarian otomatis tidak menghasilkan apa-apa
         if not available_models:
             available_models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']
 
-        # Utamakan jenis 'flash' karena lebih cepat dan hemat batas kuota
         available_models.sort(key=lambda x: 0 if 'flash' in x else 1)
 
-        # 2. Susun Prompt Soal dan Jawaban Siswa
         prompt_soal_jawab = []
         for idx, (s, j) in enumerate(zip(soal_list, jawaban_list), 1):
             p_text = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
@@ -170,7 +165,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         --- INSTRUKSI EVALUASI ---
         1. Berikan nilai akumulatif dari skala 0 hingga 100 (berupa angka bulat).
         2. Berikan feedback/catatan perbaikan ringkas yang konstruktif dan memotivasi siswa (maksimal 3-4 kalimat).
-        3. Output WAJIB dalam format JSON murni (tanpa tag markdown ```json):
+        3. Output WAJIB dalam format JSON murni:
         {{
             "nilai": 85,
             "feedback": "Penjelasan konsep Sila ke-3 sudah sangat baik dan sesuai dengan contoh sehari-hari. Tingkatkan lagi pada analisis dampaknya bagi persatuan bangsa."
@@ -180,7 +175,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         response = None
         last_error = None
 
-        # 3. Eksekusi permintaan dengan model yang tersedia
         for m_name in available_models:
             try:
                 model = genai.GenerativeModel(m_name)
@@ -197,7 +191,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         if not response:
             return None, f"Gagal mengeksekusi AI. Model yang dicoba: {available_models}. Error terakhir: {last_error}"
 
-        # 4. Parsing Hasil JSON
         result_json = json.loads(response.text)
         nilai_ai = int(result_json.get("nilai", 0))
         feedback_ai = str(result_json.get("feedback", ""))
@@ -206,13 +199,10 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {e}"
-# ==========================================
-# 4. HALAMAN LOGIN
-# ==========================================
 
-# ------------------------------------------
-# INISIALISASI SESSION STATE (Taruh di bagian atas app.py)
-# ------------------------------------------
+# ==========================================
+# 4. HALAMAN LOGIN & SESSION STATE
+# ==========================================
 if "user" not in st.session_state:
     st.session_state["user"] = None
 
@@ -759,7 +749,7 @@ elif role == "guru":
 
             else:  # Essay
                 st.subheader("➕ Konfigurasi Soal Essay (Dinilai Otomatis oleh AI)")
-                st.info("💡 **Kemudahan Guru**: Guru cukup memasukkan pertanyaan. AI Gemini akan mencari referensi jawaban ideal secara otomatis dari internet/sumber terpercaya saat memeriksa.")
+                st.info("💡 **Kemudahan Guru**: Guru cukup memasukkan pertanyaan. AI Gemini akan menganalisis & memberikan draf nilai serta rekomendasi feedback secara otomatis!")
                 
                 num_essay = st.number_input("Jumlah Pertanyaan Essay", min_value=1, max_value=10, value=2)
                 soal_essay_list = []
@@ -909,12 +899,12 @@ elif role == "guru":
 
             st.divider()
 
-            # TABEL SIMPEL
+            # TABEL RINGKASAN
             st.subheader("📋 Tabel Data Nilai Siswa")
             df_display = df_filtered[["Nama Siswa", "Kelas", "Nama Tugas", "Tipe", "Status", "Nilai", "Catatan Guru"]]
             st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-          # AREA KOREKSI ESSAY DENGAN AI INTEGRATED
+            # AREA KOREKSI ESSAY DENGAN AI INTEGRATED (RAPI & BEBAS ERROR)
             perlu_diperiksa = df_filtered[df_filtered["Status"] == "Belum Dinilai (Perlu Diperiksa)"]
             if not perlu_diperiksa.empty:
                 st.divider()
@@ -925,7 +915,6 @@ elif role == "guru":
                     sub = row["sub_doc"]
                     doc_id = str(sub.get('id', ''))
                     
-                    # Pembuat ID Super-Unik (Kombinasi Dokumen, Nama Siswa, Nama Tugas, Index, Loop)
                     siswa_clean = "".join(filter(str.isalnum, str(row.get('Nama Siswa', ''))))
                     tugas_clean = "".join(filter(str.isalnum, str(row.get('Nama Tugas', ''))))
                     unique_key = f"{doc_id}_{siswa_clean}_{tugas_clean}_{idx}_{i}"
@@ -940,7 +929,6 @@ elif role == "guru":
                             st.markdown(f"**{s_idx}. {q_text}**")
                             st.info(jawab if jawab else "*Siswa tidak mengisi jawaban*")
 
-                        # Inisialisasi awal nilai pada session state
                         if f"n_in_{unique_key}" not in st.session_state:
                             st.session_state[f"n_in_{unique_key}"] = 80
                         if f"c_in_{unique_key}" not in st.session_state:
@@ -948,8 +936,8 @@ elif role == "guru":
 
                         col_ai, col_space = st.columns([1.5, 2.5])
                         with col_ai:
-                            if st.button(f"🤖 Koreksi Otomatis dengan AI", key=f"btn_ai_{unique_key}"):
-                                with st.spinner("🤖 Gemini AI sedang menganalisis jawaban berdasarkan referensi ideal..."):
+                            if st.button("🤖 Koreksi Otomatis dengan AI", key=f"btn_ai_{unique_key}"):
+                                with st.spinner("🤖 Gemini AI sedang menganalisis jawaban..."):
                                     val_ai, cat_ai = koreksi_essay_dengan_ai(soal_list, jwb_list)
                                     if val_ai is not None:
                                         st.session_state[f"n_in_{unique_key}"] = int(val_ai)
@@ -959,128 +947,9 @@ elif role == "guru":
                                     else:
                                         st.error(cat_ai)
 
-                        # Form Penilaian dengan ID Form yang dijamin 100% Unik
                         with st.form(key=f"form_essay_eval_{unique_key}"):
                             n_in = st.number_input("Input Nilai Akhir (0 - 100)", min_value=0, max_value=100, key=f"n_in_{unique_key}")
                             c_in = st.text_area("Catatan / Feedback Guru", key=f"c_in_{unique_key}")
-                            btn_save = st.form_submit_button("💾 Simpan Nilai Ke Sistem")
-
-                            if btn_save:
-                                db.collection("jawaban_siswa").document(doc_id).update({
-                                    "nilai": n_in,
-                                    "catatan_guru": c_in,
-                                    "dinilai_pada": firestore.SERVER_TIMESTAMP
-                                })
-                                st.success("Nilai berhasil disimpan!")
-                                st.rerun()
-                # Menggunakan enumerate (i) untuk menjamin key SELALU UNIK
-                for i, (idx, row) in enumerate(perlu_diperiksa.iterrows()):
-                    sub = row["sub_doc"]
-                    doc_id = sub.get('id', '')
-                    
-                    # Key unik kombinasi doc_id dan urutan indeks 'i'
-                    unique_key = f"{doc_id}_{i}"
-
-                    with st.expander(f"👤 {row['Nama Siswa']} ({row['Kelas']}) — {row['Nama Tugas']}"):
-                        st.write("**Jawaban Siswa:**")
-                        soal_list = sub.get("soal", [])
-                        jwb_list = sub.get("jawaban", [])
-
-                        for s_idx, (soal, jawab) in enumerate(zip(soal_list, jwb_list), 1):
-                            q_text = soal.get('pertanyaan') if isinstance(soal, dict) else str(soal)
-                            st.markdown(f"**{s_idx}. {q_text}**")
-                            st.info(jawab if jawab else "*Siswa tidak mengisi jawaban*")
-
-                        # Inisialisasi nilai pada session state
-                        if f"n_in_{unique_key}" not in st.session_state:
-                            st.session_state[f"n_in_{unique_key}"] = 80
-                        if f"c_in_{unique_key}" not in st.session_state:
-                            st.session_state[f"c_in_{unique_key}"] = sub.get("catatan_guru", "")
-
-                        col_ai, col_space = st.columns([1.5, 2.5])
-                        with col_ai:
-                            if st.button(f"🤖 Koreksi Otomatis dengan AI", key=f"btn_ai_{unique_key}"):
-                                with st.spinner("🤖 Gemini AI sedang menganalisis jawaban berdasarkan referensi ideal..."):
-                                    val_ai, cat_ai = koreksi_essay_dengan_ai(soal_list, jwb_list)
-                                    if val_ai is not None:
-                                        st.session_state[f"n_in_{unique_key}"] = int(val_ai)
-                                        st.session_state[f"c_in_{unique_key}"] = str(cat_ai)
-                                        st.success("✅ Penilaian AI berhasil dibuat!")
-                                        st.rerun()
-                                    else:
-                                        st.error(cat_ai)
-
-                        # Form Penilaian dengan key unique_key (PERBAIKAN BARIS 1012)
-                        with st.form(f"form_nilai_quick_{unique_key}"):
-                            n_in = st.number_input("Input Nilai Akhir (0 - 100)", min_value=0, max_value=100, key=f"n_in_{unique_key}")
-                            c_in = st.text_area("Catatan / Feedback Guru", key=f"c_in_{unique_key}")
-                            btn_save = st.form_submit_button("💾 Simpan Nilai Ke Sistem")
-
-                            if btn_save:
-                                db.collection("jawaban_siswa").document(doc_id).update({
-                                    "nilai": n_in,
-                                    "catatan_guru": c_in,
-                                    "dinilai_pada": firestore.SERVER_TIMESTAMP
-                                })
-                                st.success("Nilai berhasil disimpan!")
-                                st.rerun()
-
-                        # Form Penilaian dengan ID Unik
-                        with st.form(f"form_nilai_quick_{unique_key}"):
-                            n_in = st.number_input("Input Nilai Akhir (0 - 100)", min_value=0, max_value=100, key=f"n_in_{unique_key}")
-                            c_in = st.text_area("Catatan / Feedback Guru", key=f"c_in_{unique_key}")
-                            btn_save = st.form_submit_button("💾 Simpan Nilai Ke Sistem")
-
-                            if btn_save:
-                                db.collection("jawaban_siswa").document(doc_id).update({
-                                    "nilai": n_in,
-                                    "catatan_guru": c_in,
-                                    "dinilai_pada": firestore.SERVER_TIMESTAMP
-                                })
-                                st.success("Nilai berhasil disimpan!")
-                                st.rerun()
-                                
-                        # Inisialisasi awal nilai pada session state jika belum ada
-                        if f"n_in_{doc_id}" not in st.session_state:
-                            st.session_state[f"n_in_{doc_id}"] = 80
-                        if f"c_in_{doc_id}" not in st.session_state:
-                            st.session_state[f"c_in_{doc_id}"] = sub.get("catatan_guru", "")
-
-                        col_ai, col_space = st.columns([1.5, 2.5])
-                        with col_ai:
-                            if st.button(f"🤖 Koreksi Otomatis dengan AI", key=f"btn_ai_{doc_id}"):
-                                with st.spinner("🤖 Gemini AI sedang menganalisis jawaban berdasarkan referensi ideal..."):
-                                    val_ai, cat_ai = koreksi_essay_dengan_ai(soal_list, jwb_list)
-                                    if val_ai is not None:
-                                        # PERBAIKAN: Langsung perbarui isi widget key di session state & rerun
-                                        st.session_state[f"n_in_{doc_id}"] = int(val_ai)
-                                        st.session_state[f"c_in_{doc_id}"] = str(cat_ai)
-                                        st.success("✅ Penilaian AI berhasil dibuat!")
-                                        st.rerun()
-                                    else:
-                                        st.error(cat_ai)
-
-                        # Form Penilaian yang nilainya sudah terhubung ke session state
-                        with st.form(f"form_nilai_quick_{doc_id}"):
-                            n_in = st.number_input("Input Nilai Akhir (0 - 100)", min_value=0, max_value=100, key=f"n_in_{doc_id}")
-                            c_in = st.text_area("Catatan / Feedback Guru", key=f"c_in_{doc_id}")
-                            btn_save = st.form_submit_button("💾 Simpan Nilai Ke Sistem")
-
-                            if btn_save:
-                                db.collection("jawaban_siswa").document(doc_id).update({
-                                    "nilai": n_in,
-                                    "catatan_guru": c_in,
-                                    "dinilai_pada": firestore.SERVER_TIMESTAMP
-                                })
-                                st.success("Nilai berhasil disimpan!")
-                                st.rerun()
-                        # Nilai default (dari AI jika tombol diklik, atau bawaan)
-                        default_n = st.session_state.get(f"ai_score_{doc_id}", 80)
-                        default_c = st.session_state.get(f"ai_catatan_{doc_id}", sub.get("catatan_guru", ""))
-
-                        with st.form(f"form_nilai_quick_{doc_id}"):
-                            n_in = st.number_input("Input Nilai Akhir (0 - 100)", min_value=0, max_value=100, value=default_n, key=f"n_in_{doc_id}")
-                            c_in = st.text_area("Catatan / Feedback Guru", value=default_c, key=f"c_in_{doc_id}")
                             btn_save = st.form_submit_button("💾 Simpan Nilai Ke Sistem")
 
                             if btn_save:
