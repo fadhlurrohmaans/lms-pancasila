@@ -117,7 +117,7 @@ def get_all_kelas():
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     """
-    Menggunakan Gemini API untuk menilai jawaban essay dan memberi feedback.
+    Menggunakan Gemini API untuk menilai jawaban essay secara mandiri berdasarkan referensi internet/kurikulum nasional.
     """
     api_key = st.secrets.get("GEMINI_API_KEY") or (st.secrets.get("gemini", {}).get("api_key") if "gemini" in st.secrets else None)
     
@@ -130,33 +130,32 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
         prompt_soal_jawab = []
         for idx, (s, j) in enumerate(zip(soal_list, jawaban_list), 1):
-            if isinstance(s, dict):
-                p_text = s.get("pertanyaan", "")
-                k_text = s.get("kunci", "Gunakan pemahaman konsep Pancasila yang relevan.")
-            else:
-                p_text = str(s)
-                k_text = "Gunakan pemahaman konsep Pancasila yang relevan."
+            p_text = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
+            j_text = j if j and str(j).strip() else "(Siswa tidak mengisi jawaban / kosong)"
             
             prompt_soal_jawab.append(
                 f"Soal No.{idx}: {p_text}\n"
-                f"Kunci / Rubrik Acuan: {k_text}\n"
-                f"Jawaban Siswa No.{idx}: {j if j else '(Kosong/Tidak diisi)'}\n"
+                f"Jawaban Siswa No.{idx}: {j_text}\n"
             )
 
         prompt = f"""
-        Anda adalah seorang Guru Pendidikan Pancasila yang objektif, bijaksana, dan suportif.
-        Evaluasi seluruh jawaban essay siswa berikut berdasarkan acuan pertanyaan dan rubrik yang ada.
+        Anda adalah seorang Guru dan Pakar Pendidikan Pancasila yang objektif, bijaksana, dan suportif.
+        
+        TUGAS ANDA:
+        1. Baca dan pahami pertanyaan essay serta jawaban siswa di bawah ini.
+        2. Gunakan pemahaman Anda tentang konsep Pendidikan Pancasila, Kewarganegaraan, UUD 1945, serta referensi jawaban ideal yang relevan dan berlaku umum dalam Kurikulum Nasional Indonesia.
+        3. Bandingkan jawaban siswa dengan konsep ideal tersebut secara kritis namun fair.
 
         --- PERTANYAAN DAN JAWABAN SISWA ---
         {chr(10).join(prompt_soal_jawab)}
 
         --- INSTRUKSI EVALUASI ---
-        1. Berikan nilai total akumulatif dari skala 0 hingga 100 (dalam bentuk angka bulat).
-        2. Berikan feedback/catatan ringkas, konstruktif, dan memotivasi siswa (maksimal 3-4 kalimat).
-        3. Output WAJIB dalam format JSON murni persis seperti ini (tanpa tanda markdown ```json):
+        1. Berikan nilai akumulatif dari skala 0 hingga 100 (berupa angka bulat).
+        2. Berikan feedback/catatan perbaikan ringkas yang konstruktif dan memotivasi siswa (maksimal 3-4 kalimat). Jelaskan secara ringkas jika ada konsep yang kurang atau salah.
+        3. Output WAJIB dalam format JSON murni (tanpa tag markdown ```json):
         {{
             "nilai": 85,
-            "feedback": "Penjelasan mengenai Sila ke-3 sudah sangat baik dan sesuai dengan contoh sehari-hari. Tingkatkan lagi pada bagian analisis dampaknya."
+            "feedback": "Penjelasan konsep Sila ke-3 sudah sangat baik dan sesuai dengan contoh sehari-hari. Tingkatkan lagi pada analisis dampaknya bagi persatuan bangsa."
         }}
         """
 
@@ -682,12 +681,8 @@ elif role == "guru":
                                     k_mark = "✅ (Kunci)" if o_idx == s.get("kunci") else ""
                                     st.write(f"   - {['A','B','C','D'][o_idx]}. {opt} {k_mark}")
                             else:
-                                if isinstance(s, dict):
-                                    st.markdown(f"**{idx}. {s.get('pertanyaan')}**")
-                                    if s.get("kunci"):
-                                        st.caption(f"🔑 Rubrik/Kunci: {s.get('kunci')}")
-                                else:
-                                    st.markdown(f"**{idx}. {s}**")
+                                q_text = s.get("pertanyaan") if isinstance(s, dict) else str(s)
+                                st.markdown(f"**{idx}. {q_text}**")
                         
                         if st.button(f"🗑️ Hapus Tugas Ini", key=f"del_tg_{tg['id']}"):
                             db.collection("tugas_pancasila").document(tg["id"]).delete()
@@ -742,15 +737,16 @@ elif role == "guru":
                             st.warning("Mohon lengkapi judul, seluruh pertanyaan, dan pilihan opsi!")
 
             else:  # Essay
-                st.subheader("➕ Konfigurasi Soal Essay (Mendukung Evaluasi AI)")
+                st.subheader("➕ Konfigurasi Soal Essay (Dinilai Otomatis oleh AI)")
+                st.info("💡 **Kemudahan Guru**: Guru cukup memasukkan pertanyaan. AI Gemini akan mencari referensi jawaban ideal secara otomatis dari internet/sumber terpercaya saat memeriksa.")
+                
                 num_essay = st.number_input("Jumlah Pertanyaan Essay", min_value=1, max_value=10, value=2)
                 soal_essay_list = []
                 with st.form("form_buat_essay"):
                     for i in range(int(num_essay)):
                         st.markdown(f"**Soal No. {i+1}**")
                         q_es = st.text_area(f"Pertanyaan Essay No. {i+1}", key=f"q_es_{i}")
-                        k_es = st.text_input(f"Kunci / Rubrik Jawaban Ideal No. {i+1} (Disarankan untuk acuan AI)", key=f"k_es_{i}")
-                        soal_essay_list.append({"pertanyaan": q_es, "kunci": k_es})
+                        soal_essay_list.append({"pertanyaan": q_es})
                     
                     sub_es = st.form_submit_button("Simpan Tugas Essay")
                     if sub_es:
@@ -763,7 +759,7 @@ elif role == "guru":
                                 "created_by": user_info["username"],
                                 "created_at": firestore.SERVER_TIMESTAMP
                             })
-                            st.success("Tugas Essay berhasil diterbitkan!")
+                            st.success("Tugas Essay berhasil diterbitkan! Penilaian AI siap digunakan.")
                             st.rerun()
                         else:
                             st.warning("Mohon isi judul dan seluruh pertanyaan essay!")
@@ -902,7 +898,7 @@ elif role == "guru":
             if not perlu_diperiksa.empty:
                 st.divider()
                 st.subheader("✏️ Form Penilaian Jawaban Essay (Perlu Diperiksa)")
-                st.info("💡 **Tips AI**: Klik tombol **'🤖 Koreksi Otomatis dengan AI'** untuk mendapatkan rekomendasi nilai & catatan feedback secara instan!")
+                st.info("💡 **Tips AI**: Klik tombol **'🤖 Koreksi Otomatis dengan AI'**. Gemini AI akan menganalisis soal & jawaban siswa serta mencocokkannya dengan referensi ideal Pendidikan Pancasila secara otomatis!")
 
                 for idx, row in perlu_diperiksa.iterrows():
                     sub = row["sub_doc"]
@@ -914,23 +910,19 @@ elif role == "guru":
                         jwb_list = sub.get("jawaban", [])
 
                         for s_idx, (soal, jawab) in enumerate(zip(soal_list, jwb_list), 1):
-                            if isinstance(soal, dict):
-                                st.markdown(f"**{s_idx}. {soal.get('pertanyaan')}**")
-                                if soal.get("kunci"):
-                                    st.caption(f"🔑 Rubrik/Kunci Guru: {soal.get('kunci')}")
-                            else:
-                                st.markdown(f"**{s_idx}. {soal}**")
+                            q_text = soal.get('pertanyaan') if isinstance(soal, dict) else str(soal)
+                            st.markdown(f"**{s_idx}. {q_text}**")
                             st.info(jawab if jawab else "*Siswa tidak mengisi jawaban*")
 
                         col_ai, col_space = st.columns([1.5, 2.5])
                         with col_ai:
                             if st.button(f"🤖 Koreksi Otomatis dengan AI", key=f"btn_ai_{doc_id}"):
-                                with st.spinner("🤖 Gemini AI sedang membaca & menganalisis jawaban..."):
+                                with st.spinner("🤖 Gemini AI sedang menganalisis jawaban berdasarkan referensi ideal..."):
                                     val_ai, cat_ai = koreksi_essay_dengan_ai(soal_list, jwb_list)
                                     if val_ai is not None:
                                         st.session_state[f"ai_score_{doc_id}"] = val_ai
                                         st.session_state[f"ai_catatan_{doc_id}"] = cat_ai
-                                        st.success("✅ Penilaian AI berhasil dibuat! Silakan periksa di bawah.")
+                                        st.success("✅ Penilaian AI berhasil dibuat! Silakan periksa rekomendasi di bawah.")
                                     else:
                                         st.error(cat_ai)
 
