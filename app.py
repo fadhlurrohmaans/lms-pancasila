@@ -7,6 +7,8 @@ import io
 import re
 import random
 import string
+import json
+import google.generativeai as genai
 
 # ==========================================
 # 1. CONFIG & CSS MOBILE RESPONSIVE
@@ -67,7 +69,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. INISIALISASI FIREBASE FIRESTORE
+# 2. INISIALISASI FIREBASE & AI GEMINI
 # ==========================================
 @st.cache_resource
 def init_firebase():
@@ -91,7 +93,6 @@ def hash_pass(password):
 
 # Helper Otomatisasi Username & Password
 def generate_username(nama):
-    """Membuat username unik berdasarkan nama siswa"""
     base_username = re.sub(r'[^a-z0-9]', '', nama.lower())
     if not base_username:
         base_username = "siswa"
@@ -104,14 +105,74 @@ def generate_username(nama):
     return username
 
 def generate_password(length=6):
-    """Membuat password acak kombinasi huruf kecil & angka"""
     chars = string.ascii_lowercase + string.digits
     return ''.join(random.choice(chars) for _ in range(length))
 
-# Helper untuk mengambil seluruh daftar master kelas
 def get_all_kelas():
     docs = db.collection("kelas").stream()
     return sorted([d.id for d in docs])
+
+# ==========================================
+# 🧠 HELPER AI KOREKSI ESSAY AUTOMATIS
+# ==========================================
+def koreksi_essay_dengan_ai(soal_list, jawaban_list):
+    """
+    Menggunakan Gemini API untuk menilai jawaban essay dan memberi feedback.
+    """
+    api_key = st.secrets.get("GEMINI_API_KEY") or (st.secrets.get("gemini", {}).get("api_key") if "gemini" in st.secrets else None)
+    
+    if not api_key:
+        return None, "⚠️ Key 'GEMINI_API_KEY' belum dikonfigurasi di Streamlit Secrets."
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+
+        prompt_soal_jawab = []
+        for idx, (s, j) in enumerate(zip(soal_list, jawaban_list), 1):
+            if isinstance(s, dict):
+                p_text = s.get("pertanyaan", "")
+                k_text = s.get("kunci", "Gunakan pemahaman konsep Pancasila yang relevan.")
+            else:
+                p_text = str(s)
+                k_text = "Gunakan pemahaman konsep Pancasila yang relevan."
+            
+            prompt_soal_jawab.append(
+                f"Soal No.{idx}: {p_text}\n"
+                f"Kunci / Rubrik Acuan: {k_text}\n"
+                f"Jawaban Siswa No.{idx}: {j if j else '(Kosong/Tidak diisi)'}\n"
+            )
+
+        prompt = f"""
+        Anda adalah seorang Guru Pendidikan Pancasila yang objektif, bijaksana, dan suportif.
+        Evaluasi seluruh jawaban essay siswa berikut berdasarkan acuan pertanyaan dan rubrik yang ada.
+
+        --- PERTANYAAN DAN JAWABAN SISWA ---
+        {chr(10).join(prompt_soal_jawab)}
+
+        --- INSTRUKSI EVALUASI ---
+        1. Berikan nilai total akumulatif dari skala 0 hingga 100 (dalam bentuk angka bulat).
+        2. Berikan feedback/catatan ringkas, konstruktif, dan memotivasi siswa (maksimal 3-4 kalimat).
+        3. Output WAJIB dalam format JSON murni persis seperti ini (tanpa tanda markdown ```json):
+        {{
+            "nilai": 85,
+            "feedback": "Penjelasan mengenai Sila ke-3 sudah sangat baik dan sesuai dengan contoh sehari-hari. Tingkatkan lagi pada bagian analisis dampaknya."
+        }}
+        """
+
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
+        )
+        
+        result_json = json.loads(response.text)
+        nilai_ai = int(result_json.get("nilai", 0))
+        feedback_ai = str(result_json.get("feedback", ""))
+        
+        return nilai_ai, feedback_ai
+
+    except Exception as e:
+        return None, f"Gagal mengeksekusi AI: {e}"
 
 # ==========================================
 # 3. SEEDING DEFAULT SUPER ADMIN
@@ -339,7 +400,6 @@ if role == "superadmin":
         st.subheader("📥 Import & 📤 Ekspor Data Siswa")
         col_imp, col_exp = st.columns([1, 1])
 
-        # Sub-Bagian Import Data Siswa
         with col_imp:
             st.markdown("### 📥 Import Data Siswa Massal")
             st.caption("• Nama Baru: Dibuatkan **username & password otomatis**.\n• Nama Sudah Ada: **Hanya kelasnya saja yang diperbarui**.")
@@ -430,7 +490,6 @@ if role == "superadmin":
                 except Exception as e:
                     st.error(f"Gagal memproses file: {e}")
 
-        # Sub-Bagian Ekspor Data Siswa
         with col_exp:
             st.markdown("### 📤 Ekspor Data Siswa Lengkap")
             st.caption("Menampilkan data lengkap: Nama, Username, Password, dan Kelas.")
@@ -623,7 +682,12 @@ elif role == "guru":
                                     k_mark = "✅ (Kunci)" if o_idx == s.get("kunci") else ""
                                     st.write(f"   - {['A','B','C','D'][o_idx]}. {opt} {k_mark}")
                             else:
-                                st.markdown(f"**{idx}. {s}**")
+                                if isinstance(s, dict):
+                                    st.markdown(f"**{idx}. {s.get('pertanyaan')}**")
+                                    if s.get("kunci"):
+                                        st.caption(f"🔑 Rubrik/Kunci: {s.get('kunci')}")
+                                else:
+                                    st.markdown(f"**{idx}. {s}**")
                         
                         if st.button(f"🗑️ Hapus Tugas Ini", key=f"del_tg_{tg['id']}"):
                             db.collection("tugas_pancasila").document(tg["id"]).delete()
@@ -678,17 +742,19 @@ elif role == "guru":
                             st.warning("Mohon lengkapi judul, seluruh pertanyaan, dan pilihan opsi!")
 
             else:  # Essay
-                st.subheader("➕ Konfigurasi Soal Essay")
+                st.subheader("➕ Konfigurasi Soal Essay (Mendukung Evaluasi AI)")
                 num_essay = st.number_input("Jumlah Pertanyaan Essay", min_value=1, max_value=10, value=2)
                 soal_essay_list = []
                 with st.form("form_buat_essay"):
                     for i in range(int(num_essay)):
+                        st.markdown(f"**Soal No. {i+1}**")
                         q_es = st.text_area(f"Pertanyaan Essay No. {i+1}", key=f"q_es_{i}")
-                        soal_essay_list.append(q_es)
+                        k_es = st.text_input(f"Kunci / Rubrik Jawaban Ideal No. {i+1} (Disarankan untuk acuan AI)", key=f"k_es_{i}")
+                        soal_essay_list.append({"pertanyaan": q_es, "kunci": k_es})
                     
                     sub_es = st.form_submit_button("Simpan Tugas Essay")
                     if sub_es:
-                        if judul_tugas and all(q.strip() for q in soal_essay_list):
+                        if judul_tugas and all(q["pertanyaan"].strip() for q in soal_essay_list):
                             db.collection("tugas_pancasila").add({
                                 "judul": judul_tugas,
                                 "instruksi": instruksi,
@@ -700,25 +766,22 @@ elif role == "guru":
                             st.success("Tugas Essay berhasil diterbitkan!")
                             st.rerun()
                         else:
-                            st.warning("Mohon isi judul dan semua pertanyaan essay!")
+                            st.warning("Mohon isi judul dan seluruh pertanyaan essay!")
 
-    # --- 7C. REKAP & PERIKSA NILAI SISWA (DIPERBARUI) ---
+    # --- 7C. REKAP & PERIKSA NILAI SISWA (DENGAN AI) ---
     elif menu == "📊 Rekap & Periksa Nilai":
         st.header("📊 Rekap & Periksa Nilai Siswa")
-        st.caption("Cari, filter, urutkan, dan kelola nilai seluruh siswa dengan lebih praktis.")
+        st.caption("Cari, filter, urutkan, dan periksa nilai siswa (Lengkap dengan Penilaian Otomatis Gemini AI).")
 
-        # 1. Ambil data tugas
         tugas_docs = db.collection("tugas_pancasila").stream()
         list_tugas = [{"id": d.id, **d.to_dict()} for d in tugas_docs]
 
-        # 2. Ambil data siswa
         siswa_docs = db.collection("users").where("role", "==", "siswa").stream()
         list_siswa = []
         k_ajar = user_info.get("kelas_ajar", [])
         
         for d in siswa_docs:
             u = d.to_dict()
-            # Jika guru memiliki kelas ajar khusus, filter siswa berdasarkan kelas ajar
             if not k_ajar or u.get("kelas") in k_ajar:
                 list_siswa.append({
                     "username": d.id,
@@ -726,14 +789,12 @@ elif role == "guru":
                     "kelas": u.get("kelas", "-")
                 })
 
-        # 3. Ambil data jawaban siswa
         jwb_docs = db.collection("jawaban_siswa").stream()
         submissions = {}
         for d in jwb_docs:
             j = d.to_dict()
             submissions[(j.get("username_siswa"), j.get("id_tugas"))] = {"id": d.id, **j}
 
-        # 4. Susun Rekap Data
         records = []
         for s in list_siswa:
             for t in list_tugas:
@@ -770,27 +831,21 @@ elif role == "guru":
         if records:
             df_all = pd.DataFrame(records)
 
-            # --- FILTER BAR ---
+            # FILTER BAR
             col_f1, col_f2, col_f3, col_f4 = st.columns([2, 1.2, 1.2, 1.4])
-            
             with col_f1:
-                search_query = st.text_input("🔍 Cari (Nama Siswa / Nama Tugas)", placeholder="Ketik nama siswa atau tugas...").strip().lower()
-            
+                search_query = st.text_input("🔍 Cari (Nama Siswa / Nama Tugas)", placeholder="Ketik nama...").strip().lower()
             with col_f2:
                 opt_kelas = ["Semua Kelas"] + sorted([k for k in df_all["Kelas"].unique() if k])
                 sel_kelas = st.selectbox("🏫 Filter Kelas", opt_kelas)
-                
             with col_f3:
                 opt_tugas = ["Semua Tugas"] + sorted([t for t in df_all["Nama Tugas"].unique() if t])
                 sel_tugas = st.selectbox("📋 Filter Tugas", opt_tugas)
-                
             with col_f4:
                 opt_status = ["Semua Status", "Sudah Dinilai", "Belum Dinilai (Perlu Diperiksa)", "Belum Dikerjakan"]
                 sel_status = st.selectbox("📌 Filter Status", opt_status)
 
-            # --- PENERAPAN FILTER ---
             df_filtered = df_all.copy()
-            
             if search_query:
                 df_filtered = df_filtered[
                     df_filtered["Nama Siswa"].str.lower().str.contains(search_query) |
@@ -803,7 +858,7 @@ elif role == "guru":
             if sel_status != "Semua Status":
                 df_filtered = df_filtered[df_filtered["Status"] == sel_status]
 
-            # --- SORTING / PENGURUTAN ---
+            # SORTING
             sort_col, _ = st.columns([2, 2])
             with sort_col:
                 sort_by = st.selectbox("↕️ Urutkan Berdasarkan Data", [
@@ -828,7 +883,7 @@ elif role == "guru":
             elif sort_by == "Nilai (Terendah)":
                 df_filtered = df_filtered.sort_values(by="raw_nilai", ascending=True)
 
-            # --- RINGKASAN DATA (METRICS) ---
+            # METRICS
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total Data Tampil", len(df_filtered))
             m2.metric("Sudah Dinilai", len(df_filtered[df_filtered["Status"] == "Sudah Dinilai"]))
@@ -837,31 +892,59 @@ elif role == "guru":
 
             st.divider()
 
-            # --- TABEL DATA SIMPEL ---
+            # TABEL SIMPEL
             st.subheader("📋 Tabel Data Nilai Siswa")
             df_display = df_filtered[["Nama Siswa", "Kelas", "Nama Tugas", "Tipe", "Status", "Nilai", "Catatan Guru"]]
             st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-            # --- SEKSI PERIKSA ESSAY QUICK-FORM ---
+            # AREA KOREKSI ESSAY DENGAN AI INTEGRATED
             perlu_diperiksa = df_filtered[df_filtered["Status"] == "Belum Dinilai (Perlu Diperiksa)"]
             if not perlu_diperiksa.empty:
                 st.divider()
                 st.subheader("✏️ Form Penilaian Jawaban Essay (Perlu Diperiksa)")
+                st.info("💡 **Tips AI**: Klik tombol **'🤖 Koreksi Otomatis dengan AI'** untuk mendapatkan rekomendasi nilai & catatan feedback secara instan!")
+
                 for idx, row in perlu_diperiksa.iterrows():
                     sub = row["sub_doc"]
+                    doc_id = sub['id']
+
                     with st.expander(f"👤 {row['Nama Siswa']} ({row['Kelas']}) — {row['Nama Tugas']}"):
                         st.write("**Jawaban Siswa:**")
-                        for s_idx, (soal, jawab) in enumerate(zip(sub.get("soal", []), sub.get("jawaban", [])), 1):
-                            st.markdown(f"**{s_idx}. {soal}**")
-                            st.info(jawab if jawab else "*Tidak diisi*")
+                        soal_list = sub.get("soal", [])
+                        jwb_list = sub.get("jawaban", [])
 
-                        with st.form(f"form_nilai_quick_{sub['id']}"):
-                            n_in = st.number_input("Input Nilai (0 - 100)", min_value=0, max_value=100, value=80, key=f"n_in_{sub['id']}")
-                            c_in = st.text_area("Catatan / Feedback Guru", value=sub.get("catatan_guru", ""), key=f"c_in_{sub['id']}")
-                            btn_save = st.form_submit_button("Simpan Nilai")
+                        for s_idx, (soal, jawab) in enumerate(zip(soal_list, jwb_list), 1):
+                            if isinstance(soal, dict):
+                                st.markdown(f"**{s_idx}. {soal.get('pertanyaan')}**")
+                                if soal.get("kunci"):
+                                    st.caption(f"🔑 Rubrik/Kunci Guru: {soal.get('kunci')}")
+                            else:
+                                st.markdown(f"**{s_idx}. {soal}**")
+                            st.info(jawab if jawab else "*Siswa tidak mengisi jawaban*")
+
+                        col_ai, col_space = st.columns([1.5, 2.5])
+                        with col_ai:
+                            if st.button(f"🤖 Koreksi Otomatis dengan AI", key=f"btn_ai_{doc_id}"):
+                                with st.spinner("🤖 Gemini AI sedang membaca & menganalisis jawaban..."):
+                                    val_ai, cat_ai = koreksi_essay_dengan_ai(soal_list, jwb_list)
+                                    if val_ai is not None:
+                                        st.session_state[f"ai_score_{doc_id}"] = val_ai
+                                        st.session_state[f"ai_catatan_{doc_id}"] = cat_ai
+                                        st.success("✅ Penilaian AI berhasil dibuat! Silakan periksa di bawah.")
+                                    else:
+                                        st.error(cat_ai)
+
+                        # Nilai default (dari AI jika tombol diklik, atau bawaan)
+                        default_n = st.session_state.get(f"ai_score_{doc_id}", 80)
+                        default_c = st.session_state.get(f"ai_catatan_{doc_id}", sub.get("catatan_guru", ""))
+
+                        with st.form(f"form_nilai_quick_{doc_id}"):
+                            n_in = st.number_input("Input Nilai Akhir (0 - 100)", min_value=0, max_value=100, value=default_n, key=f"n_in_{doc_id}")
+                            c_in = st.text_area("Catatan / Feedback Guru", value=default_c, key=f"c_in_{doc_id}")
+                            btn_save = st.form_submit_button("💾 Simpan Nilai Ke Sistem")
 
                             if btn_save:
-                                db.collection("jawaban_siswa").document(sub["id"]).update({
+                                db.collection("jawaban_siswa").document(doc_id).update({
                                     "nilai": n_in,
                                     "catatan_guru": c_in,
                                     "dinilai_pada": firestore.SERVER_TIMESTAMP
@@ -958,8 +1041,10 @@ elif role == "siswa":
                 else:  # Essay
                     with st.form("form_kerjakan_essay"):
                         jawaban_essay = []
-                        for i, q in enumerate(tugas_active.get("soal", []), 1):
-                            st.markdown(f"**{i}. {q}**")
+                        soals = tugas_active.get("soal", [])
+                        for i, q in enumerate(soals, 1):
+                            q_text = q.get("pertanyaan") if isinstance(q, dict) else q
+                            st.markdown(f"**{i}. {q_text}**")
                             ans_es = st.text_area("Jawaban Anda:", key=f"ans_es_{tugas_active['id']}_{i}", height=120)
                             jawaban_essay.append(ans_es)
                         
@@ -973,7 +1058,7 @@ elif role == "siswa":
                                     "username_siswa": user_info["username"],
                                     "nama_siswa": user_info["nama"],
                                     "tipe": "essay",
-                                    "soal": tugas_active.get("soal"),
+                                    "soal": soals,
                                     "jawaban": jawaban_essay,
                                     "nilai": None,
                                     "catatan_guru": "",
@@ -986,7 +1071,7 @@ elif role == "siswa":
         else:
             st.info("Belum ada tugas yang dipublikasikan oleh Guru.")
 
-    # --- 8C. RIWAYAT & NILAI SAYA (DIPERBARUI LEBIH SIMPEL) ---
+    # --- 8C. RIWAYAT & NILAI SAYA ---
     elif menu_s == "📊 Riwayat & Nilai Saya":
         st.header("📊 Riwayat Tugas & Hasil Nilai Saya")
 
@@ -1028,7 +1113,6 @@ elif role == "siswa":
                     "sub_doc": sub
                 })
 
-            # Metrics Ringkasan
             rata_rata = round(total_nilai / count_dinilai, 1) if count_dinilai > 0 else 0
 
             c1, c2, c3 = st.columns(3)
@@ -1038,7 +1122,6 @@ elif role == "siswa":
 
             st.divider()
 
-            # Tabel Simpel Siswa
             st.subheader("📋 Daftar Hasil Nilai")
             df_siswa = pd.DataFrame(s_records)
             st.dataframe(
@@ -1047,7 +1130,6 @@ elif role == "siswa":
                 hide_index=True
             )
 
-            # Rincian Jawaban (Expander Opsional)
             with st.expander("🔍 Lihat Detail Jawaban & Feedback"):
                 for r in s_records:
                     if r["sub_doc"]:
@@ -1059,7 +1141,8 @@ elif role == "siswa":
                         
                         if sub.get("tipe") == "essay" and sub.get("soal"):
                             for s_idx, (q_t, a_t) in enumerate(zip(sub.get("soal", []), sub.get("jawaban", [])), 1):
-                                st.write(f"**{s_idx}. {q_t}**")
+                                q_str = q_t.get("pertanyaan") if isinstance(q_t, dict) else q_t
+                                st.write(f"**{s_idx}. {q_str}**")
                                 st.caption(f"Jawaban Anda: {a_t}")
                         st.divider()
         else:
