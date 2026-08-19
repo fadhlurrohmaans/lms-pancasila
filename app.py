@@ -914,18 +914,20 @@ elif role == "guru":
             df_display = df_filtered[["Nama Siswa", "Kelas", "Nama Tugas", "Tipe", "Status", "Nilai", "Catatan Guru"]]
             st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-           # AREA KOREKSI ESSAY DENGAN AI INTEGRATED
+          # AREA KOREKSI ESSAY DENGAN AI INTEGRATED
             perlu_diperiksa = df_filtered[df_filtered["Status"] == "Belum Dinilai (Perlu Diperiksa)"]
             if not perlu_diperiksa.empty:
                 st.divider()
                 st.subheader("✏️ Form Penilaian Jawaban Essay (Perlu Diperiksa)")
                 st.info("💡 **Tips AI**: Klik tombol **'🤖 Koreksi Otomatis dengan AI'**. Gemini AI akan menganalisis soal & jawaban siswa secara otomatis!")
 
-                for idx, row in perlu_diperiksa.iterrows():
+                # Menggunakan enumerate (i) untuk menjamin key SELALU UNIK
+                for i, (idx, row) in enumerate(perlu_diperiksa.iterrows()):
                     sub = row["sub_doc"]
-                    doc_id = sub['id']
-                    # Gabungkan doc_id dan idx agar key terjamin unik 100%
-                    unique_key = f"{doc_id}_{idx}"
+                    doc_id = sub.get('id', '')
+                    
+                    # Key unik kombinasi doc_id dan urutan indeks 'i'
+                    unique_key = f"{doc_id}_{i}"
 
                     with st.expander(f"👤 {row['Nama Siswa']} ({row['Kelas']}) — {row['Nama Tugas']}"):
                         st.write("**Jawaban Siswa:**")
@@ -937,7 +939,7 @@ elif role == "guru":
                             st.markdown(f"**{s_idx}. {q_text}**")
                             st.info(jawab if jawab else "*Siswa tidak mengisi jawaban*")
 
-                        # Inisialisasi awal nilai pada session state
+                        # Inisialisasi nilai pada session state
                         if f"n_in_{unique_key}" not in st.session_state:
                             st.session_state[f"n_in_{unique_key}"] = 80
                         if f"c_in_{unique_key}" not in st.session_state:
@@ -955,6 +957,21 @@ elif role == "guru":
                                         st.rerun()
                                     else:
                                         st.error(cat_ai)
+
+                        # Form Penilaian dengan key unique_key (PERBAIKAN BARIS 1012)
+                        with st.form(f"form_nilai_quick_{unique_key}"):
+                            n_in = st.number_input("Input Nilai Akhir (0 - 100)", min_value=0, max_value=100, key=f"n_in_{unique_key}")
+                            c_in = st.text_area("Catatan / Feedback Guru", key=f"c_in_{unique_key}")
+                            btn_save = st.form_submit_button("💾 Simpan Nilai Ke Sistem")
+
+                            if btn_save:
+                                db.collection("jawaban_siswa").document(doc_id).update({
+                                    "nilai": n_in,
+                                    "catatan_guru": c_in,
+                                    "dinilai_pada": firestore.SERVER_TIMESTAMP
+                                })
+                                st.success("Nilai berhasil disimpan!")
+                                st.rerun()
 
                         # Form Penilaian dengan ID Unik
                         with st.form(f"form_nilai_quick_{unique_key}"):
