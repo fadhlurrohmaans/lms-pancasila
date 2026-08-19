@@ -98,7 +98,6 @@ def generate_username(nama):
     
     username = base_username
     counter = 1
-    # Cek ketersediaan di Firestore agar tidak bentrok
     while db.collection("users").document(username).get().exists:
         username = f"{base_username}{counter}"
         counter += 1
@@ -196,7 +195,7 @@ if st.sidebar.button("🚪 Keluar / Logout"):
 st.sidebar.divider()
 
 # ==========================================
-# 6. PANEL SUPER ADMIN (KELOLA AKUN & MASTER KELAS)
+# 6. PANEL SUPER ADMIN
 # ==========================================
 if role == "superadmin":
     st.title("⚙️ Panel Super Admin")
@@ -345,7 +344,6 @@ if role == "superadmin":
             st.markdown("### 📥 Import Data Siswa Massal")
             st.caption("• Nama Baru: Dibuatkan **username & password otomatis**.\n• Nama Sudah Ada: **Hanya kelasnya saja yang diperbarui**.")
             
-            # 1. Download Template CSV
             df_template = pd.DataFrame([
                 {"nama": "Budi Santoso", "kelas": "X IPA 1"},
                 {"nama": "Siti Aminah", "kelas": "X IPA 2"},
@@ -362,7 +360,6 @@ if role == "superadmin":
 
             st.divider()
 
-            # 2. Upload File Import
             uploaded_file = st.file_uploader("Unggah File Siswa (.csv atau .xlsx)", type=["csv", "xlsx"])
             if uploaded_file is not None:
                 try:
@@ -371,7 +368,6 @@ if role == "superadmin":
                     else:
                         df_import = pd.read_excel(uploaded_file)
 
-                    # Normalisasi nama kolom
                     df_import.columns = [str(col).strip().lower() for col in df_import.columns]
                     req_cols = ["nama", "kelas"]
 
@@ -386,7 +382,6 @@ if role == "superadmin":
                             updated_count = 0
                             skipped_count = 0
 
-                            # Peta nama siswa terdaftar -> username (Case-insensitive)
                             docs_siswa = db.collection("users").where("role", "==", "siswa").stream()
                             existing_siswa_map = {}
                             for doc in docs_siswa:
@@ -405,16 +400,13 @@ if role == "superadmin":
 
                                 nama_key = nama_s.lower()
 
-                                # Pengecekan: Jika nama siswa sudah ada di database
                                 if nama_key in existing_siswa_map:
                                     target_username = existing_siswa_map[nama_key]
-                                    # Update KELAS nya saja
                                     db.collection("users").document(target_username).update({
                                         "kelas": kelas_s
                                     })
                                     updated_count += 1
                                 else:
-                                    # Jika nama siswa belum ada -> Buat Akun Baru
                                     u_name = generate_username(nama_s)
                                     p_plain = generate_password(6)
                                     p_hashed = hash_pass(p_plain)
@@ -427,7 +419,6 @@ if role == "superadmin":
                                         "kelas": kelas_s,
                                         "created_at": firestore.SERVER_TIMESTAMP
                                     })
-                                    # Catat ke map lokal agar jika ada nama ganda dalam file import yang sama tidak duplikat
                                     existing_siswa_map[nama_key] = u_name
                                     created_count += 1
 
@@ -458,11 +449,8 @@ if role == "superadmin":
             if data_siswa:
                 df_export = pd.DataFrame(data_siswa)
                 st.write(f"📊 Total Siswa Terdaftar: **{len(data_siswa)}**")
-                
-                # Menampilkan Tabel Lengkap
                 st.dataframe(df_export, use_container_width=True)
 
-                # Ekspor ke CSV
                 csv_data = df_export.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="💾 Unduh Data Lengkap (CSV)",
@@ -471,7 +459,6 @@ if role == "superadmin":
                     mime="text/csv"
                 )
 
-                # Ekspor ke Excel (.xlsx)
                 try:
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
@@ -569,7 +556,7 @@ elif role == "guru":
     st.title("🇮🇩 Panel Guru")
     menu = st.sidebar.radio(
         "📌 Menu Guru",
-        ["📖 Kelola Materi", "📝 Buat & Kelola Tugas", "💯 Periksa Jawaban Essay"]
+        ["📖 Kelola Materi", "📝 Buat & Kelola Tugas", "📊 Rekap & Periksa Nilai"]
     )
 
     # --- 7A. KELOLA MATERI ---
@@ -715,37 +702,174 @@ elif role == "guru":
                         else:
                             st.warning("Mohon isi judul dan semua pertanyaan essay!")
 
-    # --- 7C. PERIKSA JAWABAN ESSAY ---
-    elif menu == "💯 Periksa Jawaban Essay":
-        st.header("💯 Periksa & Nilai Jawaban Essay Siswa")
-        docs = db.collection("jawaban_siswa").where("tipe", "==", "essay").stream()
-        jawaban_list = [{"id": d.id, **d.to_dict()} for d in docs]
+    # --- 7C. REKAP & PERIKSA NILAI SISWA (DIPERBARUI) ---
+    elif menu == "📊 Rekap & Periksa Nilai":
+        st.header("📊 Rekap & Periksa Nilai Siswa")
+        st.caption("Cari, filter, urutkan, dan kelola nilai seluruh siswa dengan lebih praktis.")
 
-        if jawaban_list:
-            for jw in jawaban_list:
-                status_nilai = f"✅ Nilai: {jw.get('nilai')}" if jw.get("nilai") is not None else "⏳ Belum Dinilai"
-                with st.expander(f"👤 {jw.get('nama_siswa')} | Tugas: {jw.get('judul_tugas')} ({status_nilai})"):
-                    st.write("**Jawaban Siswa:**")
-                    for idx, (soal, jawab) in enumerate(zip(jw.get("soal", []), jw.get("jawaban", [])), 1):
-                        st.markdown(f"**{idx}. {soal}**")
-                        st.info(jawab if jawab else "*Tidak diisi*")
+        # 1. Ambil data tugas
+        tugas_docs = db.collection("tugas_pancasila").stream()
+        list_tugas = [{"id": d.id, **d.to_dict()} for d in tugas_docs]
 
-                    with st.form(f"form_nilai_{jw['id']}"):
-                        val_now = int(jw.get("nilai")) if jw.get("nilai") is not None else 80
-                        nilai_input = st.number_input("Input Nilai (0 - 100)", min_value=0, max_value=100, value=val_now)
-                        catatan_input = st.text_area("Catatan / Feedback Guru", value=jw.get("catatan_guru", ""))
-                        btn_simpan_nilai = st.form_submit_button("Simpan Nilai & Feedback")
+        # 2. Ambil data siswa
+        siswa_docs = db.collection("users").where("role", "==", "siswa").stream()
+        list_siswa = []
+        k_ajar = user_info.get("kelas_ajar", [])
+        
+        for d in siswa_docs:
+            u = d.to_dict()
+            # Jika guru memiliki kelas ajar khusus, filter siswa berdasarkan kelas ajar
+            if not k_ajar or u.get("kelas") in k_ajar:
+                list_siswa.append({
+                    "username": d.id,
+                    "nama": u.get("nama", ""),
+                    "kelas": u.get("kelas", "-")
+                })
 
-                        if btn_simpan_nilai:
-                            db.collection("jawaban_siswa").document(jw["id"]).update({
-                                "nilai": nilai_input,
-                                "catatan_guru": catatan_input,
-                                "dinilai_pada": firestore.SERVER_TIMESTAMP
-                            })
-                            st.success("Nilai berhasil diperbarui!")
-                            st.rerun()
+        # 3. Ambil data jawaban siswa
+        jwb_docs = db.collection("jawaban_siswa").stream()
+        submissions = {}
+        for d in jwb_docs:
+            j = d.to_dict()
+            submissions[(j.get("username_siswa"), j.get("id_tugas"))] = {"id": d.id, **j}
+
+        # 4. Susun Rekap Data
+        records = []
+        for s in list_siswa:
+            for t in list_tugas:
+                key = (s["username"], t["id"])
+                sub = submissions.get(key)
+                
+                if sub:
+                    n_val = sub.get("nilai")
+                    if n_val is not None:
+                        status = "Sudah Dinilai"
+                        score_text = str(n_val)
+                    else:
+                        status = "Belum Dinilai (Perlu Diperiksa)"
+                        score_text = "⏳ Belum Dinilai"
+                else:
+                    status = "Belum Dikerjakan"
+                    score_text = "-"
+                    n_val = -1
+
+                records.append({
+                    "Nama Siswa": s["nama"],
+                    "Username": s["username"],
+                    "Kelas": s["kelas"],
+                    "Nama Tugas": t.get("judul", "-"),
+                    "Tipe": "PG" if t.get("tipe") == "pg" else "Essay",
+                    "Status": status,
+                    "Nilai": score_text,
+                    "Catatan Guru": sub.get("catatan_guru", "") if sub else "",
+                    "raw_nilai": n_val if n_val is not None else -1,
+                    "sub_doc": sub,
+                    "id_tugas": t["id"]
+                })
+
+        if records:
+            df_all = pd.DataFrame(records)
+
+            # --- FILTER BAR ---
+            col_f1, col_f2, col_f3, col_f4 = st.columns([2, 1.2, 1.2, 1.4])
+            
+            with col_f1:
+                search_query = st.text_input("🔍 Cari (Nama Siswa / Nama Tugas)", placeholder="Ketik nama siswa atau tugas...").strip().lower()
+            
+            with col_f2:
+                opt_kelas = ["Semua Kelas"] + sorted([k for k in df_all["Kelas"].unique() if k])
+                sel_kelas = st.selectbox("🏫 Filter Kelas", opt_kelas)
+                
+            with col_f3:
+                opt_tugas = ["Semua Tugas"] + sorted([t for t in df_all["Nama Tugas"].unique() if t])
+                sel_tugas = st.selectbox("📋 Filter Tugas", opt_tugas)
+                
+            with col_f4:
+                opt_status = ["Semua Status", "Sudah Dinilai", "Belum Dinilai (Perlu Diperiksa)", "Belum Dikerjakan"]
+                sel_status = st.selectbox("📌 Filter Status", opt_status)
+
+            # --- PENERAPAN FILTER ---
+            df_filtered = df_all.copy()
+            
+            if search_query:
+                df_filtered = df_filtered[
+                    df_filtered["Nama Siswa"].str.lower().str.contains(search_query) |
+                    df_filtered["Nama Tugas"].str.lower().str.contains(search_query)
+                ]
+            if sel_kelas != "Semua Kelas":
+                df_filtered = df_filtered[df_filtered["Kelas"] == sel_kelas]
+            if sel_tugas != "Semua Tugas":
+                df_filtered = df_filtered[df_filtered["Nama Tugas"] == sel_tugas]
+            if sel_status != "Semua Status":
+                df_filtered = df_filtered[df_filtered["Status"] == sel_status]
+
+            # --- SORTING / PENGURUTAN ---
+            sort_col, _ = st.columns([2, 2])
+            with sort_col:
+                sort_by = st.selectbox("↕️ Urutkan Berdasarkan Data", [
+                    "Nama Siswa (A-Z)", 
+                    "Nama Siswa (Z-A)", 
+                    "Nama Tugas (A-Z)", 
+                    "Kelas (A-Z)", 
+                    "Nilai (Tertinggi)", 
+                    "Nilai (Terendah)"
+                ])
+            
+            if sort_by == "Nama Siswa (A-Z)":
+                df_filtered = df_filtered.sort_values(by="Nama Siswa", ascending=True)
+            elif sort_by == "Nama Siswa (Z-A)":
+                df_filtered = df_filtered.sort_values(by="Nama Siswa", ascending=False)
+            elif sort_by == "Nama Tugas (A-Z)":
+                df_filtered = df_filtered.sort_values(by="Nama Tugas", ascending=True)
+            elif sort_by == "Kelas (A-Z)":
+                df_filtered = df_filtered.sort_values(by="Kelas", ascending=True)
+            elif sort_by == "Nilai (Tertinggi)":
+                df_filtered = df_filtered.sort_values(by="raw_nilai", ascending=False)
+            elif sort_by == "Nilai (Terendah)":
+                df_filtered = df_filtered.sort_values(by="raw_nilai", ascending=True)
+
+            # --- RINGKASAN DATA (METRICS) ---
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Data Tampil", len(df_filtered))
+            m2.metric("Sudah Dinilai", len(df_filtered[df_filtered["Status"] == "Sudah Dinilai"]))
+            m3.metric("Perlu Diperiksa", len(df_filtered[df_filtered["Status"] == "Belum Dinilai (Perlu Diperiksa)"]))
+            m4.metric("Belum Dikerjakan", len(df_filtered[df_filtered["Status"] == "Belum Dikerjakan"]))
+
+            st.divider()
+
+            # --- TABEL DATA SIMPEL ---
+            st.subheader("📋 Tabel Data Nilai Siswa")
+            df_display = df_filtered[["Nama Siswa", "Kelas", "Nama Tugas", "Tipe", "Status", "Nilai", "Catatan Guru"]]
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+            # --- SEKSI PERIKSA ESSAY QUICK-FORM ---
+            perlu_diperiksa = df_filtered[df_filtered["Status"] == "Belum Dinilai (Perlu Diperiksa)"]
+            if not perlu_diperiksa.empty:
+                st.divider()
+                st.subheader("✏️ Form Penilaian Jawaban Essay (Perlu Diperiksa)")
+                for idx, row in perlu_diperiksa.iterrows():
+                    sub = row["sub_doc"]
+                    with st.expander(f"👤 {row['Nama Siswa']} ({row['Kelas']}) — {row['Nama Tugas']}"):
+                        st.write("**Jawaban Siswa:**")
+                        for s_idx, (soal, jawab) in enumerate(zip(sub.get("soal", []), sub.get("jawaban", [])), 1):
+                            st.markdown(f"**{s_idx}. {soal}**")
+                            st.info(jawab if jawab else "*Tidak diisi*")
+
+                        with st.form(f"form_nilai_quick_{sub['id']}"):
+                            n_in = st.number_input("Input Nilai (0 - 100)", min_value=0, max_value=100, value=80, key=f"n_in_{sub['id']}")
+                            c_in = st.text_area("Catatan / Feedback Guru", value=sub.get("catatan_guru", ""), key=f"c_in_{sub['id']}")
+                            btn_save = st.form_submit_button("Simpan Nilai")
+
+                            if btn_save:
+                                db.collection("jawaban_siswa").document(sub["id"]).update({
+                                    "nilai": n_in,
+                                    "catatan_guru": c_in,
+                                    "dinilai_pada": firestore.SERVER_TIMESTAMP
+                                })
+                                st.success("Nilai berhasil disimpan!")
+                                st.rerun()
         else:
-            st.info("Belum ada jawaban essay dari siswa yang dikumpulkan.")
+            st.info("Belum ada data nilai atau tugas yang tersedia.")
 
 # ==========================================
 # 8. PANEL SISWA
@@ -862,24 +986,81 @@ elif role == "siswa":
         else:
             st.info("Belum ada tugas yang dipublikasikan oleh Guru.")
 
-    # --- 8C. RIWAYAT & NILAI SAYA ---
+    # --- 8C. RIWAYAT & NILAI SAYA (DIPERBARUI LEBIH SIMPEL) ---
     elif menu_s == "📊 Riwayat & Nilai Saya":
-        st.header("📊 Riwayat Tugas & Hasil Nilai")
-        docs = db.collection("jawaban_siswa").where("username_siswa", "==", user_info["username"]).stream()
-        hasil_list = [{"id": d.id, **d.to_dict()} for d in docs]
+        st.header("📊 Riwayat Tugas & Hasil Nilai Saya")
 
-        if hasil_list:
-            for h in hasil_list:
-                status_n = f"💯 Nilai: {h.get('nilai')}" if h.get("nilai") is not None else "⏳ Belum Dinilai Guru"
-                with st.expander(f"📋 {h.get('judul_tugas')} [{h.get('tipe').upper()}] — {status_n}"):
-                    if h.get("catatan_guru"):
-                        st.info(f"**Catatan/Feedback Guru:** {h.get('catatan_guru')}")
-                    st.write("**Detail Pengerjaan:**")
-                    if h.get("tipe") == "essay":
-                        for s_q, s_a in zip(h.get("soal", []), h.get("jawaban", [])):
-                            st.markdown(f"• **Soal:** {s_q}")
-                            st.caption(f"  *Jawaban Anda:* {s_a}")
+        tugas_docs = db.collection("tugas_pancasila").stream()
+        list_tugas = [{"id": d.id, **d.to_dict()} for d in tugas_docs]
+
+        docs = db.collection("jawaban_siswa").where("username_siswa", "==", user_info["username"]).stream()
+        sub_dict = {d.to_dict().get("id_tugas"): {"id": d.id, **d.to_dict()} for d in docs}
+
+        if list_tugas:
+            s_records = []
+            total_nilai = 0
+            count_dinilai = 0
+
+            for t in list_tugas:
+                sub = sub_dict.get(t["id"])
+                if sub:
+                    n_val = sub.get("nilai")
+                    if n_val is not None:
+                        status = "✅ Sudah Dinilai"
+                        score_disp = f"{n_val} / 100"
+                        total_nilai += n_val
+                        count_dinilai += 1
                     else:
-                        st.write("Tugas Pilihan Ganda telah selesai diperiksa otomatis.")
+                        status = "⏳ Menunggu Penilaian Guru"
+                        score_disp = "-"
+                    catatan = sub.get("catatan_guru", "-")
+                else:
+                    status = "❌ Belum Dikerjakan"
+                    score_disp = "-"
+                    catatan = "-"
+
+                s_records.append({
+                    "Nama Tugas": t.get("judul", "-"),
+                    "Tipe": "Pilihan Ganda" if t.get("tipe") == "pg" else "Essay",
+                    "Status": status,
+                    "Nilai": score_disp,
+                    "Catatan Guru": catatan if catatan else "-",
+                    "sub_doc": sub
+                })
+
+            # Metrics Ringkasan
+            rata_rata = round(total_nilai / count_dinilai, 1) if count_dinilai > 0 else 0
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Tugas Dikerjakan", f"{len(sub_dict)} / {len(list_tugas)}")
+            c2.metric("Tugas Sudah Dinilai", count_dinilai)
+            c3.metric("Rata-Rata Nilai Anda", f"{rata_rata}")
+
+            st.divider()
+
+            # Tabel Simpel Siswa
+            st.subheader("📋 Daftar Hasil Nilai")
+            df_siswa = pd.DataFrame(s_records)
+            st.dataframe(
+                df_siswa[["Nama Tugas", "Tipe", "Status", "Nilai", "Catatan Guru"]], 
+                use_container_width=True, 
+                hide_index=True
+            )
+
+            # Rincian Jawaban (Expander Opsional)
+            with st.expander("🔍 Lihat Detail Jawaban & Feedback"):
+                for r in s_records:
+                    if r["sub_doc"]:
+                        sub = r["sub_doc"]
+                        st.markdown(f"### 📋 {r['Nama Tugas']} (`{r['Tipe']}`)")
+                        st.write(f"**Nilai:** {r['Nilai']} | **Status:** {r['Status']}")
+                        if r['Catatan Guru'] and r['Catatan Guru'] != "-":
+                            st.info(f"💬 **Catatan Guru:** {r['Catatan Guru']}")
+                        
+                        if sub.get("tipe") == "essay" and sub.get("soal"):
+                            for s_idx, (q_t, a_t) in enumerate(zip(sub.get("soal", []), sub.get("jawaban", [])), 1):
+                                st.write(f"**{s_idx}. {q_t}**")
+                                st.caption(f"Jawaban Anda: {a_t}")
+                        st.divider()
         else:
-            st.info("Anda belum pernah mengumpulkan tugas apapun.")
+            st.info("Belum ada tugas yang dipublikasikan oleh Guru.")
