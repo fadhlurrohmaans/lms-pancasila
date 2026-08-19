@@ -917,6 +917,8 @@ elif role == "guru":
                 for idx, row in perlu_diperiksa.iterrows():
                     sub = row["sub_doc"]
                     doc_id = sub['id']
+                    # Gabungkan doc_id dan idx agar key terjamin unik 100%
+                    unique_key = f"{doc_id}_{idx}"
 
                     with st.expander(f"👤 {row['Nama Siswa']} ({row['Kelas']}) — {row['Nama Tugas']}"):
                         st.write("**Jawaban Siswa:**")
@@ -928,6 +930,40 @@ elif role == "guru":
                             st.markdown(f"**{s_idx}. {q_text}**")
                             st.info(jawab if jawab else "*Siswa tidak mengisi jawaban*")
 
+                        # Inisialisasi awal nilai pada session state
+                        if f"n_in_{unique_key}" not in st.session_state:
+                            st.session_state[f"n_in_{unique_key}"] = 80
+                        if f"c_in_{unique_key}" not in st.session_state:
+                            st.session_state[f"c_in_{unique_key}"] = sub.get("catatan_guru", "")
+
+                        col_ai, col_space = st.columns([1.5, 2.5])
+                        with col_ai:
+                            if st.button(f"🤖 Koreksi Otomatis dengan AI", key=f"btn_ai_{unique_key}"):
+                                with st.spinner("🤖 Gemini AI sedang menganalisis jawaban berdasarkan referensi ideal..."):
+                                    val_ai, cat_ai = koreksi_essay_dengan_ai(soal_list, jwb_list)
+                                    if val_ai is not None:
+                                        st.session_state[f"n_in_{unique_key}"] = int(val_ai)
+                                        st.session_state[f"c_in_{unique_key}"] = str(cat_ai)
+                                        st.success("✅ Penilaian AI berhasil dibuat!")
+                                        st.rerun()
+                                    else:
+                                        st.error(cat_ai)
+
+                        # Form Penilaian dengan ID Unik
+                        with st.form(f"form_nilai_quick_{unique_key}"):
+                            n_in = st.number_input("Input Nilai Akhir (0 - 100)", min_value=0, max_value=100, key=f"n_in_{unique_key}")
+                            c_in = st.text_area("Catatan / Feedback Guru", key=f"c_in_{unique_key}")
+                            btn_save = st.form_submit_button("💾 Simpan Nilai Ke Sistem")
+
+                            if btn_save:
+                                db.collection("jawaban_siswa").document(doc_id).update({
+                                    "nilai": n_in,
+                                    "catatan_guru": c_in,
+                                    "dinilai_pada": firestore.SERVER_TIMESTAMP
+                                })
+                                st.success("Nilai berhasil disimpan!")
+                                st.rerun()
+                                
                         # Inisialisasi awal nilai pada session state jika belum ada
                         if f"n_in_{doc_id}" not in st.session_state:
                             st.session_state[f"n_in_{doc_id}"] = 80
