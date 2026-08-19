@@ -69,7 +69,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. INISIALISASI FIREBASE & AI GEMINI
+# 2. INISIALISASI FIREBASE & HELPER
 # ==========================================
 @st.cache_resource
 def init_firebase():
@@ -113,13 +113,18 @@ def get_all_kelas():
     return sorted([d.id for d in docs])
 
 # ==========================================
-# 🧠 HELPER AI KOREKSI ESSAY AUTOMATIS
+# 3. HELPER AI KOREKSI ESSAY AUTOMATIS
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     """
     Menggunakan Gemini API untuk menilai jawaban essay secara mandiri.
+    Flexible API Key detection.
     """
-    api_key = st.secrets.get("GEMINI_API_KEY") or (st.secrets.get("gemini", {}).get("api_key") if "gemini" in st.secrets else None)
+    api_key = (
+        st.secrets.get("GEMINI_API_KEY") or 
+        st.secrets.get("gemini", {}).get("api_key") or
+        st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
+    )
     
     if not api_key:
         return None, "⚠️ Key 'GEMINI_API_KEY' belum dikonfigurasi di Streamlit Secrets."
@@ -201,7 +206,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         return None, f"Gagal mengeksekusi AI: {e}"
 
 # ==========================================
-# 4. HALAMAN LOGIN & SESSION STATE
+# 4. HALAMAN LOGIN
 # ==========================================
 if "user" not in st.session_state:
     st.session_state["user"] = None
@@ -749,7 +754,7 @@ elif role == "guru":
 
             else:  # Essay
                 st.subheader("➕ Konfigurasi Soal Essay (Dinilai Otomatis oleh AI)")
-                st.info("💡 **Kemudahan Guru**: Guru cukup memasukkan pertanyaan. AI Gemini akan menganalisis & memberikan draf nilai serta rekomendasi feedback secara otomatis!")
+                st.info("💡 **Kemudahan Guru**: Guru cukup memasukkan pertanyaan. AI Gemini akan mencari referensi jawaban ideal secara otomatis dari internet/sumber terpercaya saat memeriksa.")
                 
                 num_essay = st.number_input("Jumlah Pertanyaan Essay", min_value=1, max_value=10, value=2)
                 soal_essay_list = []
@@ -838,7 +843,6 @@ elif role == "guru":
         if records:
             df_all = pd.DataFrame(records)
 
-            # FILTER BAR
             col_f1, col_f2, col_f3, col_f4 = st.columns([2, 1.2, 1.2, 1.4])
             with col_f1:
                 search_query = st.text_input("🔍 Cari (Nama Siswa / Nama Tugas)", placeholder="Ketik nama...").strip().lower()
@@ -865,7 +869,6 @@ elif role == "guru":
             if sel_status != "Semua Status":
                 df_filtered = df_filtered[df_filtered["Status"] == sel_status]
 
-            # SORTING
             sort_col, _ = st.columns([2, 2])
             with sort_col:
                 sort_by = st.selectbox("↕️ Urutkan Berdasarkan Data", [
@@ -890,7 +893,6 @@ elif role == "guru":
             elif sort_by == "Nilai (Terendah)":
                 df_filtered = df_filtered.sort_values(by="raw_nilai", ascending=True)
 
-            # METRICS
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total Data Tampil", len(df_filtered))
             m2.metric("Sudah Dinilai", len(df_filtered[df_filtered["Status"] == "Sudah Dinilai"]))
@@ -899,12 +901,11 @@ elif role == "guru":
 
             st.divider()
 
-            # TABEL RINGKASAN
             st.subheader("📋 Tabel Data Nilai Siswa")
             df_display = df_filtered[["Nama Siswa", "Kelas", "Nama Tugas", "Tipe", "Status", "Nilai", "Catatan Guru"]]
             st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-            # AREA KOREKSI ESSAY DENGAN AI INTEGRATED (RAPI & BEBAS ERROR)
+            # AREA KOREKSI ESSAY DENGAN AI INTEGRATED
             perlu_diperiksa = df_filtered[df_filtered["Status"] == "Belum Dinilai (Perlu Diperiksa)"]
             if not perlu_diperiksa.empty:
                 st.divider()
@@ -936,8 +937,8 @@ elif role == "guru":
 
                         col_ai, col_space = st.columns([1.5, 2.5])
                         with col_ai:
-                            if st.button("🤖 Koreksi Otomatis dengan AI", key=f"btn_ai_{unique_key}"):
-                                with st.spinner("🤖 Gemini AI sedang menganalisis jawaban..."):
+                            if st.button(f"🤖 Koreksi Otomatis dengan AI", key=f"btn_ai_{unique_key}"):
+                                with st.spinner("🤖 Gemini AI sedang menganalisis jawaban berdasarkan referensi ideal..."):
                                     val_ai, cat_ai = koreksi_essay_dengan_ai(soal_list, jwb_list)
                                     if val_ai is not None:
                                         st.session_state[f"n_in_{unique_key}"] = int(val_ai)
@@ -1094,10 +1095,12 @@ elif role == "siswa":
             s_records = []
             total_nilai = 0
             count_dinilai = 0
+            tugas_dikerjakan_count = 0  # Hitung khusus untuk tugas aktif saja
 
             for t in list_tugas:
                 sub = sub_dict.get(t["id"])
                 if sub:
+                    tugas_dikerjakan_count += 1
                     n_val = sub.get("nilai")
                     if n_val is not None:
                         status = "✅ Sudah Dinilai"
@@ -1125,7 +1128,8 @@ elif role == "siswa":
             rata_rata = round(total_nilai / count_dinilai, 1) if count_dinilai > 0 else 0
 
             c1, c2, c3 = st.columns(3)
-            c1.metric("Total Tugas Dikerjakan", f"{len(sub_dict)} / {len(list_tugas)}")
+            # Metrik dihitung hanya berdasarkan tugas yang ada/aktif
+            c1.metric("Total Tugas Dikerjakan", f"{tugas_dikerjakan_count} / {len(list_tugas)}")
             c2.metric("Tugas Sudah Dinilai", count_dinilai)
             c3.metric("Rata-Rata Nilai Anda", f"{rata_rata}")
 
