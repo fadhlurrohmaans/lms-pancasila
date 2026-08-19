@@ -112,7 +112,7 @@ def get_all_kelas():
     docs = db.collection("kelas").stream()
     return sorted([d.id for d in docs])
 # ==========================================
-# 🧠 HELPER AI KOREKSI ESSAY AUTOMATIS (UPDATED)
+# 🧠 HELPER AI KOREKSI ESSAY AUTOMATIS (PERBAIKAN MODEL)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     """
@@ -126,8 +126,8 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
 
-        # Daftar model yang dicoba secara bertahap (fallback)
-        model_candidates = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
+        # Menggunakan daftar model generasi terbaru (gemini-2.5-flash & gemini-2.0-flash)
+        model_candidates = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro', 'gemini-1.5-pro']
         
         prompt_soal_jawab = []
         for idx, (s, j) in enumerate(zip(soal_list, jawaban_list), 1):
@@ -163,7 +163,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         response = None
         last_error = None
 
-        # Mencoba setiap model sampai menemukan yang aktif
+        # Mencoba daftar model satu per satu hingga menemukan yang aktif
         for m_name in model_candidates:
             try:
                 model = genai.GenerativeModel(m_name)
@@ -188,6 +188,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {e}"
+
 
 # ==========================================
 # 3. SEEDING DEFAULT SUPER ADMIN
