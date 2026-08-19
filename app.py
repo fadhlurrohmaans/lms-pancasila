@@ -4,6 +4,9 @@ from firebase_admin import credentials, firestore
 import pandas as pd
 import hashlib
 import io
+import re
+import random
+import string
 
 # ==========================================
 # 1. CONFIG & CSS MOBILE RESPONSIVE
@@ -15,15 +18,13 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-# Injeksi Custom CSS untuk Tampilan Responsive (HP Android & iOS)
+# Custom CSS Mobile Responsive
 st.markdown("""
     <style>
-    /* 1. Mencegah Auto-Zoom di iOS Safari & Menyesuaikan Input Mobile */
     input[type="text"], input[type="password"], textarea, select {
         font-size: 16px !important;
     }
     
-    /* 2. Optimasi Padding Container di Layar Kecil / HP */
     @media (max-width: 768px) {
         .main .block-container {
             padding-left: 0.8rem !important;
@@ -32,7 +33,6 @@ st.markdown("""
             padding-bottom: 2rem !important;
         }
         
-        /* 3. Auto-Stacking Kolom di Mobile */
         [data-testid="column"] {
             width: 100% !important;
             flex: 1 1 100% !important;
@@ -40,7 +40,6 @@ st.markdown("""
             margin-bottom: 0.5rem;
         }
 
-        /* 4. Tombol Touch-Friendly */
         .stButton > button, .stDownloadButton > button {
             width: 100% !important;
             min-height: 48px !important;
@@ -51,13 +50,11 @@ st.markdown("""
             margin-bottom: 4px;
         }
         
-        /* 5. Judul & Subjudul Responsif */
         h1 { font-size: 1.8rem !important; }
         h2 { font-size: 1.4rem !important; }
         h3 { font-size: 1.2rem !important; }
     }
 
-    /* 6. Membuat Tab Dapat Di-scroll Menyamping di HP */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
         overflow-x: auto;
@@ -92,6 +89,26 @@ except Exception as e:
 def hash_pass(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+# Helper Otomatisasi Username & Password
+def generate_username(nama):
+    """Membuat username unik berdasarkan nama siswa"""
+    base_username = re.sub(r'[^a-z0-9]', '', nama.lower())
+    if not base_username:
+        base_username = "siswa"
+    
+    username = base_username
+    counter = 1
+    # Cek ketersediaan di Firestore agar tidak bentrok
+    while db.collection("users").document(username).get().exists:
+        username = f"{base_username}{counter}"
+        counter += 1
+    return username
+
+def generate_password(length=6):
+    """Membuat password acak kombinasi huruf kecil & angka"""
+    chars = string.ascii_lowercase + string.digits
+    return ''.join(random.choice(chars) for _ in range(length))
+
 # Helper untuk mengambil seluruh daftar master kelas
 def get_all_kelas():
     docs = db.collection("kelas").stream()
@@ -101,19 +118,18 @@ def get_all_kelas():
 # 3. SEEDING DEFAULT SUPER ADMIN
 # ==========================================
 def init_super_admin():
-    """Membuat akun default Super Admin jika database masih kosong/belum ada admin"""
     admin_ref = db.collection("users").document("admin").get()
     if not admin_ref.exists:
         db.collection("users").document("admin").set({
             "nama": "Super Admin",
             "password": hash_pass("admin123"),
+            "password_plain": "admin123",
             "role": "superadmin",
             "created_at": firestore.SERVER_TIMESTAMP
         })
 
 init_super_admin()
 
-# Inisialisasi Session State
 if "user" not in st.session_state:
     st.session_state["user"] = None
 
@@ -154,7 +170,7 @@ if st.session_state["user"] is None:
                 else:
                     st.warning("Mohon isi username dan password.")
 
-    st.stop()  # Hentikan eksekusi jika belum login
+    st.stop()
 
 # ==========================================
 # 5. HEADER & SIDEBAR USER
@@ -262,7 +278,7 @@ if role == "superadmin":
         else:
             st.info("Belum ada data pengguna.")
 
-    # --- 6C. ADD USER ---
+    # --- 6C. ADD USER MANUAL ---
     with tab_add_user:
         st.subheader("➕ Buat Akun Satuan (Manual)")
         
@@ -303,6 +319,7 @@ if role == "superadmin":
                             data_user = {
                                 "nama": new_nama,
                                 "password": hash_pass(new_password),
+                                "password_plain": new_password,
                                 "role": new_role.lower(),
                                 "created_at": firestore.SERVER_TIMESTAMP
                             }
@@ -326,12 +343,13 @@ if role == "superadmin":
         # Sub-Bagian Import Data Siswa
         with col_imp:
             st.markdown("### 📥 Import Data Siswa Massal")
-            st.write("Gunakan file CSV atau Excel untuk memasukkan daftar siswa secara cepat.")
+            st.caption("Cukup sediakan **Nama** dan **Kelas**. Username dan Password akan **dibuat otomatis** oleh sistem.")
             
-            # 1. Download Template CSV
+            # 1. Download Template CSV (Hanya berisi nama dan kelas)
             df_template = pd.DataFrame([
-                {"nama": "Budi Santoso", "username": "budi123", "password": "siswa123", "kelas": "X IPA 1"},
-                {"nama": "Siti Aminah", "username": "siti123", "password": "siswa123", "kelas": "X IPA 2"}
+                {"nama": "Budi Santoso", "kelas": "X IPA 1"},
+                {"nama": "Siti Aminah", "kelas": "X IPA 2"},
+                {"nama": "Ahmad Dani", "kelas": "X IPA 1"}
             ])
             csv_template = df_template.to_csv(index=False).encode('utf-8')
             
@@ -353,55 +371,47 @@ if role == "superadmin":
                     else:
                         df_import = pd.read_excel(uploaded_file)
 
-                    # Rapikan nama kolom
+                    # Normalisasi nama kolom
                     df_import.columns = [str(col).strip().lower() for col in df_import.columns]
-                    req_cols = ["nama", "username", "password", "kelas"]
+                    req_cols = ["nama", "kelas"]
 
                     if not all(col in df_import.columns for col in req_cols):
-                        st.error(f"Format file tidak valid! Wajib memiliki kolom: **{', '.join(req_cols)}**")
+                        st.error(f"Format file tidak valid! File wajib memiliki kolom: **{', '.join(req_cols)}**")
                     else:
-                        st.write("👀 **Pratinjau Data:**")
+                        st.write("👀 **Pratinjau Data yang Akan Diimpor:**")
                         st.dataframe(df_import, use_container_width=True)
 
                         if st.button("🚀 Mulai Import Data Siswa", type="primary"):
                             success_count = 0
                             skipped_count = 0
-                            errors = []
 
                             for idx, row in df_import.iterrows():
-                                u_name = str(row["username"]).strip().lower()
-                                p_word = str(row["password"]).strip()
                                 nama_s = str(row["nama"]).strip()
                                 kelas_s = str(row["kelas"]).strip()
 
-                                if not u_name or not p_word or not nama_s:
+                                if not nama_s or pd.isna(row["nama"]):
                                     skipped_count += 1
                                     continue
 
-                                # Cek username apakah sudah terdaftar
-                                u_check = db.collection("users").document(u_name).get()
-                                if u_check.exists:
-                                    skipped_count += 1
-                                    errors.append(f"Baris {idx+1}: Username '{u_name}' sudah dipakai.")
-                                    continue
+                                # Otomatisasi Username & Password
+                                u_name = generate_username(nama_s)
+                                p_plain = generate_password(6)
+                                p_hashed = hash_pass(p_plain)
 
-                                # Simpan data siswa ke Firestore
+                                # Simpan data ke Firestore
                                 db.collection("users").document(u_name).set({
                                     "nama": nama_s,
-                                    "password": hash_pass(p_word),
+                                    "password": p_hashed,
+                                    "password_plain": p_plain,
                                     "role": "siswa",
                                     "kelas": kelas_s,
                                     "created_at": firestore.SERVER_TIMESTAMP
                                 })
                                 success_count += 1
 
-                            st.success(f"✅ Selesai! **{success_count}** data siswa berhasil diimpor.")
+                            st.success(f"✅ Selesai! **{success_count}** data siswa berhasil diimpor dengan username & password otomatis.")
                             if skipped_count > 0:
-                                st.warning(f"⚠️ **{skipped_count}** data dilewati (username bentrok/kolom kosong).")
-                            if errors:
-                                with st.expander("Lihat Detail Alasan Dilewati"):
-                                    for err in errors:
-                                        st.write(f"- {err}")
+                                st.warning(f"⚠️ **{skipped_count}** baris dilewati karena nama kosong.")
                             st.rerun()
 
                 except Exception as e:
@@ -409,30 +419,33 @@ if role == "superadmin":
 
         # Sub-Bagian Ekspor Data Siswa
         with col_exp:
-            st.markdown("### 📤 Ekspor Data Siswa")
-            st.write("Unduh daftar siswa yang telah terdaftar di database.")
+            st.markdown("### 📤 Ekspor Data Siswa Lengkap")
+            st.caption("Menampilkan data lengkap: Nama, Username, Password, dan Kelas.")
 
             docs_siswa = db.collection("users").where("role", "==", "siswa").stream()
             data_siswa = []
             for d in docs_siswa:
                 u_dict = d.to_dict()
                 data_siswa.append({
-                    "Username": d.id,
                     "Nama Lengkap": u_dict.get("nama", ""),
+                    "Username": d.id,
+                    "Password": u_dict.get("password_plain", "*****"),
                     "Kelas": u_dict.get("kelas", "")
                 })
 
             if data_siswa:
                 df_export = pd.DataFrame(data_siswa)
-                st.write(f"Total Siswa Terdaftar: **{len(data_siswa)}**")
+                st.write(f"📊 Total Siswa Terdaftar: **{len(data_siswa)}**")
+                
+                # Menampilkan Tabel Lengkap (Nama, Username, Password, Kelas)
                 st.dataframe(df_export, use_container_width=True)
 
                 # Ekspor ke CSV
                 csv_data = df_export.to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    label="💾 Unduh Data Siswa (CSV)",
+                    label="💾 Unduh Data Lengkap (CSV)",
                     data=csv_data,
-                    file_name="daftar_siswa_lms.csv",
+                    file_name="daftar_siswa_lengkap.csv",
                     mime="text/csv"
                 )
 
@@ -442,9 +455,9 @@ if role == "superadmin":
                     df_export.to_excel(writer, index=False, sheet_name='Data Siswa')
                 
                 st.download_button(
-                    label="📊 Unduh Data Siswa (Excel .xlsx)",
+                    label="📊 Unduh Data Lengkap (Excel .xlsx)",
                     data=buffer.getvalue(),
-                    file_name="daftar_siswa_lms.xlsx",
+                    file_name="daftar_siswa_lengkap.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else:
