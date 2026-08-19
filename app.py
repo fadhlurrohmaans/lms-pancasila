@@ -343,9 +343,9 @@ if role == "superadmin":
         # Sub-Bagian Import Data Siswa
         with col_imp:
             st.markdown("### 📥 Import Data Siswa Massal")
-            st.caption("Cukup sediakan **Nama** dan **Kelas**. Username dan Password akan **dibuat otomatis** oleh sistem.")
+            st.caption("• Nama Baru: Dibuatkan **username & password otomatis**.\n• Nama Sudah Ada: **Hanya kelasnya saja yang diperbarui**.")
             
-            # 1. Download Template CSV (Hanya berisi nama dan kelas)
+            # 1. Download Template CSV
             df_template = pd.DataFrame([
                 {"nama": "Budi Santoso", "kelas": "X IPA 1"},
                 {"nama": "Siti Aminah", "kelas": "X IPA 2"},
@@ -382,8 +382,18 @@ if role == "superadmin":
                         st.dataframe(df_import, use_container_width=True)
 
                         if st.button("🚀 Mulai Import Data Siswa", type="primary"):
-                            success_count = 0
+                            created_count = 0
+                            updated_count = 0
                             skipped_count = 0
+
+                            # Peta nama siswa terdaftar -> username (Case-insensitive)
+                            docs_siswa = db.collection("users").where("role", "==", "siswa").stream()
+                            existing_siswa_map = {}
+                            for doc in docs_siswa:
+                                u_data = doc.to_dict()
+                                nama_val = u_data.get("nama", "").strip().lower()
+                                if nama_val:
+                                    existing_siswa_map[nama_val] = doc.id
 
                             for idx, row in df_import.iterrows():
                                 nama_s = str(row["nama"]).strip()
@@ -393,25 +403,37 @@ if role == "superadmin":
                                     skipped_count += 1
                                     continue
 
-                                # Otomatisasi Username & Password
-                                u_name = generate_username(nama_s)
-                                p_plain = generate_password(6)
-                                p_hashed = hash_pass(p_plain)
+                                nama_key = nama_s.lower()
 
-                                # Simpan data ke Firestore
-                                db.collection("users").document(u_name).set({
-                                    "nama": nama_s,
-                                    "password": p_hashed,
-                                    "password_plain": p_plain,
-                                    "role": "siswa",
-                                    "kelas": kelas_s,
-                                    "created_at": firestore.SERVER_TIMESTAMP
-                                })
-                                success_count += 1
+                                # Pengecekan: Jika nama siswa sudah ada di database
+                                if nama_key in existing_siswa_map:
+                                    target_username = existing_siswa_map[nama_key]
+                                    # Update KELAS nya saja
+                                    db.collection("users").document(target_username).update({
+                                        "kelas": kelas_s
+                                    })
+                                    updated_count += 1
+                                else:
+                                    # Jika nama siswa belum ada -> Buat Akun Baru
+                                    u_name = generate_username(nama_s)
+                                    p_plain = generate_password(6)
+                                    p_hashed = hash_pass(p_plain)
 
-                            st.success(f"✅ Selesai! **{success_count}** data siswa berhasil diimpor dengan username & password otomatis.")
+                                    db.collection("users").document(u_name).set({
+                                        "nama": nama_s,
+                                        "password": p_hashed,
+                                        "password_plain": p_plain,
+                                        "role": "siswa",
+                                        "kelas": kelas_s,
+                                        "created_at": firestore.SERVER_TIMESTAMP
+                                    })
+                                    # Catat ke map lokal agar jika ada nama ganda dalam file import yang sama tidak duplikat
+                                    existing_siswa_map[nama_key] = u_name
+                                    created_count += 1
+
+                            st.success(f"✅ Import Selesai!\n- **{created_count}** akun siswa baru ditambahkan.\n- **{updated_count}** data siswa diperbarui kelasnya.")
                             if skipped_count > 0:
-                                st.warning(f"⚠️ **{skipped_count}** baris dilewati karena nama kosong.")
+                                st.warning(f"⚠️ **{skipped_count}** baris dilewati karena kolom nama kosong.")
                             st.rerun()
 
                 except Exception as e:
@@ -437,7 +459,7 @@ if role == "superadmin":
                 df_export = pd.DataFrame(data_siswa)
                 st.write(f"📊 Total Siswa Terdaftar: **{len(data_siswa)}**")
                 
-                # Menampilkan Tabel Lengkap (Nama, Username, Password, Kelas)
+                # Menampilkan Tabel Lengkap
                 st.dataframe(df_export, use_container_width=True)
 
                 # Ekspor ke CSV
@@ -450,16 +472,19 @@ if role == "superadmin":
                 )
 
                 # Ekspor ke Excel (.xlsx)
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df_export.to_excel(writer, index=False, sheet_name='Data Siswa')
-                
-                st.download_button(
-                    label="📊 Unduh Data Lengkap (Excel .xlsx)",
-                    data=buffer.getvalue(),
-                    file_name="daftar_siswa_lengkap.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                try:
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        df_export.to_excel(writer, index=False, sheet_name='Data Siswa')
+                    
+                    st.download_button(
+                        label="📊 Unduh Data Lengkap (Excel .xlsx)",
+                        data=buffer.getvalue(),
+                        file_name="daftar_siswa_lengkap.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                except ModuleNotFoundError:
+                    st.info("💡 Tambahkan `openpyxl` ke file `requirements.txt` jika ingin mengunduh format Excel (`.xlsx`).")
             else:
                 st.info("Belum ada data siswa untuk diekspor.")
 
