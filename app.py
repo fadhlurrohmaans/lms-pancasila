@@ -111,9 +111,8 @@ def generate_password(length=6):
 def get_all_kelas():
     docs = db.collection("kelas").stream()
     return sorted([d.id for d in docs])
-
 # ==========================================
-# 🧠 HELPER AI KOREKSI ESSAY AUTOMATIS
+# 🧠 HELPER AI KOREKSI ESSAY AUTOMATIS (UPDATED)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     """
@@ -126,8 +125,10 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
 
+        # Daftar model yang dicoba secara bertahap (fallback)
+        model_candidates = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
+        
         prompt_soal_jawab = []
         for idx, (s, j) in enumerate(zip(soal_list, jawaban_list), 1):
             p_text = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
@@ -143,7 +144,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         
         TUGAS ANDA:
         1. Baca dan pahami pertanyaan essay serta jawaban siswa di bawah ini.
-        2. Gunakan pemahaman Anda tentang konsep Pendidikan Pancasila, Kewarganegaraan, UUD 1945, serta referensi jawaban ideal yang relevan dan berlaku umum dalam Kurikulum Nasional Indonesia.
+        2. Gunakan pemahaman Anda tentang konsep Pendidikan Pancasila, Kewarganegaraan, UUD 1945, serta referensi jawaban ideal yang berlaku dalam Kurikulum Nasional Indonesia.
         3. Bandingkan jawaban siswa dengan konsep ideal tersebut secara kritis namun fair.
 
         --- PERTANYAAN DAN JAWABAN SISWA ---
@@ -151,7 +152,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
         --- INSTRUKSI EVALUASI ---
         1. Berikan nilai akumulatif dari skala 0 hingga 100 (berupa angka bulat).
-        2. Berikan feedback/catatan perbaikan ringkas yang konstruktif dan memotivasi siswa (maksimal 3-4 kalimat). Jelaskan secara ringkas jika ada konsep yang kurang atau salah.
+        2. Berikan feedback/catatan perbaikan ringkas yang konstruktif dan memotivasi siswa (maksimal 3-4 kalimat).
         3. Output WAJIB dalam format JSON murni (tanpa tag markdown ```json):
         {{
             "nilai": 85,
@@ -159,11 +160,26 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         }}
         """
 
-        response = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
-        
+        response = None
+        last_error = None
+
+        # Mencoba setiap model sampai menemukan yang aktif
+        for m_name in model_candidates:
+            try:
+                model = genai.GenerativeModel(m_name)
+                response = model.generate_content(
+                    prompt,
+                    generation_config={"response_mime_type": "application/json"}
+                )
+                if response:
+                    break
+            except Exception as e:
+                last_error = e
+                continue
+
+        if not response:
+            return None, f"Gagal menghubungkan ke model AI. Error: {last_error}"
+
         result_json = json.loads(response.text)
         nilai_ai = int(result_json.get("nilai", 0))
         feedback_ai = str(result_json.get("feedback", ""))
