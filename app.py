@@ -5,7 +5,77 @@ import pandas as pd
 import hashlib
 
 # ==========================================
-# 1. INISIALISASI FIREBASE FIRESTORE
+# 1. CONFIG & CSS MOBILE RESPONSIVE
+# ==========================================
+st.set_page_config(
+    page_title="LMS Pendidikan Pancasila",
+    page_icon="🇮🇩",
+    layout="wide",
+    initial_sidebar_state="auto"
+)
+
+# Injeksi Custom CSS untuk Tampilan Android & iOS
+st.markdown("""
+    <style>
+    /* 1. Mencegah Auto-Zoom di iOS Safari & Menyesuaikan Input Mobile */
+    input[type="text"], input[type="password"], textarea, select {
+        font-size: 16px !important;
+    }
+    
+    /* 2. Optimasi Padding Container di Layar Kecil / HP */
+    @media (max-width: 768px) {
+        .main .block-container {
+            padding-left: 0.8rem !important;
+            padding-right: 0.8rem !important;
+            padding-top: 1rem !important;
+            padding-bottom: 2rem !important;
+        }
+        
+        /* 3. Auto-Stacking Kolom di Mobile */
+        [data-testid="column"] {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+            margin-bottom: 0.5rem;
+        }
+
+        /* 4. Tombol Touch-Friendly (Mudah ditekan dengan jari) */
+        .stButton > button {
+            width: 100% !important;
+            min-height: 48px !important;
+            font-size: 16px !important;
+            font-weight: bold;
+            border-radius: 8px !important;
+            margin-top: 4px;
+            margin-bottom: 4px;
+        }
+        
+        /* 5. Judul & Subjudul Responsif */
+        h1 {
+            font-size: 1.8rem !important;
+        }
+        h2 {
+            font-size: 1.4rem !important;
+        }
+        h3 {
+            font-size: 1.2rem !important;
+        }
+    }
+
+    /* 6. Membuat Tab Dapat Di-scroll Menyamping di HP */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 8px 16px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# 2. INISIALISASI FIREBASE FIRESTORE
 # ==========================================
 @st.cache_resource
 def init_firebase():
@@ -33,7 +103,7 @@ def get_all_kelas():
     return sorted([d.id for d in docs])
 
 # ==========================================
-# 2. SEEDING DEFAULT SUPER ADMIN
+# 3. SEEDING DEFAULT SUPER ADMIN
 # ==========================================
 def init_super_admin():
     """Membuat akun default Super Admin jika database masih kosong/belum ada admin"""
@@ -48,19 +118,12 @@ def init_super_admin():
 
 init_super_admin()
 
-# Config Halaman Streamlit
-st.set_page_config(
-    page_title="LMS Pendidikan Pancasila",
-    page_icon="🇮🇩",
-    layout="wide"
-)
-
 # Inisialisasi Session State
 if "user" not in st.session_state:
     st.session_state["user"] = None
 
 # ==========================================
-# 3. HALAMAN LOGIN
+# 4. HALAMAN LOGIN
 # ==========================================
 if st.session_state["user"] is None:
     st.title("🇮🇩 LMS Pendidikan Pancasila")
@@ -99,7 +162,7 @@ if st.session_state["user"] is None:
     st.stop()  # Hentikan eksekusi jika belum login
 
 # ==========================================
-# 4. HEADER & SIDEBAR USER
+# 5. HEADER & SIDEBAR USER
 # ==========================================
 user_info = st.session_state["user"]
 role = user_info["role"]
@@ -123,19 +186,19 @@ if st.sidebar.button("🚪 Keluar / Logout"):
 st.sidebar.divider()
 
 # ==========================================
-# 5. PANEL SUPER ADMIN (KELOLA AKUN & MASTER KELAS)
+# 6. PANEL SUPER ADMIN (KELOLA AKUN & MASTER KELAS)
 # ==========================================
 if role == "superadmin":
-    st.title("⚙️ Panel Super Admin - Manajemen Akun & Kelas")
+    st.title("⚙️ Panel Super Admin")
     tab_master_kelas, tab_list_user, tab_add_user, tab_edit_kelas, tab_del_user = st.tabs([
-        "🏫 Master Data Kelas",
-        "👥 Daftar Pengguna", 
-        "➕ Buat Akun Baru", 
-        "✏️ Atur Kelas Guru & Siswa",
+        "🏫 Master Kelas",
+        "👥 Daftar User", 
+        "➕ Buat Akun", 
+        "✏️ Atur Kelas",
         "🗑️ Hapus Akun"
     ])
 
-    # --- 5A. MASTER DATA KELAS ---
+    # --- 6A. MASTER DATA KELAS ---
     with tab_master_kelas:
         st.subheader("🏫 Kelola Master Data Kelas")
         st.caption("Tambahkan daftar kelas resmi sekolah di sini sebelum membuat akun Guru / Siswa.")
@@ -144,7 +207,7 @@ if role == "superadmin":
         daftar_kelas_aktif = get_all_kelas()
 
         with col_k1:
-            st.write("📋 **Daftar Kelas Terdaftar saat ini:**")
+            st.write("📋 **Daftar Kelas Terdaftar:**")
             if daftar_kelas_aktif:
                 for k in daftar_kelas_aktif:
                     st.markdown(f"- 🏫 **{k}**")
@@ -154,7 +217,7 @@ if role == "superadmin":
         with col_k2:
             st.write("➕ **Tambah Kelas Baru**")
             with st.form("form_add_kelas", clear_on_submit=True):
-                new_kelas_name = st.text_input("Nama Kelas Baru", placeholder="Contoh: X IPA 1 / 10-A").strip()
+                new_kelas_name = st.text_input("Nama Kelas Baru", placeholder="Contoh: X IPA 1").strip()
                 btn_add_k = st.form_submit_button("Tambah Kelas")
                 
                 if btn_add_k:
@@ -177,16 +240,15 @@ if role == "superadmin":
                     st.success(f"Kelas '{del_k_name}' berhasil dihapus!")
                     st.rerun()
 
-    # --- 5B. LIST USERS ---
+    # --- 6B. LIST USERS ---
     with tab_list_user:
-        st.subheader("Daftar Akun Terdaftar")
+        st.subheader("👥 Daftar Akun Terdaftar")
         docs = db.collection("users").stream()
         users_list = []
         for d in docs:
             u = d.to_dict()
             u_role = u.get("role", "").lower()
             
-            # Keterangan kelas
             info_kelas = "-"
             if u_role == "siswa":
                 info_kelas = u.get("kelas", "-")
@@ -205,9 +267,9 @@ if role == "superadmin":
         else:
             st.info("Belum ada data pengguna.")
 
-    # --- 5C. ADD USER ---
+    # --- 6C. ADD USER ---
     with tab_add_user:
-        st.subheader("Buat Akun Guru / Siswa / Admin Baru")
+        st.subheader("➕ Buat Akun Baru")
         
         daftar_kelas_pilihan = get_all_kelas()
         new_role = st.selectbox("Role Akun", ["Siswa", "Guru", "Superadmin"])
@@ -217,7 +279,6 @@ if role == "superadmin":
             new_username = st.text_input("Username Baru").strip().lower()
             new_password = st.text_input("Password", type="password")
             
-            # Input Spesifik Kelas berdasarkan Master Data Kelas
             kelas_siswa_selected = ""
             kelas_guru_selected = []
             
@@ -225,20 +286,20 @@ if role == "superadmin":
                 if daftar_kelas_pilihan:
                     kelas_siswa_selected = st.selectbox("Pilih Kelas Siswa", options=daftar_kelas_pilihan)
                 else:
-                    st.warning("⚠️ Master data kelas masih kosong! Buat kelas terlebih dahulu di tab 'Master Data Kelas'.")
+                    st.warning("⚠️ Master data kelas masih kosong! Buat kelas terlebih dahulu.")
             
             elif new_role == "Guru":
                 if daftar_kelas_pilihan:
                     kelas_guru_selected = st.multiselect("Pilih Kelas yang Diajar Guru", options=daftar_kelas_pilihan)
                 else:
-                    st.warning("⚠️ Master data kelas masih kosong! Buat kelas terlebih dahulu di tab 'Master Data Kelas'.")
+                    st.warning("⚠️ Master data kelas masih kosong! Buat kelas terlebih dahulu.")
 
-            btn_create = st.form_submit_button("Buat Akun")
+            btn_create = st.form_submit_button("Buat Akun Baru")
 
             if btn_create:
                 if new_nama and new_username and new_password:
                     if new_role in ["Siswa", "Guru"] and not daftar_kelas_pilihan:
-                        st.error("Gagal membuat akun. Silakan tambahkan kelas di tab 'Master Data Kelas' terlebih dahulu.")
+                        st.error("Gagal membuat akun. Silakan tambahkan kelas di tab 'Master Kelas' terlebih dahulu.")
                     else:
                         u_check = db.collection("users").document(new_username).get()
                         if u_check.exists:
@@ -262,9 +323,9 @@ if role == "superadmin":
                 else:
                     st.warning("Mohon lengkapi seluruh isian formulir!")
 
-    # --- 5D. EDIT KELAS USER ---
+    # --- 6D. EDIT KELAS USER ---
     with tab_edit_kelas:
-        st.subheader("Atur / Perbarui Kelas Guru & Siswa")
+        st.subheader("✏️ Atur / Perbarui Kelas Guru & Siswa")
         docs = db.collection("users").stream()
         daftar_kelas_pilihan = get_all_kelas()
         all_non_admin = {}
@@ -275,7 +336,7 @@ if role == "superadmin":
                 all_non_admin[d.id] = f"{u.get('nama')} (@{d.id}) - [{u.get('role').upper()}]"
 
         if not daftar_kelas_pilihan:
-            st.warning("⚠️ Belum ada master data kelas! Silakan tambahkan data kelas di tab 'Master Data Kelas'.")
+            st.warning("⚠️ Belum ada master data kelas! Silakan tambahkan data kelas di tab 'Master Kelas'.")
         elif all_non_admin:
             selected_user_id = st.selectbox(
                 "Pilih Akun yang Ingin Diatur Kelasnya", 
@@ -320,13 +381,11 @@ if role == "superadmin":
         else:
             st.info("Belum ada akun Guru atau Siswa yang terdaftar.")
 
-    # --- 5E. DELETE USER ---
+    # --- 6E. DELETE USER ---
     with tab_del_user:
-        st.subheader("Hapus Akun Pengguna")
+        st.subheader("🗑️ Hapus Akun Pengguna")
         docs = db.collection("users").stream()
         all_users = {d.id: f"{d.to_dict().get('nama')} (@{d.id}) - [{d.to_dict().get('role').upper()}]" for d in docs}
-        
-        # Hindari menghapus akun admin yang sedang login
         all_users_filtered = {k: v for k, v in all_users.items() if k != user_info["username"]}
 
         if all_users_filtered:
@@ -339,16 +398,16 @@ if role == "superadmin":
             st.info("Tidak ada akun lain yang dapat dihapus.")
 
 # ==========================================
-# 6. PANEL GURU
+# 7. PANEL GURU
 # ==========================================
 elif role == "guru":
-    st.title("🇮🇩 Panel Guru - LMS Pancasila")
+    st.title("🇮🇩 Panel Guru")
     menu = st.sidebar.radio(
         "📌 Menu Guru",
         ["📖 Kelola Materi", "📝 Buat & Kelola Tugas", "💯 Periksa Jawaban Essay"]
     )
 
-    # --- 6A. KELOLA MATERI ---
+    # --- 7A. KELOLA MATERI ---
     if menu == "📖 Kelola Materi":
         st.header("📖 Kelola Materi Pembelajaran")
         t1, t2, t3 = st.tabs(["📋 Daftar Materi", "➕ Tambah Materi", "🗑️ Hapus Materi"])
@@ -391,9 +450,9 @@ elif role == "guru":
                     st.success("Materi berhasil dihapus!")
                     st.rerun()
 
-    # --- 6B. BUAT & KELOLA TUGAS ---
+    # --- 7B. BUAT & KELOLA TUGAS ---
     elif menu == "📝 Buat & Kelola Tugas":
-        st.header("📝 Buat & Kelola Tugas (Pilihan Ganda / Essay)")
+        st.header("📝 Buat & Kelola Tugas")
         t_list, t_buat = st.tabs(["📋 Daftar Tugas", "➕ Buat Tugas Baru"])
 
         with t_list:
@@ -491,7 +550,7 @@ elif role == "guru":
                         else:
                             st.warning("Mohon isi judul dan semua pertanyaan essay!")
 
-    # --- 6C. PERIKSA JAWABAN ESSAY ---
+    # --- 7C. PERIKSA JAWABAN ESSAY ---
     elif menu == "💯 Periksa Jawaban Essay":
         st.header("💯 Periksa & Nilai Jawaban Essay Siswa")
         docs = db.collection("jawaban_siswa").where("tipe", "==", "essay").stream()
@@ -524,16 +583,16 @@ elif role == "guru":
             st.info("Belum ada jawaban essay dari siswa yang dikumpulkan.")
 
 # ==========================================
-# 7. PANEL SISWA
+# 8. PANEL SISWA
 # ==========================================
 elif role == "siswa":
-    st.title("🇮🇩 Ruang Siswa - LMS Pancasila")
+    st.title("🇮🇩 Ruang Siswa")
     menu_s = st.sidebar.radio(
         "📌 Menu Siswa",
         ["📚 Modul Materi", "✍️ Kerjakan Tugas", "📊 Riwayat & Nilai Saya"]
     )
 
-    # --- 7A. MODUL MATERI ---
+    # --- 8A. MODUL MATERI ---
     if menu_s == "📚 Modul Materi":
         st.header("📚 Modul Materi Pembelajaran")
         docs = db.collection("materi_pancasila").stream()
@@ -545,7 +604,7 @@ elif role == "siswa":
         else:
             st.info("Materi pembelajaran belum tersedia.")
 
-    # --- 7B. KERJAKAN TUGAS ---
+    # --- 8B. KERJAKAN TUGAS ---
     elif menu_s == "✍️ Kerjakan Tugas":
         st.header("✍️ Lembar Pengerjaan Tugas & Kuis")
         docs = db.collection("tugas_pancasila").stream()
@@ -638,7 +697,7 @@ elif role == "siswa":
         else:
             st.info("Belum ada tugas yang dipublikasikan oleh Guru.")
 
-    # --- 7C. RIWAYAT & NILAI SAYA ---
+    # --- 8C. RIWAYAT & NILAI SAYA ---
     elif menu_s == "📊 Riwayat & Nilai Saya":
         st.header("📊 Riwayat Tugas & Hasil Nilai")
         docs = db.collection("jawaban_siswa").where("username_siswa", "==", user_info["username"]).stream()
