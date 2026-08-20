@@ -91,7 +91,7 @@ def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 # ==========================================
-# 3. AI EVALUATION HELPER (FALLBACK MECHANISM)
+# 3. AI EVALUATION HELPER (SUPPORT GEMINI 3.6-FLASH & DYNAMIC FALLBACK)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -101,7 +101,28 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
         
-        # 1. Susun Prompt
+        # 1. Daftar kandidat model diurutkan dari versi terbaru
+        candidate_models = [
+            'gemini-3.6-flash',
+            'models/gemini-3.6-flash',
+            'gemini-2.5-flash',
+            'models/gemini-2.5-flash',
+            'gemini-1.5-flash'
+        ]
+
+        # 2. Ambil daftar model aktif langsung dari API Google jika tersedia
+        try:
+            active_models = [
+                m.name for m in genai.list_models() 
+                if 'generateContent' in m.supported_generation_methods
+            ]
+            for m in reversed(active_models):
+                if m not in candidate_models:
+                    candidate_models.insert(0, m)
+        except Exception:
+            pass
+
+        # 3. Susun Prompt
         prompt_items = [
             f"Soal No.{i}: {s.get('pertanyaan', '') if isinstance(s, dict) else str(s)}\nJawaban Siswa No.{i}: {j if j and str(j).strip() else '(Kosong)'}\n"
             for i, (s, j) in enumerate(zip(soal_list, jawaban_list), 1)
@@ -116,19 +137,10 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         {{"nilai": 85, "feedback": "Penjelasan sudah baik dan sesuai konsep Sila Pancasila."}}
         """
 
-        # 2. Daftar kandidat model stabil (diurutkan dari yang paling direkomendasikan)
-        candidate_models = [
-            'gemini-1.5-flash',
-            'gemini-2.0-flash',
-            'gemini-1.5-pro',
-            'models/gemini-1.5-flash',
-            'models/gemini-2.0-flash'
-        ]
-
+        # 4. Eksekusi panggilan model secara berurutan
         response = None
         last_error = None
 
-        # 3. Uji coba kandidat model satu per satu sampai berhasil
         for model_name in candidate_models:
             try:
                 model = genai.GenerativeModel(model_name)
@@ -146,7 +158,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         if not response or not response.text:
             return None, f"Gagal mengeksekusi AI pada seluruh model. Error terakhir: {str(last_error)}"
 
-        # 4. Parsing JSON hasil keluaran AI
+        # 5. Parsing JSON keluaran AI
         raw_text = response.text.strip()
         if raw_text.startswith("```"):
             raw_text = re.sub(r"^```(?:json)?|```$", "", raw_text, flags=re.MULTILINE).strip()
