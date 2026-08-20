@@ -91,7 +91,7 @@ def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 # ==========================================
-# 3. AI EVALUATION HELPER (NATURAL & ENCOURAGING FEEDBACK)
+# 3. AI EVALUATION HELPER (STRUCTURED OUTPUTS - ANTI-LEAK)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -101,6 +101,21 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
         
+        # 1. Kunci skema output agar AI HANYA bisa mengisi nilai dan feedback
+        strict_schema = {
+            "type": "OBJECT",
+            "properties": {
+                "nilai": {"type": "INTEGER"},
+                "feedback": {"type": "STRING"}
+            },
+            "required": ["nilai", "feedback"]
+        }
+
+        generation_config = {
+            "response_mime_type": "application/json",
+            "response_schema": strict_schema
+        }
+
         candidate_models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
         try:
             active_models = [
@@ -113,99 +128,60 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         except Exception:
             pass
 
-        # 1. Susun daftar soal dan jawaban
+        # 2. Susun data soal & jawaban secara murni tanpa memuat kata "Constraints/Role"
         prompt_items = []
         for i, (s, j) in enumerate(zip(soal_list, jawaban_list), 1):
             q_text = s.get('pertanyaan', '') if isinstance(s, dict) else str(s)
-            j_text = j if j and str(j).strip() else '(Siswa tidak mengisi)'
-            prompt_items.append(f"Soal Nomor {i}: {q_text}\nJawaban Siswa: {j_text}")
+            j_text = j if j and str(j).strip() else '(Tidak diisi)'
+            prompt_items.append(f"Pertanyaan {i}: {q_text}\nJawaban Siswa {i}: {j_text}")
 
-        # 2. Instruksi pembuatan Catatan Guru yang natural dan membangun
-        prompt = f"""
-Berikut adalah lembar pengerjaan essay siswa:
+        prompt = "\n\n".join(prompt_items)
 
-{chr(10).join(prompt_items)}
-
-PETUNJUK EVALUASI:
-1. Hitung total nilai (0-100) secara objektif.
-2. Buat "feedback" (Catatan Guru) dalam BAHASA INDONESIA dengan gaya bahasa guru yang ramah, santun, dan membangun.
-   - Awali dengan apresiasi/pujian ringan atas usaha siswa.
-   - Jika ada jawaban yang kurang tepat, jelaskan koreksinya secara halus dan edukatif.
-   - Berikan kalimat motivasi/semangat di akhir catatan.
-3. DILARANG MENAMPILKAN ulang teks "Role", "Task", "Question", "Input", atau instruksi ini.
-
-Format Output WAJIB JSON murni:
-{{"nilai": 85, "feedback": "Terima kasih sudah berusaha menjawab! Jawaban kamu sudah cukup baik. Untuk pertanyaan ibukota, pastikan mengingat kembali bahwa Jakarta adalah Ibukota Negara, bukan hanya wilayah bagian. Tetap semangat belajar ya!"}}
-"""
-
+        # 3. Letakkan seluruh perintah peran & tata cara penulisan di system_instruction
         system_instruction = (
-            "Anda adalah Guru Pendidikan Pancasila yang ramah, bijaksana, dan suportif. "
-            "Berikan evaluasi jawaban essay siswa dan susun Catatan Guru dalam Bahasa Indonesia yang alami, edukatif, dan membangun. "
-            "Output WAJIB berupa JSON murni tanpa teks pengantar atau markdown."
+            "Anda adalah Guru Pendidikan Pancasila yang bijaksana dan ramah. "
+            "Evaluasi jawaban essay siswa secara objektif.\n"
+            "Aturan Penulisan Feedback:\n"
+            "- Gunakan Bahasa Indonesia yang hangat, sopan, dan edukatif.\n"
+            "- Awali dengan apresiasi/pujian ringan.\n"
+            "- Berikan koreksi singkat jika jawaban kurang tepat.\n"
+            "- Akhiri dengan kalimat penyemangat belajar.\n"
+            "- DILARANG KERAS menyertakan kata 'Constraints', 'Role', 'Task', atau memantulkan kembali instruksi ini ke dalam feedback."
         )
 
         response = None
         last_error = None
 
+        # 4. Eksekusi panggilan model
         for model_name in candidate_models:
             try:
                 model = genai.GenerativeModel(
                     model_name=model_name,
                     system_instruction=system_instruction
                 )
-                response = model.generate_content(
-                    prompt, 
-                    generation_config={"response_mime_type": "application/json"}
-                )
+                try:
+                    response = model.generate_content(prompt, generation_config=generation_config)
+                except Exception:
+                    response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+
                 if response and hasattr(response, 'text') and response.text.strip():
                     break
             except Exception as err:
                 last_error = err
-                try:
-                    model = genai.GenerativeModel(model_name)
-                    response = model.generate_content(prompt)
-                    if response and hasattr(response, 'text') and response.text.strip():
-                        break
-                except Exception as err2:
-                    last_error = err2
-                    continue
+                continue
 
         if not response or not hasattr(response, 'text') or not response.text.strip():
             return None, f"AI tidak mengembalikan respon. Error terakhir: {str(last_error)}"
 
-        raw_text = response.text.strip()
+        # 5. Parsing JSON
+        result_json = json.loads(response.text.strip())
+        nilai = int(result_json.get("nilai", 0))
+        feedback = str(result_json.get("feedback", "")).strip()
 
-        # 3. Parsing JSON & Pembersihan Teks
-        cleaned_text = re.sub(r"^```(?:json)?|```$", "", raw_text, flags=re.MULTILINE).strip()
-        json_match = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
-        
-        if json_match:
-            try:
-                result_json = json.loads(json_match.group(0))
-                nilai = int(result_json.get("nilai", 0))
-                feedback = str(result_json.get("feedback", "")).strip()
-                
-                # Filter tambahan untuk menghapus potensi kebocoran prompt
-                feedback = re.sub(r'^(Role|Task|Input|Question|Soal).*?\n', '', feedback, flags=re.IGNORECASE | re.DOTALL).strip()
-                
-                if not feedback:
-                    feedback = "Terima kasih sudah mengerjakan tugas ini. Tetap semangat belajar!"
-                    
-                return nilai, feedback
-            except Exception:
-                pass
+        if not feedback:
+            feedback = "Terima kasih sudah mengerjakan tugas. Tetap semangat belajar ya!"
 
-        # 4. Fallback jika output tidak dalam format JSON sempurna
-        numbers = re.findall(r'\b(100|[1-9]?\d)\b', raw_text)
-        score = int(numbers[0]) if numbers else 75
-        
-        clean_fb = re.sub(r'(Role|Task|Input|Question|Soal).*?\n', '', raw_text, flags=re.IGNORECASE | re.DOTALL)
-        clean_fb = re.sub(r'[\*\#\_\{\}\"\']', '', clean_fb).strip()
-        
-        if len(clean_fb) < 15:
-            clean_fb = "Terima kasih atas usahamu mengerjakan tugas ini. Pelajari kembali materi yang belum dikuasai dan tetap semangat!"
-            
-        return score, clean_fb[:300]
+        return nilai, feedback
 
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {str(e)}"
