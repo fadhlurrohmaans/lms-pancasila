@@ -669,8 +669,7 @@ def render_guru():
                     f"🔴 Belum Dinilai ({len(belum_dinilai)})", 
                     f"🟢 Sudah Dinilai ({len(sudah_dinilai)})"
                 ])
-
-                # Fungsi render komponen penilaian agar tidak perlu duplikasi kode
+# Fungsi render komponen penilaian agar tidak perlu duplikasi kode
                 def render_koreksi_item(sub):
                     sub_id = sub["id"]
                     val_key = f"n_{sub_id}"
@@ -701,19 +700,16 @@ def render_guru():
                             else:
                                 st.info(a or "(Kosong)")
 
-                        # Tombol Auto Koreksi AI
+                        # Tombol Auto Koreksi AI (Hanya mengisi form, TIDAK langsung simpan ke database)
                         if selected_tugas.get("tipe") == "essay":
                             if st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}"):
                                 with st.spinner("🤖 AI sedang menganalisis jawaban siswa dalam Bahasa Indonesia..."):
                                     val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
                                 if val is not None:
-                                    db.collection("jawaban_siswa").document(sub_id).update({
-                                        "nilai": val, 
-                                        "catatan_guru": fb
-                                    })
+                                    # Hanya perbarui tampilan formulir (Session State)
                                     st.session_state[val_key] = int(val)
                                     st.session_state[cat_key] = str(fb)
-                                    st.success("✅ AI selesai menilai & hasil otomatis tersimpan!")
+                                    st.success("🤖 Hasil koreksi AI dimuat ke formulir! Silakan periksa kembali lalu klik tombol 'Simpan / Update' di bawah.")
                                     st.rerun()
                                 else:
                                     st.error(fb)
@@ -724,6 +720,7 @@ def render_guru():
                             c_in = st.text_area("Catatan Guru (Bahasa Indonesia)", key=cat_key)
                             
                             if st.form_submit_button("💾 Simpan / Update Perubahan Guru"):
+                                # Penyimpanan ke Firestore HANYA dilakukan di sini
                                 db.collection("jawaban_siswa").document(sub_id).update({
                                     "nilai": n_in, 
                                     "catatan_guru": c_in
@@ -732,7 +729,7 @@ def render_guru():
                                 st.session_state[cat_key] = c_in
                                 st.success("✅ Perubahan koreksi berhasil disimpan!")
                                 st.rerun()
-
+                
                 # Tampilan Tab Belum Dinilai
                 with tab_belum:
                     if not belum_dinilai:
