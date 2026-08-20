@@ -923,16 +923,31 @@ def render_siswa():
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
 
+    # Ambil semua tugas untuk kelas siswa
     all_tugas = [t for t in [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()] if is_tugas_sesuai_kelas(t, kelas_s)]
+    
+    # Ambil jawaban/pengumpulan siswa
     my_subs_docs = db.collection("jawaban_siswa").where("username_siswa", "==", username_s).stream()
     my_subs = {d.to_dict().get("id_tugas"): d.to_dict() for d in my_subs_docs}
 
     total_tugas = len(all_tugas)
     tugas_selesai = len(my_subs)
     tugas_belum = total_tugas - tugas_selesai
-    
-    nilai_list = [v.get("nilai") for v in my_subs.values() if v.get("nilai") is not None]
-    avg_nilai = round(sum(nilai_list) / len(nilai_list), 1) if nilai_list else "-"
+
+    # Calculation: Hitung nilai dari SEMUA tugas di kelas
+    # Jika tugas belum dikerjakan / belum dinilai, nilainya dihitung 0
+    if total_tugas > 0:
+        total_skor = 0
+        for tg in all_tugas:
+            tg_id = tg["id"]
+            sub = my_subs.get(tg_id)
+            if sub and sub.get("nilai") is not None:
+                total_skor += int(sub.get("nilai"))
+            else:
+                total_skor += 0  # Belum dikerjakan dihitung 0
+        avg_nilai = round(total_skor / total_tugas, 1)
+    else:
+        avg_nilai = "-"
 
     st.markdown(f"""
         <div class="student-header">
@@ -948,7 +963,8 @@ def render_siswa():
     c3.metric("Rata-Rata Nilai", f"{avg_nilai}")
 
     st.divider()
-
+    
+    # ... (sisa kode tab_tugas, tab_materi, tab_nilai di render_siswa tetap sama)
     tab_tugas, tab_materi, tab_nilai = st.tabs(["✍️ Tugas Saya", "📚 Modul Materi", "📊 Riwayat Nilai"])
 
     # ------------------------------------------
