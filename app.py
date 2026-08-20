@@ -91,7 +91,7 @@ def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 # ==========================================
-# 3. AI EVALUATION HELPER (SUPPORT GEMINI 3.6-FLASH & DYNAMIC FALLBACK)
+# 3. AI EVALUATION HELPER (EXTRACTION & PARSING FIX)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -101,16 +101,8 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
         
-        # 1. Daftar kandidat model diurutkan dari versi terbaru
-        candidate_models = [
-            'gemini-3.6-flash',
-            'models/gemini-3.6-flash',
-            'gemini-2.5-flash',
-            'models/gemini-2.5-flash',
-            'gemini-1.5-flash'
-        ]
-
-        # 2. Ambil daftar model aktif langsung dari API Google jika tersedia
+        # 1. Pilih model yang tersedia secara dinamis
+        candidate_models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'models/gemini-1.5-flash']
         try:
             active_models = [
                 m.name for m in genai.list_models() 
@@ -122,7 +114,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         except Exception:
             pass
 
-        # 3. Susun Prompt
+        # 2. Susun Prompt
         prompt_items = [
             f"Soal No.{i}: {s.get('pertanyaan', '') if isinstance(s, dict) else str(s)}\nJawaban Siswa No.{i}: {j if j and str(j).strip() else '(Kosong)'}\n"
             for i, (s, j) in enumerate(zip(soal_list, jawaban_list), 1)
@@ -133,10 +125,46 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         
         {chr(10).join(prompt_items)}
 
-        Format Output WAJIB JSON murni (Tanpa markdown ```):
+        WAJIB kembalikan JSON valid tanpa teks pengantar apapun. Format:
         {{"nilai": 85, "feedback": "Penjelasan sudah baik dan sesuai konsep Sila Pancasila."}}
         """
 
+        # 3. Panggil API AI
+        response = None
+        last_error = None
+
+        for model_name in candidate_models:
+            try:
+                model = genai.GenerativeModel(model_name)
+                try:
+                    response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+                except Exception:
+                    response = model.generate_content(prompt)
+                
+                if response and hasattr(response, 'text') and response.text and response.text.strip():
+                    break
+            except Exception as err:
+                last_error = err
+                continue
+
+        if not response or not hasattr(response, 'text') or not response.text.strip():
+            return None, f"AI tidak mengembalikan respon teks. Error terakhir: {str(last_error)}"
+
+        raw_text = response.text.strip()
+
+        # 4. Ekstrak JSON menggunakan Regex agar aman dari teks tambahan/markdown
+        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+            result_json = json.loads(json_str)
+            return int(result_json.get("nilai", 0)), str(result_json.get("feedback", ""))
+        else:
+            return None, f"Respon AI bukan format JSON valid: {raw_text[:100]}"
+
+    except json.JSONDecodeError:
+        return None, f"Gagal membaca JSON AI. Raw Output: {raw_text[:100]}"
+    except Exception as e:
+        return None, f"Gagal mengeksekusi AI: {str(e)}"
         # 4. Eksekusi panggilan model secara berurutan
         response = None
         last_error = None
