@@ -10,6 +10,19 @@ import string
 import json
 import google.generativeai as genai
 
+def read_csv_safely(uploaded_file):
+    # Urutan enkoding yang umum digunakan oleh Windows / Excel
+    encodings = ['utf-8', 'utf-8-sig', 'cp1252', 'latin1', 'iso-8859-1']
+    for enc in encodings:
+        try:
+            uploaded_file.seek(0)  # Reset pointer file ke awal
+            return pd.read_csv(uploaded_file, encoding=enc)
+        except (UnicodeDecodeError, Exception):
+            continue
+    # Fallback terakhir jika enkoding tidak terdeteksi
+    uploaded_file.seek(0)
+    return pd.read_csv(uploaded_file, encoding='utf-8', errors='replace')
+
 # ==========================================
 # 1. CONFIG & CSS MOBILE RESPONSIVE
 # ==========================================
@@ -441,8 +454,8 @@ if role == "superadmin":
             if uploaded_file is not None:
                 try:
                     if uploaded_file.name.endswith('.csv'):
-                        df_import = pd.read_csv(uploaded_file)
-                    else:
+                        df_import = read_csv_safely(uploaded_file)
+                else:
                         df_import = pd.read_excel(uploaded_file)
 
                     df_import.columns = [str(col).strip().lower() for col in df_import.columns]
@@ -888,10 +901,10 @@ elif role == "guru":
                 
                 if file_soal is not None:
                     try:
-                        if file_soal.name.endswith('.csv'):
-                            df_soal = pd.read_csv(file_soal)
-                        else:
-                            df_soal = pd.read_excel(file_soal)
+                       if file_soal.name.endswith('.csv'):
+                        df_soal = read_csv_safely(file_soal)
+                    else:
+                        df_soal = pd.read_excel(file_soal)
 
                         df_soal.columns = [str(col).strip().lower() for col in df_soal.columns]
 
