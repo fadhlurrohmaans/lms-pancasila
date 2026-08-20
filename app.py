@@ -949,13 +949,51 @@ def render_siswa():
                         sub_data = my_subs.get(tg["id"], {})
                         val = sub_data.get("nilai")
                         val_str = f"💯 Nilai: {val}" if val is not None else "⏳ Menunggu Koreksi"
+                        tipe_tugas = tg.get("tipe", "pg")
                         
                         with st.container(border=True):
-                            st.markdown(f"**{tg.get('judul')}**")
-                            st.caption(f"Status: **{val_str}**")
+                            st.markdown(f"### 📝 {tg.get('judul')}")
+                            st.caption(f"Tipe: **{tipe_tugas.upper()}** | Status: **{val_str}**")
+                            
                             if sub_data.get("catatan_guru"):
-                                st.caption(f"💬 Catatan Guru: _{sub_data.get('catatan_guru')}_")
+                                st.info(f"💬 **Catatan Guru:**\n\n{sub_data.get('catatan_guru')}")
 
+                            # Komponen untuk melihat review soal & jawaban siswa
+                            with st.expander("🔍 Lihat Detail Soal & Jawaban Saya"):
+                                soal_items = sub_data.get("soal") or tg.get("soal", [])
+                                jawaban_items = sub_data.get("jawaban", [])
+
+                                if not jawaban_items:
+                                    st.warning("Data jawaban tidak ditemukan.")
+                                else:
+                                    for idx, (q, a) in enumerate(zip(soal_items, jawaban_items), 1):
+                                        q_text = q.get('pertanyaan') if isinstance(q, dict) else str(q)
+                                        st.markdown(f"**{idx}. {q_text}**")
+                                        
+                                        if tipe_tugas == "pg":
+                                            opsi_list = q.get("opsi", []) if isinstance(q, dict) else []
+                                            ans_idx = a if isinstance(a, int) else 0
+                                            
+                                            # Ambil teks pilihan siswa
+                                            ans_text = opsi_list[ans_idx] if (isinstance(ans_idx, int) and 0 <= ans_idx < len(opsi_list)) else str(a)
+                                            
+                                            # Cek Kebenaran Jawaban PG
+                                            kunci_idx = q.get("kunci", 0) if isinstance(q, dict) else 0
+                                            is_correct = (ans_idx == kunci_idx)
+                                            status_tag = "✅ Benar" if is_correct else "❌ Salah"
+                                            
+                                            st.markdown(f"👉 **Jawaban Anda:** {ans_text} ({status_tag})")
+                                            
+                                            # Tampilkan Kunci Jawaban jika jawaban siswa salah
+                                            if not is_correct and 0 <= kunci_idx < len(opsi_list):
+                                                st.caption(f"🔑 **Kunci Jawaban:** {['A','B','C','D'][kunci_idx]}. {opsi_list[kunci_idx]}")
+                                        else:
+                                            # Tampilan untuk Jawaban Essay
+                                            ans_str = str(a).strip() if a else "(Kosong / Tidak dijawab)"
+                                            st.markdown("👉 **Jawaban Anda:**")
+                                            st.info(ans_str)
+                                        
+                                        st.write("---")
     # ------------------------------------------
     # TAB 2: MODUL MATERI
     # ------------------------------------------
