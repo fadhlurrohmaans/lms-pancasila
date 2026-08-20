@@ -16,7 +16,7 @@ st.set_page_config(
     page_title="LMS Pendidikan Pancasila",
     page_icon="🇮🇩",
     layout="wide",
-    initial_sidebar_state="collapsed"  # Otomatis tutup sidebar di HP agar layar luas
+    initial_sidebar_state="collapsed"
 )
 
 st.markdown("""
@@ -28,7 +28,7 @@ st.markdown("""
     
     /* Input & Touch Area Scale */
     input[type="text"], input[type="password"], textarea, select { 
-        font-size: 16px !important; /* Mencegah auto-zoom pada Safari iOS */
+        font-size: 16px !important;
         border-radius: 10px !important;
     }
 
@@ -64,24 +64,6 @@ st.markdown("""
         border-radius: 16px;
         margin-bottom: 15px;
         box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    }
-    
-    .badge-done {
-        background-color: #d4edda;
-        color: #155724;
-        padding: 4px 10px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: bold;
-    }
-    
-    .badge-pending {
-        background-color: #fff3cd;
-        color: #856404;
-        padding: 4px 10px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: bold;
     }
 
     /* Modern Tabs Scrollable on Mobile */
@@ -159,6 +141,11 @@ def generate_password(length=6):
 
 def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     target = tugas_doc.get("target_kelas", [])
+    if not target: return True
+    return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
+
+def is_materi_sesuai_kelas(materi_doc, kelas_siswa):
+    target = materi_doc.get("target_kelas", [])
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
@@ -467,48 +454,92 @@ def render_guru():
     if isinstance(pilihan_kelas, str): pilihan_kelas = [pilihan_kelas]
 
     if menu == "📖 Kelola Materi":
-        st.header("📖 Kelola Materi")
-        t1, t2, t3 = st.tabs(["📋 Daftar Materi", "➕ Tambah", "🗑️ Hapus"])
+        st.header("📖 Kelola Materi Pembelajaran")
+        t_list, t_buat = st.tabs(["📋 Daftar & Kelola Materi", "➕ Tambah Materi Baru"])
         
-        with t1:
-            for m in [d.to_dict() for d in db.collection("materi_pancasila").stream()]:
-                with st.expander(f"📌 [{m.get('bab')}] {m.get('judul')}"): st.write(m.get("konten"))
-        
-        with t2:
-            with st.form("f_mat", clear_on_submit=True):
+        with t_list:
+            materi_docs = [{"id": d.id, **d.to_dict()} for d in db.collection("materi_pancasila").stream()]
+            if not materi_docs:
+                st.info("Belum ada materi pembelajaran yang dibuat.")
+            else:
+                for m in materi_docs:
+                    m_id = m["id"]
+                    target_str = ", ".join(m.get("target_kelas", [])) if m.get("target_kelas") else "Semua Kelas"
+                    
+                    with st.expander(f"📌 [{m.get('bab')}] {m.get('judul')} — (Kelas: {target_str})"):
+                        st.write(f"**Bab / Unit:** {m.get('bab')}")
+                        st.write(f"**Judul:** {m.get('judul')}")
+                        st.write(f"**Target Kelas:** {target_str}")
+                        if m.get("konten"):
+                            st.write(f"**Deskripsi / Isi:** {m.get('konten')}")
+                        if m.get("file_url"):
+                            st.markdown(f"📎 **Link Lampiran:** [{m.get('file_url')}]({m.get('file_url')})")
+
+                        st.divider()
+                        st.markdown("✏️ **Edit & Update Materi:**")
+                        
+                        with st.form(key=f"form_edit_mat_{m_id}"):
+                            e_bab = st.text_input("Bab / Unit", value=m.get("bab", ""), key=f"e_bab_{m_id}")
+                            e_judul = st.text_input("Judul Materi", value=m.get("judul", ""), key=f"e_jud_{m_id}")
+                            e_target = st.multiselect(
+                                "Target Kelas", 
+                                options=pilihan_kelas, 
+                                default=m.get("target_kelas", pilihan_kelas) if m.get("target_kelas") else pilihan_kelas,
+                                key=f"e_tgt_{m_id}"
+                            )
+                            e_konten = st.text_area("Deskripsi / Teks Materi", value=m.get("konten", ""), key=f"e_kon_{m_id}")
+                            e_file_url = st.text_input(
+                                "🔗 Link Lampiran Dokumen (Google Drive/Dropbox)", 
+                                value=m.get("file_url", "") or "", 
+                                key=f"e_url_{m_id}"
+                            )
+
+                            if st.form_submit_button("💾 Perbarui Materi"):
+                                if e_bab and e_judul and e_target:
+                                    db.collection("materi_pancasila").document(m_id).update({
+                                        "bab": e_bab,
+                                        "judul": e_judul,
+                                        "target_kelas": e_target,
+                                        "konten": e_konten,
+                                        "file_url": e_file_url.strip() if e_file_url else None,
+                                        "updated_at": firestore.SERVER_TIMESTAMP
+                                    })
+                                    st.success("✅ Materi berhasil diperbarui!")
+                                    st.rerun()
+                                else:
+                                    st.error("Mohon lengkapi Bab, Judul, dan Target Kelas.")
+
+                        if st.button("🗑️ Hapus Materi Ini", key=f"btn_del_mat_{m_id}", type="primary"):
+                            db.collection("materi_pancasila").document(m_id).delete()
+                            st.success("✅ Materi berhasil dihapus!")
+                            st.rerun()
+
+        with t_buat:
+            with st.form("form_tambah_materi", clear_on_submit=True):
                 bab = st.text_input("Bab / Unit")
                 judul = st.text_input("Judul Materi")
+                target_k = st.multiselect("Target Kelas", options=pilihan_kelas, default=pilihan_kelas)
                 konten = st.text_area("Deskripsi / Teks Materi (Opsional)")
-                
-                # Input Link File Lampiran (Google Drive / Dropbox / PDF Online)
                 file_url = st.text_input(
                     "🔗 Link Lampiran Dokumen (Google Drive / Dropbox / Canva)", 
                     placeholder="https://drive.google.com/file/d/..."
                 )
-                
                 st.caption("💡 **Tips Google Drive**: Pastikan akses link diatur ke *'Siapa saja yang memiliki link dapat melihat'*.")
-                
-                if st.form_submit_button("📁 Simpan Materi"):
-                    if bab and judul:
+
+                if st.form_submit_button("📁 Simpan Materi Baru"):
+                    if bab and judul and target_k:
                         db.collection("materi_pancasila").add({
                             "bab": bab,
                             "judul": judul,
+                            "target_kelas": target_k,
                             "konten": konten,
                             "file_url": file_url.strip() if file_url else None,
                             "created_at": firestore.SERVER_TIMESTAMP
                         })
-                        st.success("✅ Materi berhasil disimpan!")
+                        st.success("✅ Materi baru berhasil ditambahkan!")
                         st.rerun()
                     else:
-                        st.warning("Mohon isi Bab dan Judul Materi.")
-        with t3:
-            mats = {d.id: f"[{d.to_dict().get('bab')}] {d.to_dict().get('judul')}" for d in db.collection("materi_pancasila").stream()}
-            if mats:
-                target_m = st.selectbox("Pilih Materi", list(mats.keys()), format_func=lambda x: mats[x])
-                if st.button("Hapus Materi", type="primary"):
-                    db.collection("materi_pancasila").document(target_m).delete()
-                    st.success("✅ Materi dihapus!")
-                    st.rerun()
+                        st.warning("Mohon isi Bab, Judul Materi, dan tentukan minimal 1 Target Kelas.")
 
     elif menu == "📝 Buat & Kelola Tugas":
         st.header("📝 Buat & Kelola Tugas")
@@ -1037,11 +1068,16 @@ def render_siswa():
                                             st.info(ans_str)
                                         
                                         st.write("---")        
-    # TAB 2: MODUL MATERI (SISWA)
+
+    # ------------------------------------------
+    # TAB 2: MODUL MATERI
+    # ------------------------------------------
     with tab_materi:
-        materi_docs = [d.to_dict() for d in db.collection("materi_pancasila").stream()]
+        all_materi = [d.to_dict() for d in db.collection("materi_pancasila").stream()]
+        materi_docs = [m for m in all_materi if is_materi_sesuai_kelas(m, kelas_s)]
+
         if not materi_docs:
-            st.info("📖 Belum ada materi pembelajaran yang diunggah.")
+            st.info("📖 Belum ada materi pembelajaran yang ditujukan untuk kelas Anda saat ini.")
         else:
             for m in materi_docs:
                 with st.container(border=True):
@@ -1050,10 +1086,10 @@ def render_siswa():
                     if m.get("konten"):
                         st.write(m.get("konten"))
                     
-                    # Jika ada link lampiran file
                     if m.get("file_url"):
                         st.markdown("---")
-                        st.link_button("📎 Buka / Unduh File Lampiran (Google Drive)", m.get("file_url"))
+                        st.link_button("📎 Buka / Unduh Lampiran Dokumen", m.get("file_url"))
+
     # ------------------------------------------
     # TAB 3: RIWAYAT NILAI (MOBILE CARD VIEW)
     # ------------------------------------------
