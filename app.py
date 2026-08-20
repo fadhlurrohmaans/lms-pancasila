@@ -91,7 +91,7 @@ def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 # ==========================================
-# 3. AI EVALUATION HELPER (AUTODETECT MODEL & ERROR HANDLING)
+# 3. AI EVALUATION HELPER (FALLBACK MECHANISM)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -101,31 +101,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
         
-        # 1. Deteksi otomatis model yang tersedia & mendukung generateContent
-        available_models = [
-            m.name for m in genai.list_models() 
-            if 'generateContent' in m.supported_generation_methods
-        ]
-        
-        if not available_models:
-            return None, "⚠️ Tidak ada model Gemini yang mendukung 'generateContent' pada API key ini."
-
-        # 2. Prioritaskan model flash/pro yang valid di akun Anda
-        selected_model = available_models[0] # Default fallback ke model pertama yang ada
-        preferred_order = [
-            'models/gemini-2.0-flash', 
-            'models/gemini-1.5-flash', 
-            'models/gemini-1.5-pro',
-            'gemini-2.0-flash',
-            'gemini-1.5-flash'
-        ]
-        
-        for pref in preferred_order:
-            if pref in available_models:
-                selected_model = pref
-                break
-
-        # 3. Susun Prompt
+        # 1. Susun Prompt
         prompt_items = [
             f"Soal No.{i}: {s.get('pertanyaan', '') if isinstance(s, dict) else str(s)}\nJawaban Siswa No.{i}: {j if j and str(j).strip() else '(Kosong)'}\n"
             for i, (s, j) in enumerate(zip(soal_list, jawaban_list), 1)
@@ -140,24 +116,46 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         {{"nilai": 85, "feedback": "Penjelasan sudah baik dan sesuai konsep Sila Pancasila."}}
         """
 
-        # 4. Eksekusi panggilan model AI
-        model = genai.GenerativeModel(selected_model)
-        
-        # Penanganan format JSON opsional tergantung model
-        try:
-            response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        except Exception:
-            response = model.generate_content(prompt)
-        
+        # 2. Daftar kandidat model stabil (diurutkan dari yang paling direkomendasikan)
+        candidate_models = [
+            'gemini-1.5-flash',
+            'gemini-2.0-flash',
+            'gemini-1.5-pro',
+            'models/gemini-1.5-flash',
+            'models/gemini-2.0-flash'
+        ]
+
+        response = None
+        last_error = None
+
+        # 3. Uji coba kandidat model satu per satu sampai berhasil
+        for model_name in candidate_models:
+            try:
+                model = genai.GenerativeModel(model_name)
+                try:
+                    response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+                except Exception:
+                    response = model.generate_content(prompt)
+                
+                if response and response.text:
+                    break
+            except Exception as err:
+                last_error = err
+                continue
+
+        if not response or not response.text:
+            return None, f"Gagal mengeksekusi AI pada seluruh model. Error terakhir: {str(last_error)}"
+
+        # 4. Parsing JSON hasil keluaran AI
         raw_text = response.text.strip()
         if raw_text.startswith("```"):
             raw_text = re.sub(r"^```(?:json)?|```$", "", raw_text, flags=re.MULTILINE).strip()
             
         result_json = json.loads(raw_text)
         return int(result_json.get("nilai", 0)), str(result_json.get("feedback", ""))
+        
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {str(e)}"
-
 # ==========================================
 # 4. AUTHENTICATION
 # ==========================================
