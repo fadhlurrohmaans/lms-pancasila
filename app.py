@@ -86,6 +86,21 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
+def safe_read_uploaded_file(uploaded_file):
+    """Membaca file CSV/Excel dengan penanganan otomatis berbagai jenis encoding."""
+    if uploaded_file.name.endswith('.csv'):
+        encodings = ['utf-8', 'utf-8-sig', 'cp1252', 'latin1', 'iso-8859-1']
+        for enc in encodings:
+            try:
+                uploaded_file.seek(0)
+                return pd.read_csv(uploaded_file, encoding=enc)
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        uploaded_file.seek(0)
+        return pd.read_csv(uploaded_file, encoding='utf-8', errors='replace')
+    else:
+        return pd.read_excel(uploaded_file)
+
 def hash_pass(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -440,11 +455,7 @@ if role == "superadmin":
             uploaded_file = st.file_uploader("Unggah File Siswa (.csv atau .xlsx)", type=["csv", "xlsx"])
             if uploaded_file is not None:
                 try:
-                    if uploaded_file.name.endswith('.csv'):
-                        df_import = pd.read_csv(uploaded_file)
-                    else:
-                        df_import = pd.read_excel(uploaded_file)
-
+                    df_import = safe_read_uploaded_file(uploaded_file)
                     df_import.columns = [str(col).strip().lower() for col in df_import.columns]
                     req_cols = ["nama", "kelas"]
 
@@ -888,11 +899,7 @@ elif role == "guru":
                 
                 if file_soal is not None:
                     try:
-                        if file_soal.name.endswith('.csv'):
-                            df_soal = pd.read_csv(file_soal)
-                        else:
-                            df_soal = pd.read_excel(file_soal)
-
+                        df_soal = safe_read_uploaded_file(file_soal)
                         df_soal.columns = [str(col).strip().lower() for col in df_soal.columns]
 
                         if tipe_import == "Pilihan Ganda (PG)":
