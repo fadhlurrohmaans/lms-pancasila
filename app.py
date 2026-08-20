@@ -91,7 +91,7 @@ def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 # ==========================================
-# 3. AI EVALUATION HELPER (STRICT JSON & FALLBACK PARSER)
+# 3. AI EVALUATION HELPER (STRICT INDONESIAN & AUTO-PARSER)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -101,7 +101,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
         
-        # 1. Deteksi/pilih model aktif
         candidate_models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
         try:
             active_models = [
@@ -114,24 +113,25 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         except Exception:
             pass
 
-        # 2. Susun Data Prompt
         prompt_items = [
             f"Soal #{i}: {s.get('pertanyaan', '') if isinstance(s, dict) else str(s)}\nJawaban Siswa #{i}: {j if j and str(j).strip() else '(Kosong)'}"
             for i, (s, j) in enumerate(zip(soal_list, jawaban_list), 1)
         ]
 
         prompt = f"""
-        Evaluasi jawaban essay siswa berikut:
+        Evaluasi jawaban essay siswa berikut secara objektif:
 
         {chr(10).join(prompt_items)}
 
-        Kembalikan HANYA objek JSON murni tanpa teks pengantar/markdown:
-        {{"nilai": 85, "feedback": "Penjelasan sudah sesuai konsep Pancasila."}}
+        WAJIB DENGAN ATURAN:
+        1. Nilai berupa angka bulat 0 - 100.
+        2. Field 'feedback' WAJIB MENGGUNAKAN BAHASA INDONESIA yang santun, jelas, dan membangun.
+        3. Kembalikan HANYA format JSON murni tanpa markdown/teks lain:
+        {{"nilai": 85, "feedback": "Penjelasan sudah baik dan sesuai dengan konsep Sila Pancasila."}}
         """
 
-        system_instruction = "Anda adalah Guru Pendidikan Pancasila. Evaluasi jawaban essay siswa dan berikan output dalam format JSON valid berisi field 'nilai' (integer 0-100) dan 'feedback' (string)."
+        system_instruction = "Anda adalah Guru Pendidikan Pancasila. Evaluasi jawaban essay siswa. WAJIB memberikan seluruh catatan/feedback dalam BAHASA INDONESIA. Output WAJIB JSON murni dengan field 'nilai' (integer 0-100) dan 'feedback' (string Bahasa Indonesia)."
 
-        # 3. Panggil API AI
         response = None
         last_error = None
 
@@ -149,7 +149,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
                     break
             except Exception as err:
                 last_error = err
-                # Fallback tanpa system_instruction jika model tidak mendukung
                 try:
                     model = genai.GenerativeModel(model_name)
                     response = model.generate_content(prompt)
@@ -164,7 +163,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
         raw_text = response.text.strip()
 
-        # 4. Parsing JSON secara Presisi
         cleaned_text = re.sub(r"^```(?:json)?|```$", "", raw_text, flags=re.MULTILINE).strip()
         json_match = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
         
@@ -172,30 +170,19 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
             try:
                 result_json = json.loads(json_match.group(0))
                 nilai = int(result_json.get("nilai", 0))
-                feedback = str(result_json.get("feedback", "Penilaian berhasil."))
+                feedback = str(result_json.get("feedback", "Penilaian berhasil diperbarui."))
                 return nilai, feedback
             except Exception:
                 pass
 
-        # 5. Fallback Parser (Jika AI mengembalikan teks biasa tanpa format JSON)
         numbers = re.findall(r'\b(100|[1-9]?\d)\b', raw_text)
         if numbers:
             score = int(numbers[0])
-            clean_fb = re.sub(r'[\*\#\_]', '', raw_text) # Bersihkan karakter markdown
+            clean_fb = re.sub(r'[\*\#\_]', '', raw_text)
             return score, clean_fb[:250]
 
         return None, f"Gagal membaca format output AI. Raw Output: {raw_text[:120]}"
 
-    except Exception as e:
-        return None, f"Gagal mengeksekusi AI: {str(e)}"
-        # 5. Parsing JSON keluaran AI
-        raw_text = response.text.strip()
-        if raw_text.startswith("```"):
-            raw_text = re.sub(r"^```(?:json)?|```$", "", raw_text, flags=re.MULTILINE).strip()
-            
-        result_json = json.loads(raw_text)
-        return int(result_json.get("nilai", 0)), str(result_json.get("feedback", ""))
-        
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {str(e)}"
 # ==========================================
