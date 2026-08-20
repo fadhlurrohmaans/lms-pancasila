@@ -324,11 +324,11 @@ def render_superadmin():
                 st.rerun()
 
 # ==========================================
-# 7. PANEL GURU
+# 7. PANEL GURU (DENGAN PENILAIAN PER KELAS)
 # ==========================================
 def render_guru():
     st.title("🇮🇩 Panel Guru")
-    menu = st.sidebar.radio("📌 Menu Guru", ["📖 Kelola Materi", "📝 Buat & Kelola Tugas", "📊 Rekap Nilai"])
+    menu = st.sidebar.radio("📌 Menu Guru", ["📖 Kelola Materi", "📝 Buat & Kelola Tugas", "📊 Rekap & Penilaian"])
     pilihan_kelas = user_info.get("kelas_ajar") or get_all_kelas()
     if isinstance(pilihan_kelas, str): pilihan_kelas = [pilihan_kelas]
 
@@ -461,38 +461,125 @@ def render_guru():
                 st.success("✅ Berhasil! Soal berhasil diimpor.")
                 st.rerun()
 
-    elif menu == "📊 Rekap Nilai":
-        st.header("📊 Rekap & Periksa Nilai")
-        submissions = [{"id": d.id, **d.to_dict()} for d in db.collection("jawaban_siswa").stream()]
+    elif menu == "📊 Rekap & Penilaian":
+        st.header("📊 Rekap & Penilaian Tugas Per Kelas")
         
-        if submissions:
-            df_sub = pd.DataFrame(submissions)
-            
-            # --- FIX KEYERROR: Mencegah error jika kolom belum ada di Firestore ---
-            expected_cols = ["nama_siswa", "kelas_siswa", "judul_tugas", "nilai", "catatan_guru"]
-            df_display = df_sub.reindex(columns=expected_cols)
-            st.dataframe(df_display, use_container_width=True)
-            
-            unassessed = [s for s in submissions if s.get("nilai") is None]
-            if unassessed:
-                st.divider()
-                st.subheader("✏️ Koreksi Jawaban Essay")
-                for sub in unassessed:
-                    with st.expander(f"👤 {sub.get('nama_siswa')} - {sub.get('judul_tugas')}"):
-                        for idx, (q, a) in enumerate(zip(sub.get("soal", []), sub.get("jawaban", [])), 1):
-                            st.write(f"**{idx}. {q.get('pertanyaan') if isinstance(q, dict) else q}**")
-                            st.info(a or "(Kosong)")
-                        
-                        if st.button("🤖 Auto Koreksi AI", key=f"ai_{sub['id']}"):
-                            val, fb = koreksi_essay_dengan_ai(sub.get("soal", []), sub.get("jawaban", []))
-                            if val is not None:
-                                db.collection("jawaban_siswa").document(sub["id"]).update({"nilai": val, "catatan_guru": fb})
-                                st.success("✅ AI selesai menilai!")
-                                st.rerun()
+        if not pilihan_kelas:
+            st.warning("⚠️ Anda belum ditugaskan untuk mengajar di kelas manapun.")
+            st.stop()
+
+        col_k, col_t = st.columns(2)
+        with col_k:
+            selected_kelas = st.selectbox("🏫 Pilih Kelas Ajar", options=pilihan_kelas)
+
+        all_tugas_docs = db.collection("tugas_pancasila").stream()
+        tugas_kelas = [
+            {"id": d.id, **d.to_dict()} 
+            for d in all_tugas_docs 
+            if is_tugas_sesuai_kelas(d.to_dict(), selected_kelas)
+        ]
+
+        if not tugas_kelas:
+            st.info(f"Belum ada tugas yang ditujukan untuk Kelas **{selected_kelas}**.")
+            st.stop()
+
+        with col_t:
+            tg_options = {t["id"]: f"[{t.get('tipe', '').upper()}] {t.get('judul')}" for t in tugas_kelas}
+            selected_tugas_id = st.selectbox("📝 Pilih Tugas", list(tg_options.keys()), format_func=lambda x: tg_options[x])
+            selected_tugas = next(t for t in tugas_kelas if t["id"] == selected_tugas_id)
+
+        # Query Siswa di Kelas Terpilih
+        siswa_docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", selected_kelas).stream()
+        siswa_list = [{"username": d.id, **d.to_dict()} for d in siswa_docs]
+
+        # Query Jawaban Siswa
+        sub_docs = db.collection("jawaban_siswa").where("id_tugas", "==", selected_tugas_id).where("kelas_siswa", "==", selected_kelas).stream()
+        sub_list = [{"id": d.id, **d.to_dict()} for d in sub_docs]
+        sub_map = {s.get("username_siswa"): s for s in sub_list}
+
+        # Kalkulasi Rekap Status
+        rekap_rows = []
+        sudah_count, belum_count = 0, 0
+
+        for s in siswa_list:
+            un = s["username"]
+            nama = s.get("nama", un)
+            if un in sub_map:
+                sudah_count += 1
+                sub = sub_map[un]
+                val_display = sub.get("nilai") if sub.get("nilai") is not None else "Belum Dinilai"
+                rekap_rows.append({
+                    "Username": un,
+                    "Nama Siswa": nama,
+                    "Status": "✅ Sudah",
+                    "Nilai": val_display,
+                    "Catatan Guru": sub.get("catatan_guru", "-")
+                })
+            else:
+                belum_count += 1
+                rekap_rows.append({
+                    "Username": un,
+                    "Nama Siswa": nama,
+                    "Status": "❌ Belum",
+                    "Nilai": "-",
+                    "Catatan Guru": "-"
+                })
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Siswa di Kelas", len(siswa_list))
+        m2.metric("Sudah Mengumpulkan", sudah_count)
+        m3.metric("Belum Mengumpulkan", belum_count)
+
+        st.divider()
+
+        t_rekap, t_koreksi = st.tabs(["📋 Rekap Pengerjaan Siswa", "✏️ Koreksi & Penilaian"])
+
+        with t_rekap:
+            st.subheader(f"Daftar Siswa Kelas {selected_kelas} — {selected_tugas.get('judul')}")
+            if rekap_rows:
+                df_rekap = pd.DataFrame(rekap_rows)
+                st.dataframe(df_rekap, use_container_width=True)
+            else:
+                st.info("Belum ada akun siswa yang terdaftar di kelas ini.")
+
+        with t_koreksi:
+            st.subheader(f"Koreksi Hasil Jawaban Kelas {selected_kelas}")
+            if not sub_list:
+                st.info("Belum ada siswa dari kelas ini yang mengumpulkan tugas.")
+            else:
+                for sub in sub_list:
+                    status_str = "🟡 Belum Dinilai" if sub.get("nilai") is None else f"🟢 Nilai: {sub.get('nilai')}"
+                    with st.expander(f"👤 {sub.get('nama_siswa')} (@{sub.get('username_siswa')}) — {status_str}"):
+                        soal_items = sub.get("soal", selected_tugas.get("soal", []))
+                        jawaban_items = sub.get("jawaban", [])
+
+                        for idx, (q, a) in enumerate(zip(soal_items, jawaban_items), 1):
+                            q_text = q.get('pertanyaan') if isinstance(q, dict) else q
+                            st.write(f"**{idx}. {q_text}**")
+                            
+                            if sub.get("tipe") == "pg":
+                                opsi_list = q.get("opsi", [])
+                                ans_idx = a if isinstance(a, int) else 0
+                                ans_text = opsi_list[ans_idx] if ans_idx < len(opsi_list) else str(a)
+                                kunci_idx = q.get("kunci", 0)
+                                is_correct = (ans_idx == kunci_idx)
+                                st.write(f"Jawaban: **{ans_text}** ({'✅ Benar' if is_correct else '❌ Salah'})")
+                            else:
+                                st.info(a or "(Kosong)")
+
+                        if selected_tugas.get("tipe") == "essay":
+                            if st.button("🤖 Auto Koreksi AI", key=f"ai_{sub['id']}"):
+                                val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
+                                if val is not None:
+                                    db.collection("jawaban_siswa").document(sub["id"]).update({"nilai": val, "catatan_guru": fb})
+                                    st.success("✅ AI selesai menilai!")
+                                    st.rerun()
 
                         with st.form(key=f"f_eval_{sub['id']}"):
-                            n_in = st.number_input("Nilai (0-100)", 0, 100, 80)
-                            c_in = st.text_area("Catatan Guru")
+                            curr_val = int(sub.get("nilai", 80)) if sub.get("nilai") is not None else 80
+                            curr_cat = sub.get("catatan_guru", "")
+                            n_in = st.number_input("Nilai (0-100)", 0, 100, curr_val, key=f"n_{sub['id']}")
+                            c_in = st.text_area("Catatan Guru", value=curr_cat, key=f"c_{sub['id']}")
                             if st.form_submit_button("Simpan Nilai"):
                                 db.collection("jawaban_siswa").document(sub["id"]).update({"nilai": n_in, "catatan_guru": c_in})
                                 st.success("✅ Nilai disimpan!")
@@ -563,8 +650,6 @@ def render_siswa():
         my_subs = [d.to_dict() for d in db.collection("jawaban_siswa").where("username_siswa", "==", user_info["username"]).stream()]
         if my_subs:
             df_my = pd.DataFrame(my_subs)
-            
-            # --- FIX KEYERROR: Memastikan ketersediaan kolom riwayat siswa ---
             expected_cols_siswa = ["judul_tugas", "nilai", "catatan_guru"]
             df_my_display = df_my.reindex(columns=expected_cols_siswa)
             st.dataframe(df_my_display, use_container_width=True)
