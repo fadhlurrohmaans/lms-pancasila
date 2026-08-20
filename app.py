@@ -20,7 +20,6 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-# Custom CSS Mobile Responsive
 st.markdown("""
     <style>
     input[type="text"], input[type="password"], textarea, select {
@@ -87,11 +86,9 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
-# Helper Hashing Password
 def hash_pass(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-# Helper Otomatisasi Username & Password
 def generate_username(nama):
     base_username = re.sub(r'[^a-z0-9]', '', nama.lower())
     if not base_username:
@@ -112,14 +109,19 @@ def get_all_kelas():
     docs = db.collection("kelas").stream()
     return sorted([d.id for d in docs])
 
+# Helper Filter Tugas sesuai Kelas Siswa
+def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
+    target_kelas = tugas_doc.get("target_kelas", [])
+    if not target_kelas:  # Tugas lama / Publik untuk semua kelas
+        return True
+    if isinstance(target_kelas, list):
+        return kelas_siswa in target_kelas
+    return target_kelas == kelas_siswa
+
 # ==========================================
 # 3. HELPER AI KOREKSI ESSAY AUTOMATIS
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
-    """
-    Menggunakan Gemini API untuk menilai jawaban essay secara mandiri.
-    Flexible API Key detection.
-    """
     api_key = (
         st.secrets.get("GEMINI_API_KEY") or 
         st.secrets.get("gemini", {}).get("api_key") or
@@ -633,6 +635,15 @@ elif role == "guru":
         ["📖 Kelola Materi", "📝 Buat & Kelola Tugas", "📊 Rekap & Periksa Nilai"]
     )
 
+    # Ambil Daftar Kelas Ajar Guru / Seluruh Kelas jika tidak dikonfigurasi
+    master_kelas_all = get_all_kelas()
+    guru_kelas_ajar = user_info.get("kelas_ajar", [])
+    if isinstance(guru_kelas_ajar, str):
+        guru_kelas_ajar = [guru_kelas_ajar]
+    
+    # Jika guru belum disetting kelas ajarnya, berikan opsi seluruh kelas
+    pilihan_kelas_tugas = guru_kelas_ajar if guru_kelas_ajar else master_kelas_all
+
     # --- 7A. KELOLA MATERI ---
     if menu == "📖 Kelola Materi":
         st.header("📖 Kelola Materi Pembelajaran")
@@ -676,18 +687,27 @@ elif role == "guru":
                     st.success("Materi berhasil dihapus!")
                     st.rerun()
 
-    # --- 7B. BUAT & KELOLA TUGAS ---
+    # --- 7B. BUAT & KELOLA TUGAS (DENGAN FITUR MULTI-KELAS TARGET) ---
     elif menu == "📝 Buat & Kelola Tugas":
         st.header("📝 Buat & Kelola Tugas")
-        t_list, t_buat = st.tabs(["📋 Daftar Tugas", "➕ Buat Tugas Baru"])
+        t_list, t_buat, t_imp_exp = st.tabs([
+            "📋 Daftar Tugas", 
+            "➕ Buat Manual", 
+            "📥 Import & 📤 Ekspor Tugas"
+        ])
 
+        # TAB 1: DAFTAR TUGAS
         with t_list:
             docs = db.collection("tugas_pancasila").stream()
             tugas_data = [{"id": d.id, **d.to_dict()} for d in docs]
             if tugas_data:
                 for tg in tugas_data:
                     tipe_label = "🔘 Pilihan Ganda" if tg.get("tipe") == "pg" else "✏️ Essay"
-                    with st.expander(f"{tipe_label} - {tg.get('judul')}"):
+                    target_k = tg.get("target_kelas", [])
+                    target_str = ", ".join(target_k) if target_k else "Semua Kelas"
+
+                    with st.expander(f"{tipe_label} - {tg.get('judul')} (🏫 Kelas: {target_str})"):
+                        st.write(f"**Target Kelas:** `{target_str}`")
                         st.write(f"**Instruksi:** {tg.get('instruksi')}")
                         st.write("**Daftar Soal:**")
                         for idx, s in enumerate(tg.get("soal", []), 1):
@@ -707,9 +727,23 @@ elif role == "guru":
             else:
                 st.info("Belum ada tugas yang dibuat.")
 
+        # TAB 2: BUAT TUGAS MANUAL
         with t_buat:
             judul_tugas = st.text_input("Judul Tugas / Kuis")
             instruksi = st.text_area("Instruksi / Petunjuk Pengerjaan")
+            
+            # Pilihan Target Kelas Tugas
+            if pilihan_kelas_tugas:
+                target_kelas_selected = st.multiselect(
+                    "🏫 Ditujukan Untuk Kelas Mana Saja?",
+                    options=pilihan_kelas_tugas,
+                    default=pilihan_kelas_tugas,
+                    help="Pilih satu atau lebih kelas yang wajib mengerjakan tugas ini."
+                )
+            else:
+                target_kelas_selected = []
+                st.warning("⚠️ Belum ada data kelas yang terdaftar!")
+
             tipe_tugas = st.radio("Tipe Soal Tugas", ["Pilihan Ganda", "Essay"])
 
             if tipe_tugas == "Pilihan Ganda":
@@ -738,16 +772,19 @@ elif role == "guru":
                     
                     sub_pg = st.form_submit_button("Simpan Tugas Pilihan Ganda")
                     if sub_pg:
-                        if judul_tugas and all(s["q"] and all(s["opsi"]) for s in soal_pg_list):
+                        if not target_kelas_selected:
+                            st.warning("Pilih minimal satu kelas target untuk tugas ini!")
+                        elif judul_tugas and all(s["q"] and all(s["opsi"]) for s in soal_pg_list):
                             db.collection("tugas_pancasila").add({
                                 "judul": judul_tugas,
                                 "instruksi": instruksi,
                                 "tipe": "pg",
+                                "target_kelas": target_kelas_selected,
                                 "soal": [{"pertanyaan": s["q"], "opsi": s["opsi"], "kunci": s["kunci"]} for s in soal_pg_list],
                                 "created_by": user_info["username"],
                                 "created_at": firestore.SERVER_TIMESTAMP
                             })
-                            st.success("Tugas Pilihan Ganda berhasil diterbitkan!")
+                            st.success(f"Tugas Pilihan Ganda berhasil diterbitkan untuk kelas: {', '.join(target_kelas_selected)}!")
                             st.rerun()
                         else:
                             st.warning("Mohon lengkapi judul, seluruh pertanyaan, dan pilihan opsi!")
@@ -766,19 +803,243 @@ elif role == "guru":
                     
                     sub_es = st.form_submit_button("Simpan Tugas Essay")
                     if sub_es:
-                        if judul_tugas and all(q["pertanyaan"].strip() for q in soal_essay_list):
+                        if not target_kelas_selected:
+                            st.warning("Pilih minimal satu kelas target untuk tugas ini!")
+                        elif judul_tugas and all(q["pertanyaan"].strip() for q in soal_essay_list):
                             db.collection("tugas_pancasila").add({
                                 "judul": judul_tugas,
                                 "instruksi": instruksi,
                                 "tipe": "essay",
+                                "target_kelas": target_kelas_selected,
                                 "soal": soal_essay_list,
                                 "created_by": user_info["username"],
                                 "created_at": firestore.SERVER_TIMESTAMP
                             })
-                            st.success("Tugas Essay berhasil diterbitkan! Penilaian AI siap digunakan.")
+                            st.success(f"Tugas Essay berhasil diterbitkan untuk kelas: {', '.join(target_kelas_selected)}!")
                             st.rerun()
                         else:
                             st.warning("Mohon isi judul dan seluruh pertanyaan essay!")
+
+        # TAB 3: IMPORT & EKSPOR TUGAS
+        with t_imp_exp:
+            st.subheader("📥 Import & 📤 Ekspor Soal Tugas")
+            col_imp_t, col_exp_t = st.columns([1, 1])
+
+            # --- BAGIAN IMPORT TUGAS ---
+            with col_imp_t:
+                st.markdown("### 📥 Import Soal dari File (CSV / Excel)")
+                
+                tipe_import = st.selectbox("Pilih Tipe Tugas yang Diimpor", ["Pilihan Ganda (PG)", "Essay"])
+                judul_imp = st.text_input("Judul Tugas", placeholder="Contoh: Kuis Bab 2 Pancasila", key="imp_judul")
+                instruksi_imp = st.text_area("Instruksi Tugas", placeholder="Contoh: Kerjakan dengan teliti!", key="imp_instruksi")
+
+                # Pilihan Target Kelas Tugas untuk Import
+                target_kelas_imp = st.multiselect(
+                    "🏫 Ditujukan Untuk Kelas Mana Saja?",
+                    options=pilihan_kelas_tugas,
+                    default=pilihan_kelas_tugas,
+                    key="imp_target_kelas"
+                )
+
+                st.write("**📄 Unduh File Template Format:**")
+                if tipe_import == "Pilihan Ganda (PG)":
+                    df_tmpl_pg = pd.DataFrame([
+                        {
+                            "pertanyaan": "Apa lambang Sila ke-1 Pancasila?",
+                            "opsi_a": "Bintang",
+                            "opsi_b": "Rantai",
+                            "opsi_c": "Pohon Beringin",
+                            "opsi_d": "Kepala Banteng",
+                            "kunci": "A"
+                        },
+                        {
+                            "pertanyaan": "Hari Lahir Pancasila diperingati setiap tanggal?",
+                            "opsi_a": "17 Agustus",
+                            "opsi_b": "1 Juni",
+                            "opsi_c": "28 Oktober",
+                            "opsi_d": "10 November",
+                            "kunci": "B"
+                        }
+                    ])
+                    st.caption("• Kolom **kunci** diisi huruf opsi: `A`, `B`, `C`, atau `D` (atau angka `0`, `1`, `2`, `3`).")
+                    csv_pg_template = df_tmpl_pg.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📄 Unduh Template Soal PG (CSV)",
+                        data=csv_pg_template,
+                        file_name="template_soal_pg.csv",
+                        mime="text/csv"
+                    )
+                else:  # Essay Template
+                    df_tmpl_essay = pd.DataFrame([
+                        {"pertanyaan": "Jelaskan makna Sila ke-3 Pancasila dalam kehidupan sehari-hari!"},
+                        {"pertanyaan": "Sebutkan 3 contoh penerapan nilai keadilan sosial di lingkungan sekolah!"}
+                    ])
+                    csv_es_template = df_tmpl_essay.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📄 Unduh Template Soal Essay (CSV)",
+                        data=csv_es_template,
+                        file_name="template_soal_essay.csv",
+                        mime="text/csv"
+                    )
+
+                st.divider()
+
+                file_soal = st.file_uploader("Unggah File Soal (.csv atau .xlsx)", type=["csv", "xlsx"], key="file_soal_upload")
+                
+                if file_soal is not None:
+                    try:
+                        if file_soal.name.endswith('.csv'):
+                            df_soal = pd.read_csv(file_soal)
+                        else:
+                            df_soal = pd.read_excel(file_soal)
+
+                        df_soal.columns = [str(col).strip().lower() for col in df_soal.columns]
+
+                        if tipe_import == "Pilihan Ganda (PG)":
+                            req_cols = ["pertanyaan", "opsi_a", "opsi_b", "opsi_c", "opsi_d", "kunci"]
+                            if not all(c in df_soal.columns for c in req_cols):
+                                st.error(f"Format file tidak sesuai! Wajib memiliki kolom: **{', '.join(req_cols)}**")
+                            else:
+                                st.write("👀 **Pratinjau Soal Pilihan Ganda:**")
+                                st.dataframe(df_soal, use_container_width=True)
+
+                                if st.button("🚀 Import & Terbitkan Tugas PG", type="primary"):
+                                    if not judul_imp:
+                                        st.warning("Mohon isi 'Judul Tugas' terlebih dahulu!")
+                                    elif not target_kelas_imp:
+                                        st.warning("Pilih minimal satu kelas target!")
+                                    else:
+                                        parsed_soal = []
+                                        key_mapping = {'a': 0, 'b': 1, 'c': 2, 'd': 3, '0': 0, '1': 1, '2': 2, '3': 3}
+                                        
+                                        for _, row in df_soal.iterrows():
+                                            k_raw = str(row["kunci"]).strip().lower()
+                                            k_val = key_mapping.get(k_raw, 0)
+
+                                            parsed_soal.append({
+                                                "pertanyaan": str(row["pertanyaan"]).strip(),
+                                                "opsi": [
+                                                    str(row["opsi_a"]).strip(),
+                                                    str(row["opsi_b"]).strip(),
+                                                    str(row["opsi_c"]).strip(),
+                                                    str(row["opsi_d"]).strip()
+                                                ],
+                                                "kunci": k_val
+                                            })
+
+                                        db.collection("tugas_pancasila").add({
+                                            "judul": judul_imp,
+                                            "instruksi": instruksi_imp,
+                                            "tipe": "pg",
+                                            "target_kelas": target_kelas_imp,
+                                            "soal": parsed_soal,
+                                            "created_by": user_info["username"],
+                                            "created_at": firestore.SERVER_TIMESTAMP
+                                        })
+                                        st.success(f"✅ Tugas PG '{judul_imp}' ({len(parsed_soal)} soal) berhasil diimpor untuk kelas: {', '.join(target_kelas_imp)}!")
+                                        st.rerun()
+
+                        else:  # Essay Import
+                            req_cols = ["pertanyaan"]
+                            if not all(c in df_soal.columns for c in req_cols):
+                                st.error("Format file tidak sesuai! Wajib memiliki kolom: **pertanyaan**")
+                            else:
+                                st.write("👀 **Pratinjau Soal Essay:**")
+                                st.dataframe(df_soal, use_container_width=True)
+
+                                if st.button("🚀 Import & Terbitkan Tugas Essay", type="primary"):
+                                    if not judul_imp:
+                                        st.warning("Mohon isi 'Judul Tugas' terlebih dahulu!")
+                                    elif not target_kelas_imp:
+                                        st.warning("Pilih minimal satu kelas target!")
+                                    else:
+                                        parsed_soal = [{"pertanyaan": str(row["pertanyaan"]).strip()} for _, row in df_soal.iterrows() if str(row["pertanyaan"]).strip()]
+
+                                        db.collection("tugas_pancasila").add({
+                                            "judul": judul_imp,
+                                            "instruksi": instruksi_imp,
+                                            "tipe": "essay",
+                                            "target_kelas": target_kelas_imp,
+                                            "soal": parsed_soal,
+                                            "created_by": user_info["username"],
+                                            "created_at": firestore.SERVER_TIMESTAMP
+                                        })
+                                        st.success(f"✅ Tugas Essay '{judul_imp}' ({len(parsed_soal)} soal) berhasil diimpor untuk kelas: {', '.join(target_kelas_imp)}!")
+                                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Gagal membaca file: {e}")
+
+            # --- BAGIAN EKSPOR TUGAS ---
+            with col_exp_t:
+                st.markdown("### 📤 Ekspor / Backup Soal Tugas")
+                st.caption("Unduh bank soal tugas yang pernah dibuat ke dalam file CSV atau Excel.")
+
+                docs_tg = db.collection("tugas_pancasila").stream()
+                all_tg = [{"id": d.id, **d.to_dict()} for d in docs_tg]
+
+                if all_tg:
+                    tg_map = {t["id"]: f"[{'PG' if t.get('tipe')=='pg' else 'ESSAY'}] {t.get('judul')}" for t in all_tg}
+                    sel_exp_id = st.selectbox("Pilih Tugas yang Ingin Diekspor", list(tg_map.keys()), format_func=lambda x: tg_map[x])
+                    
+                    target_tg = next(t for t in all_tg if t["id"] == sel_exp_id)
+                    st.write(f"**Tipe:** {'Pilihan Ganda' if target_tg.get('tipe') == 'pg' else 'Essay'}")
+                    st.write(f"**Target Kelas:** {', '.join(target_tg.get('target_kelas', ['Semua Kelas']))}")
+                    st.write(f"**Jumlah Soal:** {len(target_tg.get('soal', []))}")
+
+                    exp_records = []
+                    if target_tg.get("tipe") == "pg":
+                        for idx, s in enumerate(target_tg.get("soal", []), 1):
+                            opsi_list = s.get("opsi", ["", "", "", ""])
+                            kunci_num = s.get("kunci", 0)
+                            kunci_letter = ["A", "B", "C", "D"][kunci_num] if 0 <= kunci_num <= 3 else "A"
+                            exp_records.append({
+                                "no": idx,
+                                "pertanyaan": s.get("pertanyaan", ""),
+                                "opsi_a": opsi_list[0] if len(opsi_list) > 0 else "",
+                                "opsi_b": opsi_list[1] if len(opsi_list) > 1 else "",
+                                "opsi_c": opsi_list[2] if len(opsi_list) > 2 else "",
+                                "opsi_d": opsi_list[3] if len(opsi_list) > 3 else "",
+                                "kunci": kunci_letter
+                            })
+                    else:
+                        for idx, s in enumerate(target_tg.get("soal", []), 1):
+                            q_text = s.get("pertanyaan") if isinstance(s, dict) else str(s)
+                            exp_records.append({
+                                "no": idx,
+                                "pertanyaan": q_text
+                            })
+
+                    if exp_records:
+                        df_exp_tg = pd.DataFrame(exp_records)
+                        st.dataframe(df_exp_tg, use_container_width=True, hide_index=True)
+
+                        file_name_clean = re.sub(r'[^a-zA-Z0-9]', '_', target_tg.get("judul", "tugas"))
+                        
+                        c_down1, c_down2 = st.columns(2)
+                        with c_down1:
+                            csv_exp_data = df_exp_tg.to_csv(index=False).encode('utf-8')
+                            st.download_button(
+                                label="💾 Unduh Soal (CSV)",
+                                data=csv_exp_data,
+                                file_name=f"soal_{file_name_clean}.csv",
+                                mime="text/csv"
+                            )
+                        with c_down2:
+                            try:
+                                buffer_tg = io.BytesIO()
+                                with pd.ExcelWriter(buffer_tg, engine='openpyxl') as writer:
+                                    df_exp_tg.to_excel(writer, index=False, sheet_name='Soal')
+                                st.download_button(
+                                    label="📊 Unduh Soal (Excel .xlsx)",
+                                    data=buffer_tg.getvalue(),
+                                    file_name=f"soal_{file_name_clean}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                )
+                            except ModuleNotFoundError:
+                                st.info("Install `openpyxl` untuk unduh format .xlsx")
+                else:
+                    st.info("Belum ada tugas terdaftar yang dapat diekspor.")
 
     # --- 7C. REKAP & PERIKSA NILAI SISWA (DENGAN AI) ---
     elif menu == "📊 Rekap & Periksa Nilai":
@@ -810,35 +1071,37 @@ elif role == "guru":
         records = []
         for s in list_siswa:
             for t in list_tugas:
-                key = (s["username"], t["id"])
-                sub = submissions.get(key)
-                
-                if sub:
-                    n_val = sub.get("nilai")
-                    if n_val is not None:
-                        status = "Sudah Dinilai"
-                        score_text = str(n_val)
+                # Hanya masukkan ke rekap jika tugas tersebut memang ditujukan untuk kelas siswa ini
+                if is_tugas_sesuai_kelas(t, s["kelas"]):
+                    key = (s["username"], t["id"])
+                    sub = submissions.get(key)
+                    
+                    if sub:
+                        n_val = sub.get("nilai")
+                        if n_val is not None:
+                            status = "Sudah Dinilai"
+                            score_text = str(n_val)
+                        else:
+                            status = "Belum Dinilai (Perlu Diperiksa)"
+                            score_text = "⏳ Belum Dinilai"
                     else:
-                        status = "Belum Dinilai (Perlu Diperiksa)"
-                        score_text = "⏳ Belum Dinilai"
-                else:
-                    status = "Belum Dikerjakan"
-                    score_text = "-"
-                    n_val = -1
+                        status = "Belum Dikerjakan"
+                        score_text = "-"
+                        n_val = -1
 
-                records.append({
-                    "Nama Siswa": s["nama"],
-                    "Username": s["username"],
-                    "Kelas": s["kelas"],
-                    "Nama Tugas": t.get("judul", "-"),
-                    "Tipe": "PG" if t.get("tipe") == "pg" else "Essay",
-                    "Status": status,
-                    "Nilai": score_text,
-                    "Catatan Guru": sub.get("catatan_guru", "") if sub else "",
-                    "raw_nilai": n_val if n_val is not None else -1,
-                    "sub_doc": sub,
-                    "id_tugas": t["id"]
-                })
+                    records.append({
+                        "Nama Siswa": s["nama"],
+                        "Username": s["username"],
+                        "Kelas": s["kelas"],
+                        "Nama Tugas": t.get("judul", "-"),
+                        "Tipe": "PG" if t.get("tipe") == "pg" else "Essay",
+                        "Status": status,
+                        "Nilai": score_text,
+                        "Catatan Guru": sub.get("catatan_guru", "") if sub else "",
+                        "raw_nilai": n_val if n_val is not None else -1,
+                        "sub_doc": sub,
+                        "id_tugas": t["id"]
+                    })
 
         if records:
             df_all = pd.DataFrame(records)
@@ -973,6 +1236,7 @@ elif role == "siswa":
         "📌 Menu Siswa",
         ["📚 Modul Materi", "✍️ Kerjakan Tugas", "📊 Riwayat & Nilai Saya"]
     )
+    kelas_siswa = user_info.get("kelas", "")
 
     # --- 8A. MODUL MATERI ---
     if menu_s == "📚 Modul Materi":
@@ -990,7 +1254,10 @@ elif role == "siswa":
     elif menu_s == "✍️ Kerjakan Tugas":
         st.header("✍️ Lembar Pengerjaan Tugas & Kuis")
         docs = db.collection("tugas_pancasila").stream()
-        tugas_list = [{"id": d.id, **d.to_dict()} for d in docs]
+        raw_tugas = [{"id": d.id, **d.to_dict()} for d in docs]
+        
+        # Filter tugas hanya yang ditujukan untuk kelas siswa aktif
+        tugas_list = [t for t in raw_tugas if is_tugas_sesuai_kelas(t, kelas_siswa)]
 
         if tugas_list:
             tugas_map = {t["id"]: f"[{'PG' if t.get('tipe')=='pg' else 'ESSAY'}] {t.get('judul')}" for t in tugas_list}
@@ -1039,6 +1306,7 @@ elif role == "siswa":
                                 "judul_tugas": tugas_active.get("judul"),
                                 "username_siswa": user_info["username"],
                                 "nama_siswa": user_info["nama"],
+                                "kelas_siswa": kelas_siswa,
                                 "tipe": "pg",
                                 "jawaban": jawaban_pg,
                                 "nilai": nilai_pg,
@@ -1067,6 +1335,7 @@ elif role == "siswa":
                                     "judul_tugas": tugas_active.get("judul"),
                                     "username_siswa": user_info["username"],
                                     "nama_siswa": user_info["nama"],
+                                    "kelas_siswa": kelas_siswa,
                                     "tipe": "essay",
                                     "soal": soals,
                                     "jawaban": jawaban_essay,
@@ -1079,14 +1348,17 @@ elif role == "siswa":
                             else:
                                 st.warning("Mohon isi seluruh pertanyaan essay sebelum mengumpulkan!")
         else:
-            st.info("Belum ada tugas yang dipublikasikan oleh Guru.")
+            st.info("Belum ada tugas yang dipublikasikan untuk kelas Anda.")
 
     # --- 8C. RIWAYAT & NILAI SAYA ---
     elif menu_s == "📊 Riwayat & Nilai Saya":
         st.header("📊 Riwayat Tugas & Hasil Nilai Saya")
 
         tugas_docs = db.collection("tugas_pancasila").stream()
-        list_tugas = [{"id": d.id, **d.to_dict()} for d in tugas_docs]
+        raw_tugas = [{"id": d.id, **d.to_dict()} for d in tugas_docs]
+        
+        # Filter tugas sesuai kelas siswa
+        list_tugas = [t for t in raw_tugas if is_tugas_sesuai_kelas(t, kelas_siswa)]
 
         docs = db.collection("jawaban_siswa").where("username_siswa", "==", user_info["username"]).stream()
         sub_dict = {d.to_dict().get("id_tugas"): {"id": d.id, **d.to_dict()} for d in docs}
@@ -1095,7 +1367,7 @@ elif role == "siswa":
             s_records = []
             total_nilai = 0
             count_dinilai = 0
-            tugas_dikerjakan_count = 0  # Hitung khusus untuk tugas aktif saja
+            tugas_dikerjakan_count = 0
 
             for t in list_tugas:
                 sub = sub_dict.get(t["id"])
@@ -1128,7 +1400,6 @@ elif role == "siswa":
             rata_rata = round(total_nilai / count_dinilai, 1) if count_dinilai > 0 else 0
 
             c1, c2, c3 = st.columns(3)
-            # Metrik dihitung hanya berdasarkan tugas yang ada/aktif
             c1.metric("Total Tugas Dikerjakan", f"{tugas_dikerjakan_count} / {len(list_tugas)}")
             c2.metric("Tugas Sudah Dinilai", count_dinilai)
             c3.metric("Rata-Rata Nilai Anda", f"{rata_rata}")
@@ -1159,4 +1430,4 @@ elif role == "siswa":
                                 st.caption(f"Jawaban Anda: {a_t}")
                         st.divider()
         else:
-            st.info("Belum ada tugas yang dipublikasikan oleh Guru.")
+            st.info("Belum ada tugas yang dipublikasikan untuk kelas Anda.")
