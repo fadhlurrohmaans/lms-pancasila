@@ -103,6 +103,7 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
+
 # ==========================================
 # 2. FIREBASE & CACHED HELPERS
 # ==========================================
@@ -160,6 +161,7 @@ def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     target = tugas_doc.get("target_kelas", [])
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
+
 # ==========================================
 # 3. AI EVALUATION HELPER (MULTI-ESSAY ACCURATE)
 # ==========================================
@@ -171,7 +173,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
         
-        # 1. Kunci skema output JSON
         strict_schema = {
             "type": "OBJECT",
             "properties": {
@@ -198,7 +199,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         except Exception:
             pass
 
-        # 2. Susun seluruh daftar soal & jawaban berdasarkan indeks (Mencegah data terpotong)
         total_soal = len(soal_list)
         prompt_items = []
         
@@ -212,7 +212,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
         prompt = f"Jumlah Total Soal: {total_soal}\n\n" + "\n\n".join(prompt_items)
 
-        # 3. Berikan instruksi kalkulasi nilai rata-rata & pembagian ulasan per soal
         system_instruction = (
             "Anda adalah Guru Pendidikan Pancasila yang bijaksana dan fair.\n"
             "Tugas: Evaluasi SELURUH nomor soal essay yang diberikan secara objektif.\n\n"
@@ -226,7 +225,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         response = None
         last_error = None
 
-        # 4. Panggilan Model
         for model_name in candidate_models:
             try:
                 model = genai.GenerativeModel(
@@ -247,7 +245,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         if not response or not hasattr(response, 'text') or not response.text.strip():
             return None, f"AI tidak mengembalikan respon. Error terakhir: {str(last_error)}"
 
-        # 5. Parsing JSON
         result_json = json.loads(response.text.strip())
         nilai = int(result_json.get("nilai", 0))
         feedback = str(result_json.get("feedback", "")).strip()
@@ -259,6 +256,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {str(e)}"
+
 # ==========================================
 # 4. AUTHENTICATION
 # ==========================================
@@ -718,7 +716,6 @@ def render_guru():
 
         st.divider()
 
-        # Menambahkan Tab Rekap Rata-Rata Nilai
         t_rekap, t_koreksi, t_rata = st.tabs([
             "📋 Rekap Pengerjaan Siswa", 
             "✏️ Koreksi & Penilaian", 
@@ -813,7 +810,6 @@ def render_guru():
                         for sub in sudah_dinilai:
                             render_koreksi_item(sub)
 
-        # TAB BARU: Rekap Rata-Rata Nilai Seluruh Tugas
         with t_rata:
             st.subheader(f"📈 Rekap Seluruh Nilai & Rata-Rata Kelas {selected_kelas}")
             st.caption("💡 **Catatan**: Tugas yang belum dikerjakan / belum dinilai dihitung bernilai **0** dalam kalkulasi rata-rata.")
@@ -821,7 +817,6 @@ def render_guru():
             if not siswa_list:
                 st.info("Belum ada siswa di kelas ini.")
             else:
-                # Ambil seluruh jawaban siswa untuk seluruh tugas di kelas ini
                 all_subs = db.collection("jawaban_siswa").where("kelas_siswa", "==", selected_kelas).stream()
                 subs_map = {}
                 for doc in all_subs:
@@ -829,7 +824,6 @@ def render_guru():
                     u_siswa = d.get("username_siswa")
                     t_id = d.get("id_tugas")
                     val_n = d.get("nilai")
-                    # Hanya hitung jika nilai sudah diberikan (bukan None)
                     subs_map[(u_siswa, t_id)] = int(val_n) if val_n is not None else 0
 
                 avg_table_rows = []
@@ -847,7 +841,6 @@ def render_guru():
                         row_data[tg.get("judul", "Tugas")] = score
                         total_nilai_siswa += score
                     
-                    # Hitung Rata-Rata seluruh tugas di kelas
                     rata_rata = round(total_nilai_siswa / len(tugas_kelas), 1) if tugas_kelas else 0
                     row_data["Rata-Rata Akhir"] = rata_rata
                     avg_table_rows.append(row_data)
@@ -855,154 +848,13 @@ def render_guru():
                 df_avg = pd.DataFrame(avg_table_rows)
                 st.dataframe(df_avg, use_container_width=True)
 
-                # Tombol Download Rekap Nilai CSV
                 st.download_button(
                     label="💾 Unduh Rekap Nilai Kelas (.csv)",
                     data=df_avg.to_csv(index=False).encode('utf-8'),
                     file_name=f"rekap_nilai_kelas_{selected_kelas}.csv",
                     mime="text/csv"
                 )
-        # Query Siswa di Kelas Terpilih
-        siswa_docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", selected_kelas).stream()
-        siswa_list = [{"username": d.id, **d.to_dict()} for d in siswa_docs]
 
-        # Query Jawaban Siswa
-        sub_docs = db.collection("jawaban_siswa").where("id_tugas", "==", selected_tugas_id).where("kelas_siswa", "==", selected_kelas).stream()
-        sub_list = [{"id": d.id, **d.to_dict()} for d in sub_docs]
-        sub_map = {s.get("username_siswa"): s for s in sub_list}
-
-        # Kalkulasi Rekap Status
-        rekap_rows = []
-        sudah_count, belum_count = 0, 0
-
-        for s in siswa_list:
-            un = s["username"]
-            nama = s.get("nama", un)
-            if un in sub_map:
-                sudah_count += 1
-                sub = sub_map[un]
-                val_display = sub.get("nilai") if sub.get("nilai") is not None else "Belum Dinilai"
-                rekap_rows.append({
-                    "Username": un,
-                    "Nama Siswa": nama,
-                    "Status": "✅ Sudah",
-                    "Nilai": val_display,
-                    "Catatan Guru": sub.get("catatan_guru", "-")
-                })
-            else:
-                belum_count += 1
-                rekap_rows.append({
-                    "Username": un,
-                    "Nama Siswa": nama,
-                    "Status": "❌ Belum",
-                    "Nilai": "-",
-                    "Catatan Guru": "-"
-                })
-
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Siswa di Kelas", len(siswa_list))
-        m2.metric("Sudah Mengumpulkan", sudah_count)
-        m3.metric("Belum Mengumpulkan", belum_count)
-
-        st.divider()
-
-        t_rekap, t_koreksi = st.tabs(["📋 Rekap Pengerjaan Siswa", "✏️ Koreksi & Penilaian"])
-
-        with t_rekap:
-            st.subheader(f"Daftar Siswa Kelas {selected_kelas} — {selected_tugas.get('judul')}")
-            if rekap_rows:
-                df_rekap = pd.DataFrame(rekap_rows)
-                st.dataframe(df_rekap, use_container_width=True)
-            else:
-                st.info("Belum ada akun siswa yang terdaftar di kelas ini.")
-
-        # PERBAIKAN PADA PENAMPILAN & AUTO KOREKSI AI
-        with t_koreksi:
-            st.subheader(f"Koreksi Hasil Jawaban Kelas {selected_kelas}")
-            if not sub_list:
-                st.info("Belum ada siswa dari kelas ini yang mengumpulkan tugas.")
-            else:
-                # 1. Memisahkan data siswa berdasarkan status penilaian
-                belum_dinilai = [s for s in sub_list if s.get("nilai") is None]
-                sudah_dinilai = [s for s in sub_list if s.get("nilai") is not None]
-
-                # 2. Sub-tab untuk memisahkan tampilan
-                tab_belum, tab_sudah = st.tabs([
-                    f"🔴 Belum Dinilai ({len(belum_dinilai)})", 
-                    f"🟢 Sudah Dinilai ({len(sudah_dinilai)})"
-                ])
-# Fungsi render komponen penilaian agar tidak perlu duplikasi kode
-                def render_koreksi_item(sub):
-                    sub_id = sub["id"]
-                    val_key = f"n_{sub_id}"
-                    cat_key = f"c_{sub_id}"
-
-                    # Inisialisasi Session State dari Database jika belum ada
-                    if val_key not in st.session_state:
-                        st.session_state[val_key] = int(sub.get("nilai", 80)) if sub.get("nilai") is not None else 80
-                    if cat_key not in st.session_state:
-                        st.session_state[cat_key] = str(sub.get("catatan_guru", ""))
-
-                    status_str = "🟡 Belum Dinilai" if sub.get("nilai") is None else f"🟢 Nilai: {sub.get('nilai')}"
-                    with st.expander(f"👤 {sub.get('nama_siswa')} (@{sub.get('username_siswa')}) — {status_str}"):
-                        soal_items = sub.get("soal", selected_tugas.get("soal", []))
-                        jawaban_items = sub.get("jawaban", [])
-
-                        for idx, (q, a) in enumerate(zip(soal_items, jawaban_items), 1):
-                            q_text = q.get('pertanyaan') if isinstance(q, dict) else q
-                            st.write(f"**{idx}. {q_text}**")
-                            
-                            if sub.get("tipe") == "pg":
-                                opsi_list = q.get("opsi", [])
-                                ans_idx = a if isinstance(a, int) else 0
-                                ans_text = opsi_list[ans_idx] if ans_idx < len(opsi_list) else str(a)
-                                kunci_idx = q.get("kunci", 0)
-                                is_correct = (ans_idx == kunci_idx)
-                                st.write(f"Jawaban: **{ans_text}** ({'✅ Benar' if is_correct else '❌ Salah'})")
-                            else:
-                                st.info(a or "(Kosong)")
-
-                        # Tombol Auto Koreksi AI (Diisi ke state sebelum form dirender)
-                        if selected_tugas.get("tipe") == "essay":
-                            if st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}"):
-                                with st.spinner("🤖 AI sedang menganalisis jawaban siswa dalam Bahasa Indonesia..."):
-                                    val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
-                                if val is not None:
-                                    st.session_state[val_key] = int(val)
-                                    st.session_state[cat_key] = str(fb)
-                                    st.success("🤖 Hasil koreksi AI dimuat ke formulir! Silakan periksa kembali lalu klik tombol 'Simpan / Update' di bawah.")
-                                    st.rerun()
-                                else:
-                                    st.error(fb)
-
-                        # Form Edit & Simpan Manual oleh Guru
-                        with st.form(key=f"f_eval_{sub_id}"):
-                            n_in = st.number_input("Nilai (0-100)", 0, 100, key=val_key)
-                            c_in = st.text_area("Catatan Guru (Bahasa Indonesia)", key=cat_key)
-                            
-                            if st.form_submit_button("💾 Simpan / Update Perubahan Guru"):
-                                # Simpan perubahan langsung ke Firestore
-                                db.collection("jawaban_siswa").document(sub_id).update({
-                                    "nilai": n_in, 
-                                    "catatan_guru": c_in
-                                })
-                                st.success("✅ Perubahan koreksi berhasil disimpan!")
-                                st.rerun()                
-                # Tampilan Tab Belum Dinilai
-                with tab_belum:
-                    if not belum_dinilai:
-                        st.success("🎉 Semua jawaban siswa di kelas ini sudah selesai dinilai!")
-                    else:
-                        for sub in belum_dinilai:
-                            render_koreksi_item(sub)
-
-                # Tampilan Tab Sudah Dinilai
-                with tab_sudah:
-                    if not sudah_dinilai:
-                        st.info("Belum ada jawaban siswa yang dinilai.")
-                    else:
-                        for sub in sudah_dinilai:
-                            render_koreksi_item(sub)
 # ==========================================
 # 8. PANEL SISWA (MOBILE FRIENDLY DESIGN)
 # ==========================================
@@ -1011,12 +863,10 @@ def render_siswa():
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
 
-    # Fetch Data Tugas & Jawaban Siswa
     all_tugas = [t for t in [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()] if is_tugas_sesuai_kelas(t, kelas_s)]
     my_subs_docs = db.collection("jawaban_siswa").where("username_siswa", "==", username_s).stream()
     my_subs = {d.to_dict().get("id_tugas"): d.to_dict() for d in my_subs_docs}
 
-    # Hitung Rekap Singkat Nilai
     total_tugas = len(all_tugas)
     tugas_selesai = len(my_subs)
     tugas_belum = total_tugas - tugas_selesai
@@ -1024,7 +874,6 @@ def render_siswa():
     nilai_list = [v.get("nilai") for v in my_subs.values() if v.get("nilai") is not None]
     avg_nilai = round(sum(nilai_list) / len(nilai_list), 1) if nilai_list else "-"
 
-    # Header Card versi Mobile (Sudah Diperbaiki)
     st.markdown(f"""
         <div class="student-header">
             <div style="font-size: 0.85rem; opacity: 0.9;">🏫 Kelas {kelas_s}</div>
@@ -1033,7 +882,6 @@ def render_siswa():
         </div>
     """, unsafe_allow_html=True)
 
-    # Indicator Metrics ringkas (Grid Responsive)
     c1, c2, c3 = st.columns(3)
     c1.metric("Tugas Belum", f"{tugas_belum}", delta=f"{total_tugas} total", delta_color="inverse")
     c2.metric("Selesai", f"{tugas_selesai}")
@@ -1041,7 +889,6 @@ def render_siswa():
 
     st.divider()
 
-    # Navigasi Tab Utama (Mudah diakses via layar sentuh HP)
     tab_tugas, tab_materi, tab_nilai = st.tabs(["✍️ Tugas Saya", "📚 Modul Materi", "📊 Riwayat Nilai"])
 
     # ------------------------------------------
@@ -1059,7 +906,6 @@ def render_siswa():
                 f"🟢 Sudah Dikerjakan ({len(tugas_sudah_list)})"
             ])
 
-            # Sub-Tab 1: Tugas Belum Dikerjakan
             with sub_tab_belum:
                 if not tugas_belum_list:
                     st.success("✨ Hebat! Semua tugas kelas Anda sudah dikumpulkan.")
@@ -1075,7 +921,6 @@ def render_siswa():
                             if tg.get("instruksi"):
                                 st.info(f"💡 **Instruksi:** {tg.get('instruksi')}")
 
-                            # Form Pengerjaan Langsung di dalam Expander
                             with st.expander("▶️ Kerjakan Tugas Sekarang", expanded=False):
                                 with st.form(key=f"form_kerjakan_{tg_id}"):
                                     answers = []
@@ -1128,7 +973,6 @@ def render_siswa():
                                             st.success("✅ Berhasil dikumpulkan! Tugas menunggu koreksi guru.")
                                         st.rerun()
 
-    # Sub-Tab 2: Tugas Sudah Dikerjakan
             with sub_tab_sudah:
                 if not tugas_sudah_list:
                     st.info("Belum ada tugas yang Anda kumpulkan.")
@@ -1143,7 +987,6 @@ def render_siswa():
                             st.markdown(f"### 📝 {tg.get('judul')}")
                             st.caption(f"Tipe: **{tipe_tugas.upper()}** | Status: **{val_str}**")
 
-                            # Komponen untuk melihat review soal & jawaban siswa
                             with st.expander("🔍 Lihat Detail Soal & Jawaban Saya"):
                                 soal_items = sub_data.get("soal") or tg.get("soal", [])
                                 jawaban_items = sub_data.get("jawaban", [])
@@ -1159,21 +1002,17 @@ def render_siswa():
                                             opsi_list = q.get("opsi", []) if isinstance(q, dict) else []
                                             ans_idx = a if isinstance(a, int) else 0
                                             
-                                            # Ambil teks pilihan siswa
                                             ans_text = opsi_list[ans_idx] if (isinstance(ans_idx, int) and 0 <= ans_idx < len(opsi_list)) else str(a)
                                             
-                                            # Cek Kebenaran Jawaban PG
                                             kunci_idx = q.get("kunci", 0) if isinstance(q, dict) else 0
                                             is_correct = (ans_idx == kunci_idx)
                                             status_tag = "✅ Benar" if is_correct else "❌ Salah"
                                             
                                             st.markdown(f"👉 **Jawaban Anda:** {ans_text} ({status_tag})")
                                             
-                                            # Tampilkan Kunci Jawaban jika jawaban siswa salah
                                             if not is_correct and 0 <= kunci_idx < len(opsi_list):
                                                 st.caption(f"🔑 **Kunci Jawaban:** {['A','B','C','D'][kunci_idx]}. {opsi_list[kunci_idx]}")
                                         else:
-                                            # Tampilan untuk Jawaban Essay
                                             ans_str = str(a).strip() if a else "(Kosong / Tidak dijawab)"
                                             st.markdown("👉 **Jawaban Anda:**")
                                             st.info(ans_str)
