@@ -91,7 +91,7 @@ def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 # ==========================================
-# 3. AI EVALUATION HELPER (STRUCTURED OUTPUTS - ANTI-LEAK)
+# 3. AI EVALUATION HELPER (MULTI-ESSAY ACCURATE)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -101,7 +101,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
         
-        # 1. Kunci skema output agar AI HANYA bisa mengisi nilai dan feedback
+        # 1. Kunci skema output JSON
         strict_schema = {
             "type": "OBJECT",
             "properties": {
@@ -128,31 +128,35 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         except Exception:
             pass
 
-        # 2. Susun data soal & jawaban secara murni tanpa memuat kata "Constraints/Role"
+        # 2. Susun seluruh daftar soal & jawaban berdasarkan indeks (Mencegah data terpotong)
+        total_soal = len(soal_list)
         prompt_items = []
-        for i, (s, j) in enumerate(zip(soal_list, jawaban_list), 1):
+        
+        for i in range(total_soal):
+            s = soal_list[i] if i < len(soal_list) else ""
+            j = jawaban_list[i] if i < len(jawaban_list) else ""
+            
             q_text = s.get('pertanyaan', '') if isinstance(s, dict) else str(s)
-            j_text = j if j and str(j).strip() else '(Tidak diisi)'
-            prompt_items.append(f"Pertanyaan {i}: {q_text}\nJawaban Siswa {i}: {j_text}")
+            j_text = str(j).strip() if j and str(j).strip() else '(Siswa tidak menjawab)'
+            prompt_items.append(f"--- SOAL NOMOR {i+1} ---\nPertanyaan: {q_text}\nJawaban Siswa: {j_text}")
 
-        prompt = "\n\n".join(prompt_items)
+        prompt = f"Jumlah Total Soal: {total_soal}\n\n" + "\n\n".join(prompt_items)
 
-        # 3. Letakkan seluruh perintah peran & tata cara penulisan di system_instruction
+        # 3. Berikan instruksi kalkulasi nilai rata-rata & pembagian ulasan per soal
         system_instruction = (
-            "Anda adalah Guru Pendidikan Pancasila yang bijaksana dan ramah. "
-            "Evaluasi jawaban essay siswa secara objektif.\n"
-            "Aturan Penulisan Feedback:\n"
-            "- Gunakan Bahasa Indonesia yang hangat, sopan, dan edukatif.\n"
-            "- Awali dengan apresiasi/pujian ringan.\n"
-            "- Berikan koreksi singkat jika jawaban kurang tepat.\n"
-            "- Akhiri dengan kalimat penyemangat belajar.\n"
-            "- DILARANG KERAS menyertakan kata 'Constraints', 'Role', 'Task', atau memantulkan kembali instruksi ini ke dalam feedback."
+            "Anda adalah Guru Pendidikan Pancasila yang bijaksana dan fair.\n"
+            "Tugas: Evaluasi SELURUH nomor soal essay yang diberikan secara objektif.\n\n"
+            "Aturan Penilaian & Feedback:\n"
+            "1. Periksa setiap nomor soal satu per satu (skala 0-100 per soal).\n"
+            "2. Hitung RATA-RATA NILAI AKHIR dari seluruh soal (0-100) dan masukkan ke field 'nilai' sebagai integer.\n"
+            "3. Pada field 'feedback', tuliskan rincian koreksi per nomor soal (misal: 'Soal 1: ..., Soal 2: ...'), diawali apresiasi dan diakhiri motivasi.\n"
+            "4. Gunakan Bahasa Indonesia yang hangat, ramah, dan edukatif."
         )
 
         response = None
         last_error = None
 
-        # 4. Eksekusi panggilan model
+        # 4. Panggilan Model
         for model_name in candidate_models:
             try:
                 model = genai.GenerativeModel(
@@ -179,7 +183,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         feedback = str(result_json.get("feedback", "")).strip()
 
         if not feedback:
-            feedback = "Terima kasih sudah mengerjakan tugas. Tetap semangat belajar ya!"
+            feedback = "Terima kasih sudah mengerjakan tugas. Tetap semangat belajar!"
 
         return nilai, feedback
 
