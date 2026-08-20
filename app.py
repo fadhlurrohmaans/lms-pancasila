@@ -698,12 +698,14 @@ elif role == "guru":
     # --- 7B. BUAT & KELOLA TUGAS ---
     elif menu == "📝 Buat & Kelola Tugas":
         st.header("📝 Buat & Kelola Tugas")
-        t_list, t_buat, t_imp_exp = st.tabs([
+        t_list, t_buat, t_edit, t_imp_exp = st.tabs([
             "📋 Daftar Tugas", 
-            "➕ Buat Manual", 
+            "➕ Buat Tugas", 
+            "✏️ Edit Tugas",
             "📥 Import & 📤 Ekspor Tugas"
         ])
 
+        # 1. LIST & HAPUS TUGAS
         with t_list:
             docs = db.collection("tugas_pancasila").stream()
             tugas_data = [{"id": d.id, **d.to_dict()} for d in docs]
@@ -729,11 +731,12 @@ elif role == "guru":
                         
                         if st.button(f"🗑️ Hapus Tugas Ini", key=f"del_tg_{tg['id']}"):
                             db.collection("tugas_pancasila").document(tg["id"]).delete()
-                            st.success("✅ Berhasil! Tugas telah dihapus dari sistem.")
+                            st.success(f"✅ Berhasil! Tugas '{tg.get('judul')}' telah dihapus dari sistem.")
                             st.rerun()
             else:
                 st.info("Belum ada tugas yang dibuat.")
 
+        # 2. BUAT TUGAS BARU (MANUAL)
         with t_buat:
             judul_tugas = st.text_input("Judul Tugas / Kuis")
             instruksi = st.text_area("Instruksi / Petunjuk Pengerjaan")
@@ -789,7 +792,7 @@ elif role == "guru":
                                 "created_by": user_info["username"],
                                 "created_at": firestore.SERVER_TIMESTAMP
                             })
-                            st.success(f"✅ Berhasil! Tugas PG disebarkan ke kelas: {', '.join(target_kelas_selected)}.")
+                            st.success(f"✅ Berhasil! Tugas PG '{judul_tugas}' berhasil dibuat dan disebarkan ke kelas: {', '.join(target_kelas_selected)}.")
                             st.rerun()
                         else:
                             st.warning("Mohon lengkapi judul, seluruh pertanyaan, dan pilihan opsi!")
@@ -820,11 +823,51 @@ elif role == "guru":
                                 "created_by": user_info["username"],
                                 "created_at": firestore.SERVER_TIMESTAMP
                             })
-                            st.success(f"✅ Berhasil! Tugas Essay disebarkan ke kelas: {', '.join(target_kelas_selected)}.")
+                            st.success(f"✅ Berhasil! Tugas Essay '{judul_tugas}' berhasil dibuat dan disebarkan ke kelas: {', '.join(target_kelas_selected)}.")
                             st.rerun()
                         else:
                             st.warning("Mohon isi judul dan seluruh pertanyaan essay!")
 
+        # 3. EDIT / UPDATE TUGAS
+        with t_edit:
+            st.subheader("✏️ Edit / Perbarui Tugas")
+            docs_all_tugas = db.collection("tugas_pancasila").stream()
+            tugas_edit_list = [{"id": d.id, **d.to_dict()} for d in docs_all_tugas]
+
+            if tugas_edit_list:
+                edit_map = {t["id"]: f"[{'PG' if t.get('tipe')=='pg' else 'ESSAY'}] {t.get('judul')}" for t in tugas_edit_list}
+                selected_edit_id = st.selectbox("Pilih Tugas yang Ingin Diperbarui", list(edit_map.keys()), format_func=lambda x: edit_map[x])
+                target_edit = next(t for t in tugas_edit_list if t["id"] == selected_edit_id)
+
+                with st.form("form_edit_tugas_data"):
+                    st.write(f"**Tipe Soal:** `{'Pilihan Ganda' if target_edit.get('tipe') == 'pg' else 'Essay'}`")
+                    new_judul = st.text_input("Judul Tugas Baru", value=target_edit.get("judul", ""))
+                    new_instruksi = st.text_area("Instruksi Tugas Baru", value=target_edit.get("instruksi", ""))
+                    
+                    curr_target_k = target_edit.get("target_kelas", [])
+                    default_kelas_edit = [k for k in curr_target_k if k in pilihan_kelas_tugas] if isinstance(curr_target_k, list) else pilihan_kelas_tugas
+                    new_target_k = st.multiselect("Target Kelas Baru", options=pilihan_kelas_tugas, default=default_kelas_edit)
+
+                    btn_update_tugas = st.form_submit_button("Simpan Perubahan Tugas")
+
+                    if btn_update_tugas:
+                        if not new_judul.strip():
+                            st.warning("Judul tugas tidak boleh kosong!")
+                        elif not new_target_k:
+                            st.warning("Pilih minimal satu kelas target!")
+                        else:
+                            db.collection("tugas_pancasila").document(selected_edit_id).update({
+                                "judul": new_judul,
+                                "instruksi": new_instruksi,
+                                "target_kelas": new_target_k,
+                                "updated_at": firestore.SERVER_TIMESTAMP
+                            })
+                            st.success(f"✅ Berhasil! Informasi tugas '{new_judul}' telah diperbarui.")
+                            st.rerun()
+            else:
+                st.info("Belum ada tugas yang dapat diperbarui.")
+
+        # 4. IMPORT & EKSPOR TUGAS
         with t_imp_exp:
             st.subheader("📥 Import & 📤 Ekspor Soal Tugas")
             col_imp_t, col_exp_t = st.columns([1, 1])
@@ -924,7 +967,7 @@ elif role == "guru":
                                             "created_by": user_info["username"],
                                             "created_at": firestore.SERVER_TIMESTAMP
                                         })
-                                        st.success(f"✅ Berhasil! Tugas PG '{judul_imp}' ({len(parsed_soal)} soal) diimpor ke kelas: {', '.join(target_kelas_imp)}.")
+                                        st.success(f"✅ Berhasil! Tugas PG '{judul_imp}' ({len(parsed_soal)} soal) berhasil diimpor ke kelas: {', '.join(target_kelas_imp)}.")
                                         st.rerun()
 
                         else:
@@ -952,7 +995,7 @@ elif role == "guru":
                                             "created_by": user_info["username"],
                                             "created_at": firestore.SERVER_TIMESTAMP
                                         })
-                                        st.success(f"✅ Berhasil! Tugas Essay '{judul_imp}' ({len(parsed_soal)} soal) diimpor ke kelas: {', '.join(target_kelas_imp)}.")
+                                        st.success(f"✅ Berhasil! Tugas Essay '{judul_imp}' ({len(parsed_soal)} soal) berhasil diimpor ke kelas: {', '.join(target_kelas_imp)}.")
                                         st.rerun()
 
                     except Exception as e:
