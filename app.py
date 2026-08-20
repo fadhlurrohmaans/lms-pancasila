@@ -718,6 +718,194 @@ def render_guru():
 
         st.divider()
 
+        # Menambahkan Tab Rekap Rata-Rata Nilai
+        t_rekap, t_koreksi, t_rata = st.tabs([
+            "📋 Rekap Pengerjaan Siswa", 
+            "✏️ Koreksi & Penilaian", 
+            "📈 Rekap Nilai Rata-Rata"
+        ])
+
+        with t_rekap:
+            st.subheader(f"Daftar Siswa Kelas {selected_kelas} — {selected_tugas.get('judul')}")
+            if rekap_rows:
+                df_rekap = pd.DataFrame(rekap_rows)
+                st.dataframe(df_rekap, use_container_width=True)
+            else:
+                st.info("Belum ada akun siswa yang terdaftar di kelas ini.")
+
+        with t_koreksi:
+            st.subheader(f"Koreksi Hasil Jawaban Kelas {selected_kelas}")
+            if not sub_list:
+                st.info("Belum ada siswa dari kelas ini yang mengumpulkan tugas.")
+            else:
+                belum_dinilai = [s for s in sub_list if s.get("nilai") is None]
+                sudah_dinilai = [s for s in sub_list if s.get("nilai") is not None]
+
+                tab_belum, tab_sudah = st.tabs([
+                    f"🔴 Belum Dinilai ({len(belum_dinilai)})", 
+                    f"🟢 Sudah Dinilai ({len(sudah_dinilai)})"
+                ])
+
+                def render_koreksi_item(sub):
+                    sub_id = sub["id"]
+                    val_key = f"n_{sub_id}"
+                    cat_key = f"c_{sub_id}"
+
+                    if val_key not in st.session_state:
+                        st.session_state[val_key] = int(sub.get("nilai", 80)) if sub.get("nilai") is not None else 80
+                    if cat_key not in st.session_state:
+                        st.session_state[cat_key] = str(sub.get("catatan_guru", ""))
+
+                    status_str = "🟡 Belum Dinilai" if sub.get("nilai") is None else f"🟢 Nilai: {sub.get('nilai')}"
+                    with st.expander(f"👤 {sub.get('nama_siswa')} (@{sub.get('username_siswa')}) — {status_str}"):
+                        soal_items = sub.get("soal", selected_tugas.get("soal", []))
+                        jawaban_items = sub.get("jawaban", [])
+
+                        for idx, (q, a) in enumerate(zip(soal_items, jawaban_items), 1):
+                            q_text = q.get('pertanyaan') if isinstance(q, dict) else q
+                            st.write(f"**{idx}. {q_text}**")
+                            
+                            if sub.get("tipe") == "pg":
+                                opsi_list = q.get("opsi", [])
+                                ans_idx = a if isinstance(a, int) else 0
+                                ans_text = opsi_list[ans_idx] if ans_idx < len(opsi_list) else str(a)
+                                kunci_idx = q.get("kunci", 0)
+                                is_correct = (ans_idx == kunci_idx)
+                                st.write(f"Jawaban: **{ans_text}** ({'✅ Benar' if is_correct else '❌ Salah'})")
+                            else:
+                                st.info(a or "(Kosong)")
+
+                        if selected_tugas.get("tipe") == "essay":
+                            if st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}"):
+                                with st.spinner("🤖 AI sedang menganalisis jawaban siswa dalam Bahasa Indonesia..."):
+                                    val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
+                                if val is not None:
+                                    st.session_state[val_key] = int(val)
+                                    st.session_state[cat_key] = str(fb)
+                                    st.success("🤖 Hasil koreksi AI dimuat ke formulir! Silakan periksa kembali lalu klik tombol 'Simpan / Update' di bawah.")
+                                    st.rerun()
+                                else:
+                                    st.error(fb)
+
+                        with st.form(key=f"f_eval_{sub_id}"):
+                            n_in = st.number_input("Nilai (0-100)", 0, 100, key=val_key)
+                            c_in = st.text_area("Catatan Guru (Bahasa Indonesia)", key=cat_key)
+                            
+                            if st.form_submit_button("💾 Simpan / Update Perubahan Guru"):
+                                db.collection("jawaban_siswa").document(sub_id).update({
+                                    "nilai": n_in, 
+                                    "catatan_guru": c_in
+                                })
+                                st.success("✅ Perubahan koreksi berhasil disimpan!")
+                                st.rerun()
+
+                with tab_belum:
+                    if not belum_dinilai:
+                        st.success("🎉 Semua jawaban siswa di kelas ini sudah selesai dinilai!")
+                    else:
+                        for sub in belum_dinilai:
+                            render_koreksi_item(sub)
+
+                with tab_sudah:
+                    if not sudah_dinilai:
+                        st.info("Belum ada jawaban siswa yang dinilai.")
+                    else:
+                        for sub in sudah_dinilai:
+                            render_koreksi_item(sub)
+
+        # TAB BARU: Rekap Rata-Rata Nilai Seluruh Tugas
+        with t_rata:
+            st.subheader(f"📈 Rekap Seluruh Nilai & Rata-Rata Kelas {selected_kelas}")
+            st.caption("💡 **Catatan**: Tugas yang belum dikerjakan / belum dinilai dihitung bernilai **0** dalam kalkulasi rata-rata.")
+
+            if not siswa_list:
+                st.info("Belum ada siswa di kelas ini.")
+            else:
+                # Ambil seluruh jawaban siswa untuk seluruh tugas di kelas ini
+                all_subs = db.collection("jawaban_siswa").where("kelas_siswa", "==", selected_kelas).stream()
+                subs_map = {}
+                for doc in all_subs:
+                    d = doc.to_dict()
+                    u_siswa = d.get("username_siswa")
+                    t_id = d.get("id_tugas")
+                    val_n = d.get("nilai")
+                    # Hanya hitung jika nilai sudah diberikan (bukan None)
+                    subs_map[(u_siswa, t_id)] = int(val_n) if val_n is not None else 0
+
+                avg_table_rows = []
+                for s in siswa_list:
+                    un = s["username"]
+                    nama = s.get("nama", un)
+                    row_data = {
+                        "Username": un,
+                        "Nama Siswa": nama
+                    }
+                    
+                    total_nilai_siswa = 0
+                    for tg in tugas_kelas:
+                        score = subs_map.get((un, tg["id"]), 0)
+                        row_data[tg.get("judul", "Tugas")] = score
+                        total_nilai_siswa += score
+                    
+                    # Hitung Rata-Rata seluruh tugas di kelas
+                    rata_rata = round(total_nilai_siswa / len(tugas_kelas), 1) if tugas_kelas else 0
+                    row_data["Rata-Rata Akhir"] = rata_rata
+                    avg_table_rows.append(row_data)
+
+                df_avg = pd.DataFrame(avg_table_rows)
+                st.dataframe(df_avg, use_container_width=True)
+
+                # Tombol Download Rekap Nilai CSV
+                st.download_button(
+                    label="💾 Unduh Rekap Nilai Kelas (.csv)",
+                    data=df_avg.to_csv(index=False).encode('utf-8'),
+                    file_name=f"rekap_nilai_kelas_{selected_kelas}.csv",
+                    mime="text/csv"
+                )
+        # Query Siswa di Kelas Terpilih
+        siswa_docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", selected_kelas).stream()
+        siswa_list = [{"username": d.id, **d.to_dict()} for d in siswa_docs]
+
+        # Query Jawaban Siswa
+        sub_docs = db.collection("jawaban_siswa").where("id_tugas", "==", selected_tugas_id).where("kelas_siswa", "==", selected_kelas).stream()
+        sub_list = [{"id": d.id, **d.to_dict()} for d in sub_docs]
+        sub_map = {s.get("username_siswa"): s for s in sub_list}
+
+        # Kalkulasi Rekap Status
+        rekap_rows = []
+        sudah_count, belum_count = 0, 0
+
+        for s in siswa_list:
+            un = s["username"]
+            nama = s.get("nama", un)
+            if un in sub_map:
+                sudah_count += 1
+                sub = sub_map[un]
+                val_display = sub.get("nilai") if sub.get("nilai") is not None else "Belum Dinilai"
+                rekap_rows.append({
+                    "Username": un,
+                    "Nama Siswa": nama,
+                    "Status": "✅ Sudah",
+                    "Nilai": val_display,
+                    "Catatan Guru": sub.get("catatan_guru", "-")
+                })
+            else:
+                belum_count += 1
+                rekap_rows.append({
+                    "Username": un,
+                    "Nama Siswa": nama,
+                    "Status": "❌ Belum",
+                    "Nilai": "-",
+                    "Catatan Guru": "-"
+                })
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Siswa di Kelas", len(siswa_list))
+        m2.metric("Sudah Mengumpulkan", sudah_count)
+        m3.metric("Belum Mengumpulkan", belum_count)
+
+        st.divider()
+
         t_rekap, t_koreksi = st.tabs(["📋 Rekap Pengerjaan Siswa", "✏️ Koreksi & Penilaian"])
 
         with t_rekap:
