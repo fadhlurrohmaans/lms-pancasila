@@ -3,7 +3,6 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import pandas as pd
 import hashlib
-import io
 import re
 import random
 import string
@@ -35,7 +34,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. FIREBASE & CACHED HELPERS (MEMORI OPTIMIZED)
+# 2. FIREBASE & CACHED HELPERS
 # ==========================================
 @st.cache_resource
 def init_firebase():
@@ -55,7 +54,6 @@ except Exception as e:
 
 @st.cache_data(ttl=60)
 def get_all_kelas():
-    """Mengambil daftar kelas dengan cache 60 detik untuk menghemat Firestore reads & RAM."""
     docs = db.collection("kelas").stream()
     return sorted([d.id for d in docs])
 
@@ -94,7 +92,7 @@ def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
 # ==========================================
-# 3. AI EVALUATION HELPER (LIGHTWEIGHT)
+# 3. AI EVALUATION HELPER
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -180,7 +178,7 @@ if st.sidebar.button("🚪 Keluar / Logout"):
 st.sidebar.divider()
 
 # ==========================================
-# 6. PANEL SUPER ADMIN (MODULAR FUNCTION)
+# 6. PANEL SUPER ADMIN
 # ==========================================
 def render_superadmin():
     st.title("⚙️ Panel Super Admin")
@@ -326,7 +324,7 @@ def render_superadmin():
                 st.rerun()
 
 # ==========================================
-# 7. PANEL GURU (MODULAR FUNCTION)
+# 7. PANEL GURU
 # ==========================================
 def render_guru():
     st.title("🇮🇩 Panel Guru")
@@ -469,7 +467,11 @@ def render_guru():
         
         if submissions:
             df_sub = pd.DataFrame(submissions)
-            st.dataframe(df_sub[["nama_siswa", "kelas_siswa", "judul_tugas", "nilai", "catatan_guru"]], use_container_width=True)
+            
+            # --- FIX KEYERROR: Mencegah error jika kolom belum ada di Firestore ---
+            expected_cols = ["nama_siswa", "kelas_siswa", "judul_tugas", "nilai", "catatan_guru"]
+            df_display = df_sub.reindex(columns=expected_cols)
+            st.dataframe(df_display, use_container_width=True)
             
             unassessed = [s for s in submissions if s.get("nilai") is None]
             if unassessed:
@@ -497,7 +499,7 @@ def render_guru():
                                 st.rerun()
 
 # ==========================================
-# 8. PANEL SISWA (MODULAR FUNCTION)
+# 8. PANEL SISWA
 # ==========================================
 def render_siswa():
     st.title("🇮🇩 Ruang Siswa")
@@ -561,7 +563,11 @@ def render_siswa():
         my_subs = [d.to_dict() for d in db.collection("jawaban_siswa").where("username_siswa", "==", user_info["username"]).stream()]
         if my_subs:
             df_my = pd.DataFrame(my_subs)
-            st.dataframe(df_my[["judul_tugas", "nilai", "catatan_guru"]], use_container_width=True)
+            
+            # --- FIX KEYERROR: Memastikan ketersediaan kolom riwayat siswa ---
+            expected_cols_siswa = ["judul_tugas", "nilai", "catatan_guru"]
+            df_my_display = df_my.reindex(columns=expected_cols_siswa)
+            st.dataframe(df_my_display, use_container_width=True)
 
 # ==========================================
 # 9. MAIN ROUTER
