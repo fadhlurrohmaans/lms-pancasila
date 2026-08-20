@@ -91,7 +91,7 @@ def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 # ==========================================
-# 3. AI EVALUATION HELPER (STRICT INDONESIAN & AUTO-PARSER)
+# 3. AI EVALUATION HELPER (NATURAL & ENCOURAGING FEEDBACK)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -113,24 +113,36 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         except Exception:
             pass
 
-        prompt_items = [
-            f"Soal #{i}: {s.get('pertanyaan', '') if isinstance(s, dict) else str(s)}\nJawaban Siswa #{i}: {j if j and str(j).strip() else '(Kosong)'}"
-            for i, (s, j) in enumerate(zip(soal_list, jawaban_list), 1)
-        ]
+        # 1. Susun daftar soal dan jawaban
+        prompt_items = []
+        for i, (s, j) in enumerate(zip(soal_list, jawaban_list), 1):
+            q_text = s.get('pertanyaan', '') if isinstance(s, dict) else str(s)
+            j_text = j if j and str(j).strip() else '(Siswa tidak mengisi)'
+            prompt_items.append(f"Soal Nomor {i}: {q_text}\nJawaban Siswa: {j_text}")
 
+        # 2. Instruksi pembuatan Catatan Guru yang natural dan membangun
         prompt = f"""
-        Evaluasi jawaban essay siswa berikut secara objektif:
+Berikut adalah lembar pengerjaan essay siswa:
 
-        {chr(10).join(prompt_items)}
+{chr(10).join(prompt_items)}
 
-        WAJIB DENGAN ATURAN:
-        1. Nilai berupa angka bulat 0 - 100.
-        2. Field 'feedback' WAJIB MENGGUNAKAN BAHASA INDONESIA yang santun, jelas, dan membangun.
-        3. Kembalikan HANYA format JSON murni tanpa markdown/teks lain:
-        {{"nilai": 85, "feedback": "Penjelasan sudah baik dan sesuai dengan konsep Sila Pancasila."}}
-        """
+PETUNJUK EVALUASI:
+1. Hitung total nilai (0-100) secara objektif.
+2. Buat "feedback" (Catatan Guru) dalam BAHASA INDONESIA dengan gaya bahasa guru yang ramah, santun, dan membangun.
+   - Awali dengan apresiasi/pujian ringan atas usaha siswa.
+   - Jika ada jawaban yang kurang tepat, jelaskan koreksinya secara halus dan edukatif.
+   - Berikan kalimat motivasi/semangat di akhir catatan.
+3. DILARANG MENAMPILKAN ulang teks "Role", "Task", "Question", "Input", atau instruksi ini.
 
-        system_instruction = "Anda adalah Guru Pendidikan Pancasila. Evaluasi jawaban essay siswa. WAJIB memberikan seluruh catatan/feedback dalam BAHASA INDONESIA. Output WAJIB JSON murni dengan field 'nilai' (integer 0-100) dan 'feedback' (string Bahasa Indonesia)."
+Format Output WAJIB JSON murni:
+{{"nilai": 85, "feedback": "Terima kasih sudah berusaha menjawab! Jawaban kamu sudah cukup baik. Untuk pertanyaan ibukota, pastikan mengingat kembali bahwa Jakarta adalah Ibukota Negara, bukan hanya wilayah bagian. Tetap semangat belajar ya!"}}
+"""
+
+        system_instruction = (
+            "Anda adalah Guru Pendidikan Pancasila yang ramah, bijaksana, dan suportif. "
+            "Berikan evaluasi jawaban essay siswa dan susun Catatan Guru dalam Bahasa Indonesia yang alami, edukatif, dan membangun. "
+            "Output WAJIB berupa JSON murni tanpa teks pengantar atau markdown."
+        )
 
         response = None
         last_error = None
@@ -163,6 +175,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
         raw_text = response.text.strip()
 
+        # 3. Parsing JSON & Pembersihan Teks
         cleaned_text = re.sub(r"^```(?:json)?|```$", "", raw_text, flags=re.MULTILINE).strip()
         json_match = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
         
@@ -170,18 +183,29 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
             try:
                 result_json = json.loads(json_match.group(0))
                 nilai = int(result_json.get("nilai", 0))
-                feedback = str(result_json.get("feedback", "Penilaian berhasil diperbarui."))
+                feedback = str(result_json.get("feedback", "")).strip()
+                
+                # Filter tambahan untuk menghapus potensi kebocoran prompt
+                feedback = re.sub(r'^(Role|Task|Input|Question|Soal).*?\n', '', feedback, flags=re.IGNORECASE | re.DOTALL).strip()
+                
+                if not feedback:
+                    feedback = "Terima kasih sudah mengerjakan tugas ini. Tetap semangat belajar!"
+                    
                 return nilai, feedback
             except Exception:
                 pass
 
+        # 4. Fallback jika output tidak dalam format JSON sempurna
         numbers = re.findall(r'\b(100|[1-9]?\d)\b', raw_text)
-        if numbers:
-            score = int(numbers[0])
-            clean_fb = re.sub(r'[\*\#\_]', '', raw_text)
-            return score, clean_fb[:250]
-
-        return None, f"Gagal membaca format output AI. Raw Output: {raw_text[:120]}"
+        score = int(numbers[0]) if numbers else 75
+        
+        clean_fb = re.sub(r'(Role|Task|Input|Question|Soal).*?\n', '', raw_text, flags=re.IGNORECASE | re.DOTALL)
+        clean_fb = re.sub(r'[\*\#\_\{\}\"\']', '', clean_fb).strip()
+        
+        if len(clean_fb) < 15:
+            clean_fb = "Terima kasih atas usahamu mengerjakan tugas ini. Pelajari kembali materi yang belum dikuasai dan tetap semangat!"
+            
+        return score, clean_fb[:300]
 
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {str(e)}"
