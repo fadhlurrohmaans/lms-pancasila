@@ -940,7 +940,7 @@ def render_siswa():
                                             st.success("✅ Berhasil dikumpulkan! Tugas menunggu koreksi guru.")
                                         st.rerun()
 
-            # Sub-Tab 2: Tugas Sudah Dikerjakan
+    # Sub-Tab 2: Tugas Sudah Dikerjakan
             with sub_tab_sudah:
                 if not tugas_sudah_list:
                     st.info("Belum ada tugas yang Anda kumpulkan.")
@@ -954,9 +954,6 @@ def render_siswa():
                         with st.container(border=True):
                             st.markdown(f"### 📝 {tg.get('judul')}")
                             st.caption(f"Tipe: **{tipe_tugas.upper()}** | Status: **{val_str}**")
-                            
-                            if sub_data.get("catatan_guru"):
-                                st.info(f"💬 **Catatan Guru:**\n\n{sub_data.get('catatan_guru')}")
 
                             # Komponen untuk melihat review soal & jawaban siswa
                             with st.expander("🔍 Lihat Detail Soal & Jawaban Saya"):
@@ -993,7 +990,7 @@ def render_siswa():
                                             st.markdown("👉 **Jawaban Anda:**")
                                             st.info(ans_str)
                                         
-                                        st.write("---")
+                                        st.write("---")        
     # ------------------------------------------
     # TAB 2: MODUL MATERI
     # ------------------------------------------
