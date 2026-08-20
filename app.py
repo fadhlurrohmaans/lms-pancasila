@@ -91,7 +91,7 @@ def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 # ==========================================
-# 3. AI EVALUATION HELPER (EXTRACTION & PARSING FIX)
+# 3. AI EVALUATION HELPER (STRICT JSON & FALLBACK PARSER)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -101,8 +101,8 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
         
-        # 1. Pilih model yang tersedia secara dinamis
-        candidate_models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'models/gemini-1.5-flash']
+        # 1. Deteksi/pilih model aktif
+        candidate_models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
         try:
             active_models = [
                 m.name for m in genai.list_models() 
@@ -114,20 +114,22 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         except Exception:
             pass
 
-        # 2. Susun Prompt
+        # 2. Susun Data Prompt
         prompt_items = [
-            f"Soal No.{i}: {s.get('pertanyaan', '') if isinstance(s, dict) else str(s)}\nJawaban Siswa No.{i}: {j if j and str(j).strip() else '(Kosong)'}\n"
+            f"Soal #{i}: {s.get('pertanyaan', '') if isinstance(s, dict) else str(s)}\nJawaban Siswa #{i}: {j if j and str(j).strip() else '(Kosong)'}"
             for i, (s, j) in enumerate(zip(soal_list, jawaban_list), 1)
         ]
 
         prompt = f"""
-        Anda adalah Guru Pendidikan Pancasila. Evaluasi jawaban essay siswa berikut secara obyektif.
-        
+        Evaluasi jawaban essay siswa berikut:
+
         {chr(10).join(prompt_items)}
 
-        WAJIB kembalikan JSON valid tanpa teks pengantar apapun. Format:
-        {{"nilai": 85, "feedback": "Penjelasan sudah baik dan sesuai konsep Sila Pancasila."}}
+        Kembalikan HANYA objek JSON murni tanpa teks pengantar/markdown:
+        {{"nilai": 85, "feedback": "Penjelasan sudah sesuai konsep Pancasila."}}
         """
+
+        system_instruction = "Anda adalah Guru Pendidikan Pancasila. Evaluasi jawaban essay siswa dan berikan output dalam format JSON valid berisi field 'nilai' (integer 0-100) dan 'feedback' (string)."
 
         # 3. Panggil API AI
         response = None
@@ -135,57 +137,57 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
         for model_name in candidate_models:
             try:
-                model = genai.GenerativeModel(model_name)
-                try:
-                    response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-                except Exception:
-                    response = model.generate_content(prompt)
-                
-                if response and hasattr(response, 'text') and response.text and response.text.strip():
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=system_instruction
+                )
+                response = model.generate_content(
+                    prompt, 
+                    generation_config={"response_mime_type": "application/json"}
+                )
+                if response and hasattr(response, 'text') and response.text.strip():
                     break
             except Exception as err:
                 last_error = err
-                continue
+                # Fallback tanpa system_instruction jika model tidak mendukung
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    response = model.generate_content(prompt)
+                    if response and hasattr(response, 'text') and response.text.strip():
+                        break
+                except Exception as err2:
+                    last_error = err2
+                    continue
 
         if not response or not hasattr(response, 'text') or not response.text.strip():
-            return None, f"AI tidak mengembalikan respon teks. Error terakhir: {str(last_error)}"
+            return None, f"AI tidak mengembalikan respon. Error terakhir: {str(last_error)}"
 
         raw_text = response.text.strip()
 
-        # 4. Ekstrak JSON menggunakan Regex agar aman dari teks tambahan/markdown
-        json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+        # 4. Parsing JSON secara Presisi
+        cleaned_text = re.sub(r"^```(?:json)?|```$", "", raw_text, flags=re.MULTILINE).strip()
+        json_match = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
+        
         if json_match:
-            json_str = json_match.group(0)
-            result_json = json.loads(json_str)
-            return int(result_json.get("nilai", 0)), str(result_json.get("feedback", ""))
-        else:
-            return None, f"Respon AI bukan format JSON valid: {raw_text[:100]}"
+            try:
+                result_json = json.loads(json_match.group(0))
+                nilai = int(result_json.get("nilai", 0))
+                feedback = str(result_json.get("feedback", "Penilaian berhasil."))
+                return nilai, feedback
+            except Exception:
+                pass
 
-    except json.JSONDecodeError:
-        return None, f"Gagal membaca JSON AI. Raw Output: {raw_text[:100]}"
+        # 5. Fallback Parser (Jika AI mengembalikan teks biasa tanpa format JSON)
+        numbers = re.findall(r'\b(100|[1-9]?\d)\b', raw_text)
+        if numbers:
+            score = int(numbers[0])
+            clean_fb = re.sub(r'[\*\#\_]', '', raw_text) # Bersihkan karakter markdown
+            return score, clean_fb[:250]
+
+        return None, f"Gagal membaca format output AI. Raw Output: {raw_text[:120]}"
+
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {str(e)}"
-        # 4. Eksekusi panggilan model secara berurutan
-        response = None
-        last_error = None
-
-        for model_name in candidate_models:
-            try:
-                model = genai.GenerativeModel(model_name)
-                try:
-                    response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-                except Exception:
-                    response = model.generate_content(prompt)
-                
-                if response and response.text:
-                    break
-            except Exception as err:
-                last_error = err
-                continue
-
-        if not response or not response.text:
-            return None, f"Gagal mengeksekusi AI pada seluruh model. Error terakhir: {str(last_error)}"
-
         # 5. Parsing JSON keluaran AI
         raw_text = response.text.strip()
         if raw_text.startswith("```"):
