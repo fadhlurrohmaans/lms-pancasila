@@ -16,23 +16,93 @@ st.set_page_config(
     page_title="LMS Pendidikan Pancasila",
     page_icon="🇮🇩",
     layout="wide",
-    initial_sidebar_state="auto"
+    initial_sidebar_state="collapsed"  # Otomatis tutup sidebar di HP agar layar luas
 )
 
 st.markdown("""
     <style>
-    input[type="text"], input[type="password"], textarea, select { font-size: 16px !important; }
-    @media (max-width: 768px) {
-        .main .block-container { padding: 1rem 0.8rem 2rem !important; }
-        [data-testid="column"] { width: 100% !important; flex: 1 1 100% !important; min-width: 100% !important; margin-bottom: 0.5rem; }
-        .stButton > button, .stDownloadButton > button { width: 100% !important; min-height: 48px !important; font-size: 16px !important; font-weight: bold; border-radius: 8px !important; }
-        h1 { font-size: 1.8rem !important; } h2 { font-size: 1.4rem !important; } h3 { font-size: 1.2rem !important; }
+    /* Global Mobile Optimization */
+    html, body, [class*="css"] {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; overflow-x: auto; white-space: nowrap; }
-    .stTabs [data-baseweb="tab"] { padding: 8px 16px; }
+    
+    /* Input & Touch Area Scale */
+    input[type="text"], input[type="password"], textarea, select { 
+        font-size: 16px !important; /* Mencegah auto-zoom pada Safari iOS */
+        border-radius: 10px !important;
+    }
+
+    /* Mobile Responsive Layout adjustments */
+    @media (max-width: 768px) {
+        .main .block-container { 
+            padding: 0.8rem 0.6rem 3rem !important; 
+        }
+        [data-testid="column"] { 
+            width: 100% !important; 
+            flex: 1 1 100% !important; 
+            min-width: 100% !important; 
+            margin-bottom: 0.5rem; 
+        }
+        .stButton > button, .stDownloadButton > button { 
+            width: 100% !important; 
+            min-height: 50px !important; 
+            font-size: 16px !important; 
+            font-weight: bold; 
+            border-radius: 12px !important; 
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        h1 { font-size: 1.6rem !important; } 
+        h2 { font-size: 1.3rem !important; } 
+        h3 { font-size: 1.1rem !important; }
+    }
+
+    /* Custom Mobile Card Styling */
+    .student-header {
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+        color: white;
+        padding: 18px 20px;
+        border-radius: 16px;
+        margin-bottom: 15px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    
+    .badge-done {
+        background-color: #d4edda;
+        color: #155724;
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: bold;
+    }
+    
+    .badge-pending {
+        background-color: #fff3cd;
+        color: #856404;
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: bold;
+    }
+
+    /* Modern Tabs Scrollable on Mobile */
+    .stTabs [data-baseweb="tab-list"] { 
+        gap: 6px; 
+        overflow-x: auto; 
+        white-space: nowrap; 
+        border-bottom: 2px solid #eaeaea;
+        padding-bottom: 4px;
+    }
+    .stTabs [data-baseweb="tab"] { 
+        padding: 10px 18px; 
+        border-radius: 20px;
+        font-weight: 600;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #1e3c72 !important;
+        color: white !important;
+    }
     </style>
 """, unsafe_allow_html=True)
-
 # ==========================================
 # 2. FIREBASE & CACHED HELPERS
 # ==========================================
@@ -746,73 +816,184 @@ def render_guru():
                         for sub in sudah_dinilai:
                             render_koreksi_item(sub)
 # ==========================================
-# 8. PANEL SISWA
+# 8. PANEL SISWA (MOBILE FRIENDLY DESIGN)
 # ==========================================
 def render_siswa():
-    st.title("🇮🇩 Ruang Siswa")
-    menu_s = st.sidebar.radio("📌 Menu Siswa", ["📚 Modul Materi", "✍️ Kerjakan Tugas", "📊 Riwayat Nilai"])
-    kelas_s = user_info.get("kelas", "")
+    kelas_s = user_info.get("kelas", "-")
+    nama_s = user_info.get("nama", "Siswa")
+    username_s = user_info.get("username", "")
 
-    if menu_s == "📚 Modul Materi":
-        st.header("📚 Modul Materi")
-        for m in [d.to_dict() for d in db.collection("materi_pancasila").stream()]:
-            with st.expander(f"📘 {m.get('bab')}: {m.get('judul')}"): st.markdown(m.get("konten"))
+    # Fetch Data Tugas & Jawaban Siswa
+    all_tugas = [t for t in [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()] if is_tugas_sesuai_kelas(t, kelas_s)]
+    my_subs_docs = db.collection("jawaban_siswa").where("username_siswa", "==", username_s).stream()
+    my_subs = {d.to_dict().get("id_tugas"): d.to_dict() for d in my_subs_docs}
 
-    elif menu_s == "✍️ Kerjakan Tugas":
-        st.header("✍️ Kerjakan Tugas")
-        all_tugas = [t for t in [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()] if is_tugas_sesuai_kelas(t, kelas_s)]
-        
-        if all_tugas:
-            tg_map = {t["id"]: t["judul"] for t in all_tugas}
-            sel_tg_id = st.selectbox("Pilih Tugas", list(tg_map.keys()), format_func=lambda x: tg_map[x])
-            tg_act = next(t for t in all_tugas if t["id"] == sel_tg_id)
+    # Hitung Rekap Singkat Nilai
+    total_tugas = len(all_tugas)
+    tugas_selesai = len(my_subs)
+    tugas_belum = total_tugas - tugas_selesai
+    
+    nilai_list = [v.get("nilai") for v in my_subs.values() if v.get("nilai") is not None]
+    avg_nilai = round(sum(nilai_list) / len(nilai_list), 1) if nilai_list else "-"
 
-            already_submitted = len(db.collection("jawaban_siswa").where("id_tugas", "==", sel_tg_id).where("username_siswa", "==", user_info["username"]).get()) > 0
-            
-            if already_submitted:
-                st.warning("⚠️ Anda sudah mengumpulkan tugas ini.")
-            else:
-                st.subheader(tg_act.get("judul"))
-                st.write(tg_act.get("instruksi"))
+    # Header Card versi Mobile
+    st.markdown(f"""
+        <div class="student-header">
+            <div style="font-size: 0.85rem; opacity: 0.9;">🏫 Kelas {kelas_s}</div>
+            <div style="font-size: 1.4rem; font-weight: bold; margin-bottom: 4px;">Halo, {nama_s}! 👋</div>
+            <div style="font-size: 0.8rem; opacity: 0.85;">Siap belajar Pendidikan Pancasila hari ini?</div>
+        </div>
+    """, unsafe_unsafe_html=True if hasattr(st, 'unsafe_unsafe_html') else True)
+
+    # Indicator Metrics ringkas (Grid Responsive)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Tugas Belum", f"{tugas_belum}", delta=f"{total_tugas} total", delta_color="inverse")
+    c2.metric("Selesai", f"{tugas_selesai}")
+    c3.metric("Rata-Rata Nilai", f"{avg_nilai}")
+
+    st.divider()
+
+    # Navigasi Tab Utama (Mudah diakses via layar sentuh HP)
+    tab_tugas, tab_materi, tab_nilai = st.tabs(["✍️ Tugas Saya", "📚 Modul Materi", "📊 Riwayat Nilai"])
+
+    # ------------------------------------------
+    # TAB 1: KERJAKAN TUGAS
+    # ------------------------------------------
+    with tab_tugas:
+        if not all_tugas:
+            st.info("🎉 Belum ada tugas yang diberikan untuk kelas Anda saat ini.")
+        else:
+            tugas_belum_list = [t for t in all_tugas if t["id"] not in my_subs]
+            tugas_sudah_list = [t for t in all_tugas if t["id"] in my_subs]
+
+            sub_tab_belum, sub_tab_sudah = st.tabs([
+                f"🔴 Belum Dikerjakan ({len(tugas_belum_list)})",
+                f"🟢 Sudah Dikerjakan ({len(tugas_sudah_list)})"
+            ])
+
+            # Sub-Tab 1: Tugas Belum Dikerjakan
+            with sub_tab_belum:
+                if not tugas_belum_list:
+                    st.success("✨ Hebat! Semua tugas kelas Anda sudah dikumpulkan.")
+                else:
+                    for tg in tugas_belum_list:
+                        tg_id = tg["id"]
+                        tipe_label = "Pilihan Ganda" if tg.get("tipe") == "pg" else "Essay"
+                        
+                        with st.container(border=True):
+                            st.markdown(f"### 📝 {tg.get('judul')}")
+                            st.caption(f"Tipe Soal: **{tipe_label}** | Jumlah: **{len(tg.get('soal', []))} soal**")
+                            
+                            if tg.get("instruksi"):
+                                st.info(f"💡 **Instruksi:** {tg.get('instruksi')}")
+
+                            # Form Pengerjaan Langsung di dalam Expander
+                            with st.expander("▶️ Kerjakan Tugas Sekarang", expanded=False):
+                                with st.form(key=f"form_kerjakan_{tg_id}"):
+                                    answers = []
+                                    for idx, s in enumerate(tg.get("soal", []), 1):
+                                        st.markdown(f"**{idx}. {s.get('pertanyaan') if isinstance(s, dict) else s}**")
+                                        if tg.get("tipe") == "pg":
+                                            ans = st.radio(
+                                                "Pilih Jawaban:", 
+                                                [0, 1, 2, 3], 
+                                                format_func=lambda x, opts=s.get("opsi", []): f"{['A','B','C','D'][x]}. {opts[x]}", 
+                                                key=f"pg_{tg_id}_{idx}"
+                                            )
+                                            answers.append(ans)
+                                        else:
+                                            ans = st.text_area("Jawaban Anda:", placeholder="Ketikkan jawaban secara lengkap...", key=f"es_{tg_id}_{idx}")
+                                            answers.append(ans)
+                                        st.write("")
+
+                                    submit_btn = st.form_submit_button("🚀 Kumpulkan Jawaban")
+                                    if submit_btn:
+                                        if tg.get("tipe") == "pg":
+                                            score = round((sum(1 for idx_q, sq in enumerate(tg.get("soal", [])) if answers[idx_q] == sq.get("kunci")) / len(answers)) * 100)
+                                            db.collection("jawaban_siswa").add({
+                                                "id_tugas": tg_id, 
+                                                "judul_tugas": tg.get("judul"), 
+                                                "username_siswa": username_s,
+                                                "nama_siswa": nama_s, 
+                                                "kelas_siswa": kelas_s, 
+                                                "tipe": "pg", 
+                                                "jawaban": answers,
+                                                "nilai": score, 
+                                                "catatan_guru": "Penilaian Otomatis Sistem", 
+                                                "submitted_at": firestore.SERVER_TIMESTAMP
+                                            })
+                                            st.balloons()
+                                            st.success(f"✅ Berhasil dikumpulkan! Nilai Anda: {score}")
+                                        else:
+                                            db.collection("jawaban_siswa").add({
+                                                "id_tugas": tg_id, 
+                                                "judul_tugas": tg.get("judul"), 
+                                                "username_siswa": username_s,
+                                                "nama_siswa": nama_s, 
+                                                "kelas_siswa": kelas_s, 
+                                                "tipe": "essay", 
+                                                "soal": tg.get("soal"),
+                                                "jawaban": answers, 
+                                                "nilai": None, 
+                                                "submitted_at": firestore.SERVER_TIMESTAMP
+                                            })
+                                            st.success("✅ Berhasil dikumpulkan! Tugas menunggu koreksi guru.")
+                                        st.rerun()
+
+            # Sub-Tab 2: Tugas Sudah Dikerjakan
+            with sub_tab_sudah:
+                if not tugas_sudah_list:
+                    st.info("Belum ada tugas yang Anda kumpulkan.")
+                else:
+                    for tg in tugas_sudah_list:
+                        sub_data = my_subs.get(tg["id"], {})
+                        val = sub_data.get("nilai")
+                        val_str = f"💯 Nilai: {val}" if val is not None else "⏳ Menunggu Koreksi"
+                        
+                        with st.container(border=True):
+                            st.markdown(f"**{tg.get('judul')}**")
+                            st.caption(f"Status: **{val_str}**")
+                            if sub_data.get("catatan_guru"):
+                                st.caption(f"💬 Catatan Guru: _{sub_data.get('catatan_guru')}_")
+
+    # ------------------------------------------
+    # TAB 2: MODUL MATERI
+    # ------------------------------------------
+    with tab_materi:
+        materi_docs = [d.to_dict() for d in db.collection("materi_pancasila").stream()]
+        if not materi_docs:
+            st.info("📖 Belum ada materi pembelajaran yang diunggah.")
+        else:
+            for m in materi_docs:
+                with st.container(border=True):
+                    st.markdown(f"#### 📘 [{m.get('bab')}] {m.get('judul')}")
+                    with st.expander("📖 Baca Selengkapnya"):
+                        st.markdown(m.get("konten"))
+
+    # ------------------------------------------
+    # TAB 3: RIWAYAT NILAI (MOBILE CARD VIEW)
+    # ------------------------------------------
+    with tab_nilai:
+        if not my_subs:
+            st.info("📊 Anda belum memiliki riwayat nilai tugas.")
+        else:
+            st.subheader("📋 Lembar Hasil Penilaian")
+            for sub_id, sub_info in my_subs.items():
+                nilai_val = sub_info.get("nilai")
+                catatan = sub_info.get("catatan_guru", "-")
                 
-                with st.form("form_kerjakan"):
-                    answers = []
-                    for i, s in enumerate(tg_act.get("soal", []), 1):
-                        if tg_act.get("tipe") == "pg":
-                            st.write(f"**{i}. {s.get('pertanyaan')}**")
-                            ans = st.radio("Pilih:", [0,1,2,3], format_func=lambda x, opts=s.get("opsi"): f"{['A','B','C','D'][x]}. {opts[x]}", key=f"pg_{i}")
-                            answers.append(ans)
+                with st.container(border=True):
+                    c_left, c_right = st.columns([3, 1])
+                    with c_left:
+                        st.markdown(f"**{sub_info.get('judul_tugas', 'Tugas')}**")
+                        st.caption(f"Tipe: {str(sub_info.get('tipe', '')).upper()}")
+                        if catatan and catatan != "-":
+                            st.info(f"💬 **Catatan Guru:**\n\n{catatan}")
+                    with c_right:
+                        if nilai_val is not None:
+                            st.metric("Nilai", f"{nilai_val}")
                         else:
-                            st.write(f"**{i}. {s.get('pertanyaan') if isinstance(s, dict) else s}**")
-                            ans = st.text_area("Jawaban:", key=f"es_{i}")
-                            answers.append(ans)
-
-                    if st.form_submit_button("Kumpulkan Tugas"):
-                        if tg_act.get("tipe") == "pg":
-                            score = round((sum(1 for idx, sq in enumerate(tg_act.get("soal", [])) if answers[idx] == sq.get("kunci")) / len(answers)) * 100)
-                            db.collection("jawaban_siswa").add({
-                                "id_tugas": sel_tg_id, "judul_tugas": tg_act.get("judul"), "username_siswa": user_info["username"],
-                                "nama_siswa": user_info["nama"], "kelas_siswa": kelas_s, "tipe": "pg", "jawaban": answers,
-                                "nilai": score, "catatan_guru": "Otomatis Sistem", "submitted_at": firestore.SERVER_TIMESTAMP
-                            })
-                            st.success(f"✅ Terkumpul! Nilai Anda: {score}")
-                        else:
-                            db.collection("jawaban_siswa").add({
-                                "id_tugas": sel_tg_id, "judul_tugas": tg_act.get("judul"), "username_siswa": user_info["username"],
-                                "nama_siswa": user_info["nama"], "kelas_siswa": kelas_s, "tipe": "essay", "soal": tg_act.get("soal"),
-                                "jawaban": answers, "nilai": None, "submitted_at": firestore.SERVER_TIMESTAMP
-                            })
-                            st.success("✅ Terkumpul! Menunggu koreksi guru.")
-                        st.rerun()
-
-    elif menu_s == "📊 Riwayat Nilai":
-        st.header("📊 Riwayat Nilai Saya")
-        my_subs = [d.to_dict() for d in db.collection("jawaban_siswa").where("username_siswa", "==", user_info["username"]).stream()]
-        if my_subs:
-            df_my = pd.DataFrame(my_subs)
-            expected_cols_siswa = ["judul_tugas", "nilai", "catatan_guru"]
-            df_my_display = df_my.reindex(columns=expected_cols_siswa)
-            st.dataframe(df_my_display, use_container_width=True)
+                            st.warning("Menunggu Koreksi")
 
 # ==========================================
 # 9. MAIN ROUTER
