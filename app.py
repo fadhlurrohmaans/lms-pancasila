@@ -836,14 +836,14 @@ def render_siswa():
     nilai_list = [v.get("nilai") for v in my_subs.values() if v.get("nilai") is not None]
     avg_nilai = round(sum(nilai_list) / len(nilai_list), 1) if nilai_list else "-"
 
-    # Header Card versi Mobile
+    # Header Card versi Mobile (Sudah Diperbaiki)
     st.markdown(f"""
         <div class="student-header">
             <div style="font-size: 0.85rem; opacity: 0.9;">🏫 Kelas {kelas_s}</div>
             <div style="font-size: 1.4rem; font-weight: bold; margin-bottom: 4px;">Halo, {nama_s}! 👋</div>
             <div style="font-size: 0.8rem; opacity: 0.85;">Siap belajar Pendidikan Pancasila hari ini?</div>
         </div>
-    """, unsafe_unsafe_html=True if hasattr(st, 'unsafe_unsafe_html') else True)
+    """, unsafe_allow_html=True)
 
     # Indicator Metrics ringkas (Grid Responsive)
     c1, c2, c3 = st.columns(3)
