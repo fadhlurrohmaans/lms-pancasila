@@ -440,18 +440,11 @@ if role == "superadmin":
             uploaded_file = st.file_uploader("Unggah File Siswa (.csv atau .xlsx)", type=["csv", "xlsx"])
             if uploaded_file is not None:
                 try:
-                    # --- CARA MEMBACA FILE DENGAN AMAN ---
-if uploaded_file.name.endswith('.csv'):
-    try:
-        # Coba baca dengan encoding standard UTF-8
-        df_import = pd.read_csv(uploaded_file, encoding='utf-8')
-    except UnicodeDecodeError:
-        # Jika gagal, reset pointer file dan baca dengan encoding latin1 / Windows
-        uploaded_file.seek(0)
-        df_import = pd.read_csv(uploaded_file, encoding='latin1')
-else:
-    df_import = pd.read_excel(uploaded_file)
-    #-------------------------------------------------------------------------#
+                    if uploaded_file.name.endswith('.csv'):
+                        df_import = pd.read_csv(uploaded_file)
+                    else:
+                        df_import = pd.read_excel(uploaded_file)
+
                     df_import.columns = [str(col).strip().lower() for col in df_import.columns]
                     req_cols = ["nama", "kelas"]
 
