@@ -923,19 +923,26 @@ def render_siswa():
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
 
-    # Ambil semua tugas untuk kelas siswa
+    # 1. Ambil daftar tugas aktif yang berlaku untuk kelas siswa
     all_tugas = [t for t in [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()] if is_tugas_sesuai_kelas(t, kelas_s)]
-    
-    # Ambil jawaban/pengumpulan siswa
-    my_subs_docs = db.collection("jawaban_siswa").where("username_siswa", "==", username_s).stream()
-    my_subs = {d.to_dict().get("id_tugas"): d.to_dict() for d in my_subs_docs}
+    active_task_ids = {t["id"] for t in all_tugas}
 
+    # 2. Ambil riwayat pengumpulan siswa & FILTER hanya untuk tugas yang MASIH ADA
+    my_subs_docs = db.collection("jawaban_siswa").where("username_siswa", "==", username_s).stream()
+    my_subs = {}
+    for d in my_subs_docs:
+        data = d.to_dict()
+        t_id = data.get("id_tugas")
+        # Jika id_tugas terdaftar di tugas aktif, baru dihitung sebagai tugas selesai
+        if t_id in active_task_ids:
+            my_subs[t_id] = data
+
+    # 3. Kalkulasi Metrik Berdasarkan Tugas Aktif
     total_tugas = len(all_tugas)
     tugas_selesai = len(my_subs)
     tugas_belum = total_tugas - tugas_selesai
 
-    # Calculation: Hitung nilai dari SEMUA tugas di kelas
-    # Jika tugas belum dikerjakan / belum dinilai, nilainya dihitung 0
+    # 4. Hitung Rata-Rata Nilai (Tugas Aktif)
     if total_tugas > 0:
         total_skor = 0
         for tg in all_tugas:
@@ -944,7 +951,7 @@ def render_siswa():
             if sub and sub.get("nilai") is not None:
                 total_skor += int(sub.get("nilai"))
             else:
-                total_skor += 0  # Belum dikerjakan dihitung 0
+                total_skor += 0  # Belum dikerjakan / belum dinilai dihitung 0
         avg_nilai = round(total_skor / total_tugas, 1)
     else:
         avg_nilai = "-"
@@ -963,10 +970,10 @@ def render_siswa():
     c3.metric("Rata-Rata Nilai", f"{avg_nilai}")
 
     st.divider()
-    
-    # ... (sisa kode tab_tugas, tab_materi, tab_nilai di render_siswa tetap sama)
-    tab_tugas, tab_materi, tab_nilai = st.tabs(["✍️ Tugas Saya", "📚 Modul Materi", "📊 Riwayat Nilai"])
 
+    tab_tugas, tab_materi, tab_nilai = st.tabs(["✍️ Tugas Saya", "📚 Modul Materi", "📊 Riwayat Nilai"])
+    
+    # ... (Sisa kode tab_tugas, tab_materi, tab_nilai di render_siswa tetap sama)
     # ------------------------------------------
     # TAB 1: KERJAKAN TUGAS
     # ------------------------------------------
