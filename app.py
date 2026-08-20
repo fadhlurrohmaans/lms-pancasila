@@ -660,7 +660,28 @@ def render_guru():
             if not sub_list:
                 st.info("Belum ada siswa dari kelas ini yang mengumpulkan tugas.")
             else:
-                for sub in sub_list:
+                # 1. Memisahkan data siswa berdasarkan status penilaian
+                belum_dinilai = [s for s in sub_list if s.get("nilai") is None]
+                sudah_dinilai = [s for s in sub_list if s.get("nilai") is not None]
+
+                # 2. Sub-tab untuk memisahkan tampilan
+                tab_belum, tab_sudah = st.tabs([
+                    f"🔴 Belum Dinilai ({len(belum_dinilai)})", 
+                    f"🟢 Sudah Dinilai ({len(sudah_dinilai)})"
+                ])
+
+                # Fungsi render komponen penilaian agar tidak perlu duplikasi kode
+                def render_koreksi_item(sub):
+                    sub_id = sub["id"]
+                    val_key = f"n_{sub_id}"
+                    cat_key = f"c_{sub_id}"
+
+                    # Inisialisasi Session State dari Database jika belum ada
+                    if val_key not in st.session_state:
+                        st.session_state[val_key] = int(sub.get("nilai", 80)) if sub.get("nilai") is not None else 80
+                    if cat_key not in st.session_state:
+                        st.session_state[cat_key] = str(sub.get("catatan_guru", ""))
+
                     status_str = "🟡 Belum Dinilai" if sub.get("nilai") is None else f"🟢 Nilai: {sub.get('nilai')}"
                     with st.expander(f"👤 {sub.get('nama_siswa')} (@{sub.get('username_siswa')}) — {status_str}"):
                         soal_items = sub.get("soal", selected_tugas.get("soal", []))
@@ -680,32 +701,53 @@ def render_guru():
                             else:
                                 st.info(a or "(Kosong)")
 
+                        # Tombol Auto Koreksi AI
                         if selected_tugas.get("tipe") == "essay":
-                            if st.button("🤖 Auto Koreksi AI", key=f"ai_{sub['id']}"):
-                                with st.spinner("🤖 AI sedang menganalisis jawaban siswa..."):
+                            if st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}"):
+                                with st.spinner("🤖 AI sedang menganalisis jawaban siswa dalam Bahasa Indonesia..."):
                                     val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
                                 if val is not None:
-                                    db.collection("jawaban_siswa").document(sub["id"]).update({"nilai": val, "catatan_guru": fb})
-                                    # Update session_state secara eksplisit agar widget input langsung berubah
-                                    st.session_state[f"n_{sub['id']}"] = int(val)
-                                    st.session_state[f"c_{sub['id']}"] = str(fb)
-                                    st.success("✅ AI selesai menilai!")
+                                    db.collection("jawaban_siswa").document(sub_id).update({
+                                        "nilai": val, 
+                                        "catatan_guru": fb
+                                    })
+                                    st.session_state[val_key] = int(val)
+                                    st.session_state[cat_key] = str(fb)
+                                    st.success("✅ AI selesai menilai & hasil otomatis tersimpan!")
                                     st.rerun()
                                 else:
                                     st.error(fb)
 
-                        with st.form(key=f"f_eval_{sub['id']}"):
-                            curr_val = int(sub.get("nilai", 80)) if sub.get("nilai") is not None else 80
-                            curr_cat = sub.get("catatan_guru", "")
+                        # Form Edit & Simpan Manual oleh Guru
+                        with st.form(key=f"f_eval_{sub_id}"):
+                            n_in = st.number_input("Nilai (0-100)", 0, 100, key=val_key)
+                            c_in = st.text_area("Catatan Guru (Bahasa Indonesia)", key=cat_key)
                             
-                            n_in = st.number_input("Nilai (0-100)", 0, 100, curr_val, key=f"n_{sub['id']}")
-                            c_in = st.text_area("Catatan Guru", value=curr_cat, key=f"c_{sub['id']}")
-                            
-                            if st.form_submit_button("💾 Simpan Nilai Manual"):
-                                db.collection("jawaban_siswa").document(sub["id"]).update({"nilai": n_in, "catatan_guru": c_in})
-                                st.success("✅ Nilai disimpan!")
+                            if st.form_submit_button("💾 Simpan / Update Perubahan Guru"):
+                                db.collection("jawaban_siswa").document(sub_id).update({
+                                    "nilai": n_in, 
+                                    "catatan_guru": c_in
+                                })
+                                st.session_state[val_key] = n_in
+                                st.session_state[cat_key] = c_in
+                                st.success("✅ Perubahan koreksi berhasil disimpan!")
                                 st.rerun()
 
+                # Tampilan Tab Belum Dinilai
+                with tab_belum:
+                    if not belum_dinilai:
+                        st.success("🎉 Semua jawaban siswa di kelas ini sudah selesai dinilai!")
+                    else:
+                        for sub in belum_dinilai:
+                            render_koreksi_item(sub)
+
+                # Tampilan Tab Sudah Dinilai
+                with tab_sudah:
+                    if not sudah_dinilai:
+                        st.info("Belum ada jawaban siswa yang dinilai.")
+                    else:
+                        for sub in sudah_dinilai:
+                            render_koreksi_item(sub)
 # ==========================================
 # 8. PANEL SISWA
 # ==========================================
