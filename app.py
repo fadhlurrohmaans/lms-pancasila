@@ -475,13 +475,32 @@ def render_guru():
                 with st.expander(f"📌 [{m.get('bab')}] {m.get('judul')}"): st.write(m.get("konten"))
         
         with t2:
-            with st.form("f_mat"):
-                bab, judul, konten = st.text_input("Bab"), st.text_input("Judul"), st.text_area("Konten")
-                if st.form_submit_button("Simpan Materi") and bab and judul and konten:
-                    db.collection("materi_pancasila").add({"bab": bab, "judul": judul, "konten": konten, "created_at": firestore.SERVER_TIMESTAMP})
-                    st.success("✅ Materi disimpan!")
-                    st.rerun()
-
+            with st.form("f_mat", clear_on_submit=True):
+                bab = st.text_input("Bab / Unit")
+                judul = st.text_input("Judul Materi")
+                konten = st.text_area("Deskripsi / Teks Materi (Opsional)")
+                
+                # Input Link File Lampiran (Google Drive / Dropbox / PDF Online)
+                file_url = st.text_input(
+                    "🔗 Link Lampiran Dokumen (Google Drive / Dropbox / Canva)", 
+                    placeholder="https://drive.google.com/file/d/..."
+                )
+                
+                st.caption("💡 **Tips Google Drive**: Pastikan akses link diatur ke *'Siapa saja yang memiliki link dapat melihat'*.")
+                
+                if st.form_submit_button("📁 Simpan Materi"):
+                    if bab and judul:
+                        db.collection("materi_pancasila").add({
+                            "bab": bab,
+                            "judul": judul,
+                            "konten": konten,
+                            "file_url": file_url.strip() if file_url else None,
+                            "created_at": firestore.SERVER_TIMESTAMP
+                        })
+                        st.success("✅ Materi berhasil disimpan!")
+                        st.rerun()
+                    else:
+                        st.warning("Mohon isi Bab dan Judul Materi.")
         with t3:
             mats = {d.id: f"[{d.to_dict().get('bab')}] {d.to_dict().get('judul')}" for d in db.collection("materi_pancasila").stream()}
             if mats:
@@ -1018,9 +1037,7 @@ def render_siswa():
                                             st.info(ans_str)
                                         
                                         st.write("---")        
-    # ------------------------------------------
-    # TAB 2: MODUL MATERI
-    # ------------------------------------------
+    # TAB 2: MODUL MATERI (SISWA)
     with tab_materi:
         materi_docs = [d.to_dict() for d in db.collection("materi_pancasila").stream()]
         if not materi_docs:
@@ -1029,9 +1046,14 @@ def render_siswa():
             for m in materi_docs:
                 with st.container(border=True):
                     st.markdown(f"#### 📘 [{m.get('bab')}] {m.get('judul')}")
-                    with st.expander("📖 Baca Selengkapnya"):
-                        st.markdown(m.get("konten"))
-
+                    
+                    if m.get("konten"):
+                        st.write(m.get("konten"))
+                    
+                    # Jika ada link lampiran file
+                    if m.get("file_url"):
+                        st.markdown("---")
+                        st.link_button("📎 Buka / Unduh File Lampiran (Google Drive)", m.get("file_url"))
     # ------------------------------------------
     # TAB 3: RIWAYAT NILAI (MOBILE CARD VIEW)
     # ------------------------------------------
