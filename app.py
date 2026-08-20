@@ -324,7 +324,7 @@ def render_superadmin():
                 st.rerun()
 
 # ==========================================
-# 7. PANEL GURU (DENGAN PENILAIAN PER KELAS)
+# 7. PANEL GURU
 # ==========================================
 def render_guru():
     st.title("🇮🇩 Panel Guru")
@@ -359,13 +359,14 @@ def render_guru():
 
     elif menu == "📝 Buat & Kelola Tugas":
         st.header("📝 Buat & Kelola Tugas")
-        t_list, t_buat, t_edit, t_imp = st.tabs(["📋 Daftar", "➕ Buat Tugas", "✏️ Edit Tugas", "📥 Import/Export"])
+        t_list, t_buat, t_edit, t_imp = st.tabs(["📋 Daftar", "➕ Buat Tugas", "✏️ Edit Tugas", "📥 Import Soal"])
 
         with t_list:
             for tg in [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()]:
                 target_str = ", ".join(tg.get("target_kelas", [])) if tg.get("target_kelas") else "Semua"
                 with st.expander(f"[{'PG' if tg.get('tipe')=='pg' else 'Essay'}] {tg.get('judul')} (Kelas: {target_str})"):
                     st.write(f"**Instruksi:** {tg.get('instruksi')}")
+                    st.write(f"**Jumlah Soal:** {len(tg.get('soal', []))}")
                     if st.button(f"🗑️ Hapus Tugas", key=f"del_{tg['id']}"):
                         db.collection("tugas_pancasila").document(tg["id"]).delete()
                         st.success("✅ Berhasil! Tugas telah dihapus.")
@@ -386,7 +387,7 @@ def render_guru():
                         c1, c2 = st.columns(2)
                         o0, o1 = c1.text_input(f"A #{i+1}", key=f"a_{i}"), c1.text_input(f"B #{i+1}", key=f"b_{i}")
                         o2, o3 = c2.text_input(f"C #{i+1}", key=f"c_{i}"), c2.text_input(f"D #{i+1}", key=f"d_{i}")
-                        k = st.selectbox(f"Kunci #{i+1}", [0, 1, 2, 3], key=f"k_{i}")
+                        k = st.selectbox(f"Kunci #{i+1}", [0, 1, 2, 3], format_func=lambda x: ['A','B','C','D'][x], key=f"k_{i}")
                         soal_list.append({"pertanyaan": q, "opsi": [o0, o1, o2, o3], "kunci": k})
                     
                     if st.form_submit_button("Simpan Tugas PG"):
@@ -410,34 +411,86 @@ def render_guru():
                             st.success("✅ Berhasil! Tugas Essay berhasil diterbitkan.")
                             st.rerun()
 
+        # FIX 1: TAMPILKAN DAN UPDATE DAFTAR SOAL SAAT EDIT TUGAS
         with t_edit:
-            st.subheader("✏️ Edit Tugas")
+            st.subheader("✏️ Edit Tugas & Soal")
             tugas_list = [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()]
             if tugas_list:
-                tg_map = {t["id"]: t["judul"] for t in tugas_list}
-                sel_id = st.selectbox("Pilih Tugas", list(tg_map.keys()), format_func=lambda x: tg_map[x])
+                tg_map = {t["id"]: f"[{t.get('tipe', '').upper()}] {t.get('judul')}" for t in tugas_list}
+                sel_id = st.selectbox("Pilih Tugas yang Akan Diedit", list(tg_map.keys()), format_func=lambda x: tg_map[x])
                 target_tg = next(t for t in tugas_list if t["id"] == sel_id)
 
                 with st.form("form_update_tg"):
-                    e_judul = st.text_input("Judul Baru", value=target_tg.get("judul", ""))
-                    e_instruksi = st.text_area("Instruksi Baru", value=target_tg.get("instruksi", ""))
-                    e_target = st.multiselect("Target Kelas Baru", options=pilihan_kelas, default=target_tg.get("target_kelas", pilihan_kelas))
+                    e_judul = st.text_input("Judul Tugas", value=target_tg.get("judul", ""))
+                    e_instruksi = st.text_area("Instruksi Tugas", value=target_tg.get("instruksi", ""))
+                    e_target = st.multiselect("Target Kelas", options=pilihan_kelas, default=target_tg.get("target_kelas", pilihan_kelas))
                     
-                    if st.form_submit_button("Perbarui Tugas"):
+                    st.divider()
+                    st.write("📝 **Daftar Soal Tugas:**")
+                    
+                    tipe_tugas = target_tg.get("tipe", "pg")
+                    existing_soal = target_tg.get("soal", [])
+                    updated_soal = []
+
+                    if tipe_tugas == "pg":
+                        for i, s in enumerate(existing_soal):
+                            st.markdown(f"**Soal #{i+1}**")
+                            q_val = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
+                            e_q = st.text_area(f"Pertanyaan #{i+1}", value=q_val, key=f"e_q_{i}")
+                            
+                            opsi = s.get("opsi", ["", "", "", ""]) if isinstance(s, dict) else ["", "", "", ""]
+                            c1, c2 = st.columns(2)
+                            e_o0 = c1.text_input(f"A #{i+1}", value=opsi[0] if len(opsi)>0 else "", key=f"e_a_{i}")
+                            e_o1 = c1.text_input(f"B #{i+1}", value=opsi[1] if len(opsi)>1 else "", key=f"e_b_{i}")
+                            e_o2 = c2.text_input(f"C #{i+1}", value=opsi[2] if len(opsi)>2 else "", key=f"e_c_{i}")
+                            e_o3 = c2.text_input(f"D #{i+1}", value=opsi[3] if len(opsi)>3 else "", key=f"e_d_{i}")
+                            
+                            curr_k = s.get("kunci", 0) if isinstance(s, dict) else 0
+                            curr_idx = int(curr_k) if isinstance(curr_k, int) and 0 <= int(curr_k) <= 3 else 0
+                            e_k = st.selectbox(f"Kunci Jawaban #{i+1}", [0, 1, 2, 3], index=curr_idx, format_func=lambda x: ['A','B','C','D'][x], key=f"e_k_{i}")
+                            
+                            updated_soal.append({"pertanyaan": e_q, "opsi": [e_o0, e_o1, e_o2, e_o3], "kunci": e_k})
+                    else:
+                        for i, s in enumerate(existing_soal):
+                            q_val = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
+                            e_q = st.text_area(f"Soal Essay #{i+1}", value=q_val, key=f"e_qe_{i}")
+                            updated_soal.append({"pertanyaan": e_q})
+
+                    if st.form_submit_button("💾 Perbarui Tugas & Soal"):
                         db.collection("tugas_pancasila").document(sel_id).update({
-                            "judul": e_judul, "instruksi": e_instruksi, "target_kelas": e_target, "updated_at": firestore.SERVER_TIMESTAMP
+                            "judul": e_judul,
+                            "instruksi": e_instruksi,
+                            "target_kelas": e_target,
+                            "soal": updated_soal,
+                            "updated_at": firestore.SERVER_TIMESTAMP
                         })
-                        st.success("✅ Berhasil! Informasi tugas telah diperbarui.")
+                        st.success("✅ Berhasil! Informasi tugas dan soal telah diperbarui.")
                         st.rerun()
 
+        # FIX 2: MENAMBAHKAN TOMBOL UNDUH TEMPLATE CSV
         with t_imp:
             st.subheader("📥 Import Soal Tugas")
-            up_soal = st.file_uploader("Upload File Soal", type=["csv", "xlsx"])
-            imp_judul = st.text_input("Judul Import")
+            st.write("💡 **Unduh Template CSV:** Silakan unduh format template di bawah ini sebelum mengunggah file soal.")
+            
+            # Format contoh CSV
+            csv_pg_example = "pertanyaan,opsi_a,opsi_b,opsi_c,opsi_d,kunci\nSila pertama Pancasila dilambangkan oleh?,Bintang,Rantai,Pohon Beringin,Banteng,A\n"
+            csv_essay_example = "pertanyaan\nJelaskan makna Sila ke-3 Pancasila bagi persatuan bangsa!\n"
+
+            c_tmp1, c_tmp2 = st.columns(2)
+            with c_tmp1:
+                st.download_button("📄 Unduh Template PG (.csv)", csv_pg_example.encode('utf-8'), "template_soal_pg.csv", "text/csv")
+            with c_tmp2:
+                st.download_button("📄 Unduh Template Essay (.csv)", csv_essay_example.encode('utf-8'), "template_soal_essay.csv", "text/csv")
+
+            st.divider()
+
+            up_soal = st.file_uploader("Upload File Soal (.csv / .xlsx)", type=["csv", "xlsx"])
+            imp_judul = st.text_input("Judul Tugas Baru")
+            imp_instruksi = st.text_area("Instruksi (Opsional)")
             imp_target = st.multiselect("Target Kelas Import", options=pilihan_kelas, default=pilihan_kelas)
             imp_tipe = st.selectbox("Tipe Soal Import", ["pg", "essay"])
 
-            if up_soal and imp_judul and imp_target and st.button("🚀 Import Soal", type="primary"):
+            if up_soal and imp_judul and imp_target and st.button("🚀 Import Soal Sekarang", type="primary"):
                 df_s = safe_read_uploaded_file(up_soal)
                 df_s.columns = [str(c).strip().lower() for c in df_s.columns]
                 parsed_s = []
@@ -455,10 +508,10 @@ def render_guru():
                         parsed_s.append({"pertanyaan": str(r["pertanyaan"])})
 
                 db.collection("tugas_pancasila").add({
-                    "judul": imp_judul, "instruksi": "", "tipe": imp_tipe, "target_kelas": imp_target,
+                    "judul": imp_judul, "instruksi": imp_instruksi, "tipe": imp_tipe, "target_kelas": imp_target,
                     "soal": parsed_s, "created_at": firestore.SERVER_TIMESTAMP
                 })
-                st.success("✅ Berhasil! Soal berhasil diimpor.")
+                st.success("✅ Berhasil! Soal berhasil diimpor ke database.")
                 st.rerun()
 
     elif menu == "📊 Rekap & Penilaian":
