@@ -92,12 +92,12 @@ def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
 # ==========================================
-# 3. AI EVALUATION HELPER
+# 3. AI EVALUATION HELPER (PERBAIKAN PARSING & ERROR)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
     if not api_key:
-        return None, "⚠️ Key 'GEMINI_API_KEY' belum dikonfigurasi."
+        return None, "⚠️ Key 'GEMINI_API_KEY' belum dikonfigurasi di secrets Streamlit."
 
     try:
         genai.configure(api_key=api_key)
@@ -107,21 +107,25 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         ]
 
         prompt = f"""
-        Anda adalah Guru Pendidikan Pancasila. Evaluasi jawaban essay berikut secara kritis dan obyektif.
+        Anda adalah Guru Pendidikan Pancasila. Evaluasi jawaban essay siswa berikut secara obyektif.
         
         {chr(10).join(prompt_items)}
 
-        Format Output WAJIB JSON murni:
+        Format Output WAJIB JSON murni (Tanpa markdown ```):
         {{"nilai": 85, "feedback": "Penjelasan sudah baik dan sesuai konsep Sila Pancasila."}}
         """
 
         model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
         
-        result_json = json.loads(response.text)
+        raw_text = response.text.strip()
+        if raw_text.startswith("```"):
+            raw_text = re.sub(r"^```(?:json)?|```$", "", raw_text, flags=re.MULTILINE).strip()
+            
+        result_json = json.loads(raw_text)
         return int(result_json.get("nilai", 0)), str(result_json.get("feedback", ""))
     except Exception as e:
-        return None, f"Gagal mengeksekusi AI: {e}"
+        return None, f"Gagal mengeksekusi AI: {str(e)}"
 
 # ==========================================
 # 4. AUTHENTICATION
@@ -411,7 +415,6 @@ def render_guru():
                             st.success("✅ Berhasil! Tugas Essay berhasil diterbitkan.")
                             st.rerun()
 
-        # FIX 1: TAMPILKAN DAN UPDATE DAFTAR SOAL SAAT EDIT TUGAS
         with t_edit:
             st.subheader("✏️ Edit Tugas & Soal")
             tugas_list = [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()]
@@ -467,12 +470,10 @@ def render_guru():
                         st.success("✅ Berhasil! Informasi tugas dan soal telah diperbarui.")
                         st.rerun()
 
-        # FIX 2: MENAMBAHKAN TOMBOL UNDUH TEMPLATE CSV
         with t_imp:
             st.subheader("📥 Import Soal Tugas")
             st.write("💡 **Unduh Template CSV:** Silakan unduh format template di bawah ini sebelum mengunggah file soal.")
             
-            # Format contoh CSV
             csv_pg_example = "pertanyaan,opsi_a,opsi_b,opsi_c,opsi_d,kunci\nSila pertama Pancasila dilambangkan oleh?,Bintang,Rantai,Pohon Beringin,Banteng,A\n"
             csv_essay_example = "pertanyaan\nJelaskan makna Sila ke-3 Pancasila bagi persatuan bangsa!\n"
 
@@ -595,6 +596,7 @@ def render_guru():
             else:
                 st.info("Belum ada akun siswa yang terdaftar di kelas ini.")
 
+        # PERBAIKAN PADA PENAMPILAN & AUTO KOREKSI AI
         with t_koreksi:
             st.subheader(f"Koreksi Hasil Jawaban Kelas {selected_kelas}")
             if not sub_list:
@@ -622,18 +624,26 @@ def render_guru():
 
                         if selected_tugas.get("tipe") == "essay":
                             if st.button("🤖 Auto Koreksi AI", key=f"ai_{sub['id']}"):
-                                val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
+                                with st.spinner("🤖 AI sedang menganalisis jawaban siswa..."):
+                                    val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
                                 if val is not None:
                                     db.collection("jawaban_siswa").document(sub["id"]).update({"nilai": val, "catatan_guru": fb})
+                                    # Update session_state secara eksplisit agar widget input langsung berubah
+                                    st.session_state[f"n_{sub['id']}"] = int(val)
+                                    st.session_state[f"c_{sub['id']}"] = str(fb)
                                     st.success("✅ AI selesai menilai!")
                                     st.rerun()
+                                else:
+                                    st.error(fb)
 
                         with st.form(key=f"f_eval_{sub['id']}"):
                             curr_val = int(sub.get("nilai", 80)) if sub.get("nilai") is not None else 80
                             curr_cat = sub.get("catatan_guru", "")
+                            
                             n_in = st.number_input("Nilai (0-100)", 0, 100, curr_val, key=f"n_{sub['id']}")
                             c_in = st.text_area("Catatan Guru", value=curr_cat, key=f"c_{sub['id']}")
-                            if st.form_submit_button("Simpan Nilai"):
+                            
+                            if st.form_submit_button("💾 Simpan Nilai Manual"):
                                 db.collection("jawaban_siswa").document(sub["id"]).update({"nilai": n_in, "catatan_guru": c_in})
                                 st.success("✅ Nilai disimpan!")
                                 st.rerun()
