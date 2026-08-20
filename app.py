@@ -700,13 +700,12 @@ def render_guru():
                             else:
                                 st.info(a or "(Kosong)")
 
-                        # Tombol Auto Koreksi AI (Hanya mengisi form, TIDAK langsung simpan ke database)
+                        # Tombol Auto Koreksi AI (Diisi ke state sebelum form dirender)
                         if selected_tugas.get("tipe") == "essay":
                             if st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}"):
                                 with st.spinner("🤖 AI sedang menganalisis jawaban siswa dalam Bahasa Indonesia..."):
                                     val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
                                 if val is not None:
-                                    # Hanya perbarui tampilan formulir (Session State)
                                     st.session_state[val_key] = int(val)
                                     st.session_state[cat_key] = str(fb)
                                     st.success("🤖 Hasil koreksi AI dimuat ke formulir! Silakan periksa kembali lalu klik tombol 'Simpan / Update' di bawah.")
@@ -720,16 +719,13 @@ def render_guru():
                             c_in = st.text_area("Catatan Guru (Bahasa Indonesia)", key=cat_key)
                             
                             if st.form_submit_button("💾 Simpan / Update Perubahan Guru"):
-                                # Penyimpanan ke Firestore HANYA dilakukan di sini
+                                # Simpan perubahan langsung ke Firestore
                                 db.collection("jawaban_siswa").document(sub_id).update({
                                     "nilai": n_in, 
                                     "catatan_guru": c_in
                                 })
-                                st.session_state[val_key] = n_in
-                                st.session_state[cat_key] = c_in
                                 st.success("✅ Perubahan koreksi berhasil disimpan!")
-                                st.rerun()
-                
+                                st.rerun()                
                 # Tampilan Tab Belum Dinilai
                 with tab_belum:
                     if not belum_dinilai:
