@@ -10,19 +10,6 @@ import string
 import json
 import google.generativeai as genai
 
-def read_csv_safely(uploaded_file):
-    # Urutan enkoding yang umum digunakan oleh Windows / Excel
-    encodings = ['utf-8', 'utf-8-sig', 'cp1252', 'latin1', 'iso-8859-1']
-    for enc in encodings:
-        try:
-            uploaded_file.seek(0)  # Reset pointer file ke awal
-            return pd.read_csv(uploaded_file, encoding=enc)
-        except (UnicodeDecodeError, Exception):
-            continue
-    # Fallback terakhir jika enkoding tidak terdeteksi
-    uploaded_file.seek(0)
-    return pd.read_csv(uploaded_file, encoding='utf-8', errors='replace')
-
 # ==========================================
 # 1. CONFIG & CSS MOBILE RESPONSIVE
 # ==========================================
@@ -451,74 +438,73 @@ if role == "superadmin":
             st.divider()
 
             uploaded_file = st.file_uploader("Unggah File Siswa (.csv atau .xlsx)", type=["csv", "xlsx"])
-if uploaded_file is not None:
-    try:
-        # Pengecekan ekstensi file dan pembacaan data
-        if uploaded_file.name.endswith('.csv'):
-            df_import = read_csv_safely(uploaded_file)
-        else:
-            df_import = pd.read_excel(uploaded_file)
-
-        df_import.columns = [str(col).strip().lower() for col in df_import.columns]
-        req_cols = ["nama", "kelas"]
-
-        if not all(col in df_import.columns for col in req_cols):
-            st.error(f"Format file tidak valid! File wajib memiliki kolom: **{', '.join(req_cols)}**")
-        else:
-            st.write("👀 **Pratinjau Data yang Akan Diimpor:**")
-            st.dataframe(df_import, use_container_width=True)
-
-            if st.button("🚀 Mulai Import Data Siswa", type="primary"):
-                created_count = 0
-                updated_count = 0
-                skipped_count = 0
-
-                docs_siswa = db.collection("users").where("role", "==", "siswa").stream()
-                existing_siswa_map = {}
-                for doc in docs_siswa:
-                    u_data = doc.to_dict()
-                    nama_val = u_data.get("nama", "").strip().lower()
-                    if nama_val:
-                        existing_siswa_map[nama_val] = doc.id
-
-                for idx, row in df_import.iterrows():
-                    nama_s = str(row["nama"]).strip()
-                    kelas_s = str(row["kelas"]).strip()
-
-                    if not nama_s or pd.isna(row["nama"]):
-                        skipped_count += 1
-                        continue
-
-                    nama_key = nama_s.lower()
-
-                    if nama_key in existing_siswa_map:
-                        target_username = existing_siswa_map[nama_key]
-                        db.collection("users").document(target_username).update({
-                            "kelas": kelas_s
-                        })
-                        updated_count += 1
+            if uploaded_file is not None:
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        df_import = pd.read_csv(uploaded_file)
                     else:
-                        u_name = generate_username(nama_s)
-                        p_plain = generate_password(6)
-                        p_hashed = hash_pass(p_plain)
+                        df_import = pd.read_excel(uploaded_file)
 
-                        db.collection("users").document(u_name).set({
-                            "nama": nama_s,
-                            "password": p_hashed,
-                            "password_plain": p_plain,
-                            "role": "siswa",
-                            "kelas": kelas_s,
-                            "created_at": firestore.SERVER_TIMESTAMP
-                        })
-                        existing_siswa_map[nama_key] = u_name
-                        created_count += 1
+                    df_import.columns = [str(col).strip().lower() for col in df_import.columns]
+                    req_cols = ["nama", "kelas"]
 
-                st.success(f"✅ Import Selesai!\n- **{created_count}** akun siswa baru ditambahkan.\n- **{updated_count}** data siswa diperbarui kelasnya.")
-                if skipped_count > 0:
-                    st.warning(f"⚠️ **{skipped_count}** baris dilewati karena kolom nama kosong.")
-                st.rerun()
+                    if not all(col in df_import.columns for col in req_cols):
+                        st.error(f"Format file tidak valid! File wajib memiliki kolom: **{', '.join(req_cols)}**")
+                    else:
+                        st.write("👀 **Pratinjau Data yang Akan Diimpor:**")
+                        st.dataframe(df_import, use_container_width=True)
 
-    except Exception as e:
+                        if st.button("🚀 Mulai Import Data Siswa", type="primary"):
+                            created_count = 0
+                            updated_count = 0
+                            skipped_count = 0
+
+                            docs_siswa = db.collection("users").where("role", "==", "siswa").stream()
+                            existing_siswa_map = {}
+                            for doc in docs_siswa:
+                                u_data = doc.to_dict()
+                                nama_val = u_data.get("nama", "").strip().lower()
+                                if nama_val:
+                                    existing_siswa_map[nama_val] = doc.id
+
+                            for idx, row in df_import.iterrows():
+                                nama_s = str(row["nama"]).strip()
+                                kelas_s = str(row["kelas"]).strip()
+
+                                if not nama_s or pd.isna(row["nama"]):
+                                    skipped_count += 1
+                                    continue
+
+                                nama_key = nama_s.lower()
+
+                                if nama_key in existing_siswa_map:
+                                    target_username = existing_siswa_map[nama_key]
+                                    db.collection("users").document(target_username).update({
+                                        "kelas": kelas_s
+                                    })
+                                    updated_count += 1
+                                else:
+                                    u_name = generate_username(nama_s)
+                                    p_plain = generate_password(6)
+                                    p_hashed = hash_pass(p_plain)
+
+                                    db.collection("users").document(u_name).set({
+                                        "nama": nama_s,
+                                        "password": p_hashed,
+                                        "password_plain": p_plain,
+                                        "role": "siswa",
+                                        "kelas": kelas_s,
+                                        "created_at": firestore.SERVER_TIMESTAMP
+                                    })
+                                    existing_siswa_map[nama_key] = u_name
+                                    created_count += 1
+
+                            st.success(f"✅ Import Selesai!\n- **{created_count}** akun siswa baru ditambahkan.\n- **{updated_count}** data siswa diperbarui kelasnya.")
+                            if skipped_count > 0:
+                                st.warning(f"⚠️ **{skipped_count}** baris dilewati karena kolom nama kosong.")
+                            st.rerun()
+
+                except Exception as e:
                     st.error(f"Gagal memproses file: {e}")
 
         with col_exp:
@@ -899,92 +885,91 @@ elif role == "guru":
                 st.divider()
 
                 file_soal = st.file_uploader("Unggah File Soal (.csv atau .xlsx)", type=["csv", "xlsx"], key="file_soal_upload")
-                file_soal = st.file_uploader("Unggah File Soal (.csv atau .xlsx)", type=["csv", "xlsx"], key="file_soal_upload")
-
-if file_soal is not None:
-    try:
-        if file_soal.name.endswith('.csv'):
-            df_soal = read_csv_safely(file_soal)
-        else:
-            df_soal = pd.read_excel(file_soal)
-
-        df_soal.columns = [str(col).strip().lower() for col in df_soal.columns]
-
-        if tipe_import == "Pilihan Ganda (PG)":
-            req_cols = ["pertanyaan", "opsi_a", "opsi_b", "opsi_c", "opsi_d", "kunci"]
-            if not all(c in df_soal.columns for c in req_cols):
-                st.error(f"Format file tidak sesuai! Wajib memiliki kolom: **{', '.join(req_cols)}**")
-            else:
-                st.write("👀 **Pratinjau Soal Pilihan Ganda:**")
-                st.dataframe(df_soal, use_container_width=True)
-
-                if st.button("🚀 Import & Terbitkan Tugas PG", type="primary"):
-                    if not judul_imp:
-                        st.warning("Mohon isi 'Judul Tugas' terlebih dahulu!")
-                    elif not target_kelas_imp:
-                        st.warning("Pilih minimal satu kelas target!")
-                    else:
-                        parsed_soal = []
-                        key_mapping = {'a': 0, 'b': 1, 'c': 2, 'd': 3, '0': 0, '1': 1, '2': 2, '3': 3}
-                        
-                        for _, row in df_soal.iterrows():
-                            k_raw = str(row["kunci"]).strip().lower()
-                            k_val = key_mapping.get(k_raw, 0)
-
-                            parsed_soal.append({
-                                "pertanyaan": str(row["pertanyaan"]).strip(),
-                                "opsi": [
-                                    str(row["opsi_a"]).strip(),
-                                    str(row["opsi_b"]).strip(),
-                                    str(row["opsi_c"]).strip(),
-                                    str(row["opsi_d"]).strip()
-                                ],
-                                "kunci": k_val
-                            })
-
-                        db.collection("tugas_pancasila").add({
-                            "judul": judul_imp,
-                            "instruksi": instruksi_imp,
-                            "tipe": "pg",
-                            "target_kelas": target_kelas_imp,
-                            "soal": parsed_soal,
-                            "created_by": user_info["username"],
-                            "created_at": firestore.SERVER_TIMESTAMP
-                        })
-                        st.success(f"✅ Tugas PG '{judul_imp}' ({len(parsed_soal)} soal) berhasil diimpor!")
-                        st.rerun()
-
-        else:  # Essay Import
-            req_cols = ["pertanyaan"]
-            if not all(c in df_soal.columns for c in req_cols):
-                st.error("Format file tidak sesuai! Wajib memiliki kolom: **pertanyaan**")
-            else:
-                st.write("👀 **Pratinjau Soal Essay:**")
-                st.dataframe(df_soal, use_container_width=True)
-
-                if st.button("🚀 Import & Terbitkan Tugas Essay", type="primary"):
-                    if not judul_imp:
-                        st.warning("Mohon isi 'Judul Tugas' terlebih dahulu!")
-                    elif not target_kelas_imp:
-                        st.warning("Pilih minimal satu kelas target!")
-                    else:
-                        parsed_soal = [{"pertanyaan": str(row["pertanyaan"]).strip()} for _, row in df_soal.iterrows() if str(row["pertanyaan"]).strip()]
-
-                        db.collection("tugas_pancasila").add({
-                            "judul": judul_imp,
-                            "instruksi": instruksi_imp,
-                            "tipe": "essay",
-                            "target_kelas": target_kelas_imp,
-                            "soal": parsed_soal,
-                            "created_by": user_info["username"],
-                            "created_at": firestore.SERVER_TIMESTAMP
-                        })
-                        st.success(f"✅ Tugas Essay '{judul_imp}' ({len(parsed_soal)} soal) berhasil diimpor!")
-                        st.rerun()
-
-    except Exception as e:
-        st.error(f"Gagal membaca file: {e}")
                 
+                if file_soal is not None:
+                    try:
+                        if file_soal.name.endswith('.csv'):
+                            df_soal = pd.read_csv(file_soal)
+                        else:
+                            df_soal = pd.read_excel(file_soal)
+
+                        df_soal.columns = [str(col).strip().lower() for col in df_soal.columns]
+
+                        if tipe_import == "Pilihan Ganda (PG)":
+                            req_cols = ["pertanyaan", "opsi_a", "opsi_b", "opsi_c", "opsi_d", "kunci"]
+                            if not all(c in df_soal.columns for c in req_cols):
+                                st.error(f"Format file tidak sesuai! Wajib memiliki kolom: **{', '.join(req_cols)}**")
+                            else:
+                                st.write("👀 **Pratinjau Soal Pilihan Ganda:**")
+                                st.dataframe(df_soal, use_container_width=True)
+
+                                if st.button("🚀 Import & Terbitkan Tugas PG", type="primary"):
+                                    if not judul_imp:
+                                        st.warning("Mohon isi 'Judul Tugas' terlebih dahulu!")
+                                    elif not target_kelas_imp:
+                                        st.warning("Pilih minimal satu kelas target!")
+                                    else:
+                                        parsed_soal = []
+                                        key_mapping = {'a': 0, 'b': 1, 'c': 2, 'd': 3, '0': 0, '1': 1, '2': 2, '3': 3}
+                                        
+                                        for _, row in df_soal.iterrows():
+                                            k_raw = str(row["kunci"]).strip().lower()
+                                            k_val = key_mapping.get(k_raw, 0)
+
+                                            parsed_soal.append({
+                                                "pertanyaan": str(row["pertanyaan"]).strip(),
+                                                "opsi": [
+                                                    str(row["opsi_a"]).strip(),
+                                                    str(row["opsi_b"]).strip(),
+                                                    str(row["opsi_c"]).strip(),
+                                                    str(row["opsi_d"]).strip()
+                                                ],
+                                                "kunci": k_val
+                                            })
+
+                                        db.collection("tugas_pancasila").add({
+                                            "judul": judul_imp,
+                                            "instruksi": instruksi_imp,
+                                            "tipe": "pg",
+                                            "target_kelas": target_kelas_imp,
+                                            "soal": parsed_soal,
+                                            "created_by": user_info["username"],
+                                            "created_at": firestore.SERVER_TIMESTAMP
+                                        })
+                                        st.success(f"✅ Tugas PG '{judul_imp}' ({len(parsed_soal)} soal) berhasil diimpor untuk kelas: {', '.join(target_kelas_imp)}!")
+                                        st.rerun()
+
+                        else:  # Essay Import
+                            req_cols = ["pertanyaan"]
+                            if not all(c in df_soal.columns for c in req_cols):
+                                st.error("Format file tidak sesuai! Wajib memiliki kolom: **pertanyaan**")
+                            else:
+                                st.write("👀 **Pratinjau Soal Essay:**")
+                                st.dataframe(df_soal, use_container_width=True)
+
+                                if st.button("🚀 Import & Terbitkan Tugas Essay", type="primary"):
+                                    if not judul_imp:
+                                        st.warning("Mohon isi 'Judul Tugas' terlebih dahulu!")
+                                    elif not target_kelas_imp:
+                                        st.warning("Pilih minimal satu kelas target!")
+                                    else:
+                                        parsed_soal = [{"pertanyaan": str(row["pertanyaan"]).strip()} for _, row in df_soal.iterrows() if str(row["pertanyaan"]).strip()]
+
+                                        db.collection("tugas_pancasila").add({
+                                            "judul": judul_imp,
+                                            "instruksi": instruksi_imp,
+                                            "tipe": "essay",
+                                            "target_kelas": target_kelas_imp,
+                                            "soal": parsed_soal,
+                                            "created_by": user_info["username"],
+                                            "created_at": firestore.SERVER_TIMESTAMP
+                                        })
+                                        st.success(f"✅ Tugas Essay '{judul_imp}' ({len(parsed_soal)} soal) berhasil diimpor untuk kelas: {', '.join(target_kelas_imp)}!")
+                                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Gagal membaca file: {e}")
+
             # --- BAGIAN EKSPOR TUGAS ---
             with col_exp_t:
                 st.markdown("### 📤 Ekspor / Backup Soal Tugas")
