@@ -916,7 +916,7 @@ def render_guru():
                     mime="text/csv"
                 )
 # ==========================================
-# 8. PANEL SISWA (MOBILE & ANDROID FRIENDLY)
+# 8. PANEL SISWA (MOBILE & ANDROID OPTIMIZED)
 # ==========================================
 def render_siswa():
     import streamlit.components.v1 as components
@@ -960,45 +960,44 @@ def render_siswa():
 
         curr_page = st.session_state[f"quiz_page_{tg_id}"]
         answers = st.session_state[f"quiz_answers_{tg_id}"]
-        terjawab_count = sum(1 for a in answers if a is None)
+        terjawab_count = sum(1 for a in answers if a is not None)
 
-        # Header Kuis Mobile
-        st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary")
-        if st.session_state.get("btn_exit_quiz"):
+        # Header Kuis
+        if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary"):
             st.session_state["active_quiz_id"] = None
             st.rerun()
 
         st.markdown(f"### 📝 {tg.get('judul')}")
-        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Progress: **{total_soal - terjawab_count}/{total_soal} Dijawab**")
+        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab**")
 
-        # Deteksi Anti-Contek Pintar (Mengabaikan Kunci Layar / Power Button Android)
+        # ---------------------------------------------------------
+        # ANTI-KECURANGAN PINTAR (DETEKSI TAB/APP/FILE TERLINDUNGI)
+        # ---------------------------------------------------------
         components.html("""
         <style>
             #cheat-modal {
                 display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                background: rgba(0,0,0,0.65); z-index: 999999; justify-content: center; align-items: center;
+                background: rgba(0,0,0,0.75); z-index: 999999; justify-content: center; align-items: center;
             }
             .cheat-box {
                 background: #ffffff; padding: 22px; border-radius: 16px; max-width: 310px;
-                text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3); font-family: -apple-system, sans-serif;
+                text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3); font-family: system-ui, -apple-system, sans-serif;
             }
             .cheat-box h4 { margin: 0 0 10px 0; color: #d32f2f; font-size: 18px; }
             .cheat-box p { font-size: 14px; color: #333; margin-bottom: 18px; line-height: 1.4; }
-            .cheat-btn { background: #1e3c72; color: white; border: none; padding: 10px 20px; border-radius: 10px; font-weight: bold; font-size: 14px; width: 100%; }
+            .cheat-btn { background: #1e3c72; color: white; border: none; padding: 10px 20px; border-radius: 10px; font-weight: bold; font-size: 14px; width: 100%; cursor: pointer; }
         </style>
         <div id="cheat-modal">
             <div class="cheat-box">
-                <h4 id="cheat-title">⚠️ Peringatan Ujian</h4>
-                <p id="cheat-msg">Dilarang berpindah aplikasi atau membuka tab lain!</p>
+                <h4 id="cheat-title">⚠️ PERINGATAN KECURANGAN</h4>
+                <p id="cheat-msg">Dilarang berpindah tab, membuka aplikasi, atau mengakses file lain!</p>
                 <button class="cheat-btn" onclick="document.getElementById('cheat-modal').style.display='none'">Saya Mengerti</button>
             </div>
         </div>
         <script>
             let cheatCount = 0;
             const maxViolations = 2;
-            let hideStartTime = 0;
-            let hiddenTicks = 0;
-            let tickInterval = null;
+            let isPowerOff = false;
 
             // Mencegah layar meredup/sleep otomatis saat membaca soal
             async function keepAwake() {
@@ -1006,70 +1005,53 @@ def render_siswa():
             }
             keepAwake();
 
+            // Membedakan tombol Power/Kunci Layar fisik Android
+            window.addEventListener('pagehide', function() { isPowerOff = true; });
+
+            function recordViolation() {
+                cheatCount++;
+                const modal = document.getElementById('cheat-modal');
+                const msg = document.getElementById('cheat-msg');
+                if (cheatCount < maxViolations) {
+                    msg.innerText = "⚠️ Dilarang berpindah tab, aplikasi, atau file lain! (Peringatan " + cheatCount + "/" + maxViolations + ")";
+                    modal.style.display = 'flex';
+                } else {
+                    msg.innerText = "🚨 Anda terdeteksi melakukan kecurangan berulang kali. Jawaban dikumpulkan otomatis!";
+                    modal.style.display = 'flex';
+                    setTimeout(function() {
+                        const buttons = window.parent.document.querySelectorAll('button');
+                        for (let btn of buttons) {
+                            if (btn.innerText.includes("Kumpulkan Semua Jawaban")) { btn.click(); break; }
+                        }
+                    }, 1000);
+                }
+            }
+
+            // Deteksi Pindah Tab, Buka Situs Lain, Buka Aplikasi / File Lain
             document.addEventListener("visibilitychange", function() {
                 if (document.hidden) {
-                    hideStartTime = Date.now();
-                    hiddenTicks = 0;
-                    // Hitung detak CPU saat di latar belakang
-                    tickInterval = setInterval(function() { hiddenTicks++; }, 100);
+                    setTimeout(function() {
+                        if (isPowerOff) return; // Mengabaikan jika murni layar HP dimatikan
+                        recordViolation();
+                    }, 200);
                 } else {
-                    if (tickInterval) clearInterval(tickInterval);
-                    
-                    let timeHidden = Date.now() - hideStartTime;
-                    let expectedTicks = timeHidden / 100;
-
-                    // Abaikan jika hanya kedipan layar / sentuhan tidak sengaja (< 350ms)
-                    if (timeHidden < 350) return;
-
-                    // Jika detak CPU riil jauh lebih sedikit dari estimasi (< 40%),
-                    // berarti HP sedang DILOCK/LAYAR MATI (CPU suspended). ABAIKAN!
-                    let wasCpuSuspended = (hiddenTicks < expectedTicks * 0.4);
-
-                    if (wasCpuSuspended) {
-                        return; // Layar HP mati/terkunci -> Bukan Pelanggaran!
-                    }
-
-                    // Murni berpindah aplikasi / pindah tab browser
-                    cheatCount++;
-                    const modal = document.getElementById('cheat-modal');
-                    const msg = document.getElementById('cheat-msg');
-                    if (cheatCount < maxViolations) {
-                        msg.innerText = "⚠️ Dilarang berpindah aplikasi atau membuka tab lain! (Peringatan " + cheatCount + "/" + maxViolations + ")";
-                        modal.style.display = 'flex';
-                    } else {
-                        msg.innerText = "🚨 Anda terdeteksi berpindah aplikasi berulang kali. Jawaban akan dikumpulkan otomatis!";
-                        modal.style.display = 'flex';
-                        setTimeout(function() {
-                            const buttons = window.parent.document.querySelectorAll('button');
-                            for (let btn of buttons) {
-                                if (btn.innerText.includes("Kumpulkan Semua Jawaban")) { btn.click(); break; }
-                            }
-                        }, 1200);
-                    }
+                    setTimeout(function() { isPowerOff = false; }, 400);
                 }
+            });
+
+            // Deteksi tambahan jika aplikasi kehilangan fokus (split screen / floating app / file viewer)
+            window.addEventListener('blur', function() {
+                setTimeout(function() {
+                    if (document.hidden && !isPowerOff) {
+                        // Ditangani oleh visibilitychange
+                    }
+                }, 200);
             });
         </script>
         """, height=0)
 
         # Bilah Kemajuan (Progress Bar)
         st.progress((curr_page + 1) / total_soal)
-
-        # ---------------------------------------------------------
-        # NAVIGASI NOMOR SOAL (RAMAH LAYAR SENTUH HP - 5 KOLOM)
-        # ---------------------------------------------------------
-        with st.expander("📌 **Navigasi Nomor Soal**", expanded=False):
-            cols_per_row = 5  # 5 Kolom pas untuk ukuran layar HP
-            for row_start in range(0, total_soal, cols_per_row):
-                cols = st.columns(cols_per_row)
-                for idx in range(cols_per_row):
-                    q_idx = row_start + idx
-                    if q_idx < total_soal:
-                        is_ans = answers[q_idx] is not None
-                        label_btn = f"{'🟢' if is_ans else '⚪'} {q_idx + 1}"
-                        btn_t = "primary" if q_idx == curr_page else "secondary"
-                        if cols[idx].button(label_btn, key=f"nav_p_{q_idx}", type=btn_t, use_container_width=True):
-                            st.session_state[f"quiz_page_{tg_id}"] = q_idx
-                            st.rerun()
 
         # ---------------------------------------------------------
         # AREA SOAL & PILIHAN JAWABAN
@@ -1112,6 +1094,25 @@ def render_siswa():
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
         # ---------------------------------------------------------
+        # NAVIGASI NOMOR SOAL DI BAWAH (MENYAMPING / HORIZONTAL)
+        # ---------------------------------------------------------
+        st.markdown("📌 **Pilih Nomor Soal:**")
+        cols_per_row = 5  # Baris horizontal 5 tombol per baris (pas untuk Android)
+        for row_start in range(0, total_soal, cols_per_row):
+            nav_cols = st.columns(cols_per_row)
+            for idx in range(cols_per_row):
+                q_idx = row_start + idx
+                if q_idx < total_soal:
+                    is_ans = answers[q_idx] is not None
+                    lbl = f"{'🟢' if is_ans else '⚪'} {q_idx + 1}"
+                    btn_t = "primary" if q_idx == curr_page else "secondary"
+                    if nav_cols[idx].button(lbl, key=f"nav_p_{q_idx}", type=btn_t, use_container_width=True):
+                        st.session_state[f"quiz_page_{tg_id}"] = q_idx
+                        st.rerun()
+
+        st.write("")
+
+        # ---------------------------------------------------------
         # TOMBOL NAVIGASI SEBELUMNYA / SELANJUTNYA
         # ---------------------------------------------------------
         c_prev, c_next = st.columns(2)
@@ -1131,8 +1132,9 @@ def render_siswa():
         # TOMBOL AKHIR SUBMIT SOAL
         # ---------------------------------------------------------
         st.divider()
-        if terjawab_count > 0:
-            st.warning(f"⚠️ Masih ada **{terjawab_count} soal** yang belum dijawab.")
+        unanswered_count = sum(1 for a in answers if a is None)
+        if unanswered_count > 0:
+            st.warning(f"⚠️ Masih ada **{unanswered_count} soal** yang belum dijawab.")
 
         if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
             if tg.get("tipe") == "pg":
@@ -1315,6 +1317,7 @@ def render_siswa():
                             st.metric("Nilai", f"{nilai_val}")
                         else:
                             st.warning("Menunggu Koreksi")
+
 # ==========================================
 # 9. MAIN ROUTER
 # ==========================================
