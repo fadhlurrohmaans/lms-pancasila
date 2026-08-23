@@ -1008,7 +1008,7 @@ def render_siswa():
                                 components.html("""
                                 <script>
                                     let cheatCount = 0;
-                                    const maxViolations = 2;
+                                    const maxViolations = 5;
 
                                     document.addEventListener("visibilitychange", function() {
                                         if (document.hidden) {
