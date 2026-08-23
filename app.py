@@ -1006,63 +1006,112 @@ def render_siswa():
                             with st.expander("▶️ Kerjakan Tugas Sekarang", expanded=False):
                                 # Deteksi Pindah Tab/Aplikasi
                                 components.html("""
+<style>
+    #cheat-modal {
+        display: none;
+        position: fixed;
+        top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.6);
+        z-index: 999999;
+        justify-content: center;
+        align-items: center;
+    }
+    .cheat-box {
+        background: #ffffff;
+        padding: 20px;
+        border-radius: 12px;
+        max-width: 300px;
+        text-align: center;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .cheat-box h4 { margin: 0 0 10px 0; color: #d32f2f; font-size: 16px; }
+    .cheat-box p { font-size: 13px; color: #333; margin-bottom: 15px; line-height: 1.4; }
+    .cheat-btn {
+        background: #1e3c72; color: white; border: none;
+        padding: 8px 18px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 13px;
+    }
+</style>
+
+<div id="cheat-modal">
+    <div class="cheat-box">
+        <h4 id="cheat-title">⚠️ Peringatan Kuis</h4>
+        <p id="cheat-msg">Dilarang berpindah aplikasi atau membuka tab lain!</p>
+        <button class="cheat-btn" onclick="closeCheatModal()">Saya Mengerti</button>
+    </div>
+</div>
+
 <script>
     let cheatCount = 0;
     const maxViolations = 2;
-    let isSystemLock = false;
+    let isScreenLocked = false;
+    let lastTick = Date.now();
 
-    // 1. Minta akses agar layar HP tidak mati otomatis (Screen Timeout / Sleep) saat kuis
+    // 1. Mencegah layar redup/sleep otomatis
     async function keepScreenAwake() {
         try {
             if ('wakeLock' in navigator) {
                 await navigator.wakeLock.request('screen');
             }
-        } catch (err) {
-            console.log("WakeLock error:", err);
-        }
+        } catch (e) {}
     }
     keepScreenAwake();
 
-    // 2. Deteksi jika layar dimatikan manual via tombol Power / Sistem HP Kunci
-    window.addEventListener('pagehide', function() {
-        isSystemLock = true;
-    });
-    
-    document.addEventListener('freeze', function() {
-        isSystemLock = true;
-    });
+    // 2. Deteksi jeda CPU (layar mati / tombol Power ditekan)
+    setInterval(function() {
+        let now = Date.now();
+        // Jika selisih waktu > 1.2 detik, artinya CPU terhenti (HP dikunci / layar mati)
+        if (now - lastTick > 1200) {
+            isScreenLocked = true;
+        }
+        lastTick = now;
+    }, 400);
 
     // 3. Deteksi Pindah Tab / Buka Aplikasi Lain
     document.addEventListener("visibilitychange", function() {
         if (document.hidden) {
-            // Beri sedikit jeda waktu untuk membedakan antara mati layar vs pindah aplikasi
             setTimeout(function() {
-                if (isSystemLock) {
-                    // Jika layar mati / HP terkunci, abaikan (jangan hitung pelanggaran)
-                    isSystemLock = false;
-                    return;
-                }
+                // Jika dipicu oleh tombol Power / Kunci Layar -> Abaikan
+                if (isScreenLocked) return;
 
-                // Jika murni membuka aplikasi lain atau tab baru -> Hitung Pelanggaran
+                // Jika murni membuka aplikasi lain -> Pelanggaran
                 cheatCount++;
-                if (cheatCount < maxViolations) {
-                    alert("⚠️ PERINGATAN! Dilarang berpindah tab atau membuka aplikasi lain saat kuis berlangsung!");
-                } else {
-                    alert("⚠️ Anda telah melakukan kecurangan berulang kali. Kuis akan dikumpulkan otomatis!");
-                    const buttons = window.parent.document.querySelectorAll('button');
-                    for (let btn of buttons) {
-                        if (btn.innerText.includes("Kumpulkan Jawaban")) {
-                            btn.click();
-                            break;
-                        }
-                    }
-                }
-            }, 150);
+                showCheatModal(cheatCount);
+            }, 100);
         } else {
-            // Reset status saat layar kembali aktif
-            isSystemLock = false;
+            // Reset penanda setelah layar kembali aktif
+            setTimeout(function() {
+                isScreenLocked = false;
+            }, 800);
         }
     });
+
+    function showCheatModal(count) {
+        const modal = document.getElementById('cheat-modal');
+        const msg = document.getElementById('cheat-msg');
+        
+        if (count < maxViolations) {
+            msg.innerText = "⚠️ Dilarang berpindah aplikasi atau membuka tab lain saat kuis berlangsung! (Peringatan " + count + "/" + maxViolations + ")";
+            modal.style.display = 'flex';
+        } else {
+            msg.innerText = "🚨 Anda telah melakukan kecurangan berulang kali. Kuis akan dikumpulkan otomatis!";
+            modal.style.display = 'flex';
+            
+            setTimeout(function() {
+                const buttons = window.parent.document.querySelectorAll('button');
+                for (let btn of buttons) {
+                    if (btn.innerText.includes("Kumpulkan Jawaban")) {
+                        btn.click();
+                        break;
+                    }
+                }
+            }, 1200);
+        }
+    }
+
+    function closeCheatModal() {
+        document.getElementById('cheat-modal').style.display = 'none';
+    }
 </script>
 """, height=0)
                                 with st.form(key=f"form_kerjakan_{tg_id}"):
