@@ -915,11 +915,12 @@ def render_guru():
                     file_name=f"rekap_nilai_kelas_{selected_kelas}.csv",
                     mime="text/csv"
                 )
-
 # ==========================================
 # 8. PANEL SISWA (MOBILE FRIENDLY DESIGN)
 # ==========================================
 def render_siswa():
+    import streamlit.components.v1 as components
+
     kelas_s = user_info.get("kelas", "-")
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
@@ -928,7 +929,7 @@ def render_siswa():
     all_tugas = [t for t in [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()] if is_tugas_sesuai_kelas(t, kelas_s)]
     active_task_ids = {t["id"] for t in all_tugas}
 
-    # 2. Ambil riwayat pengumpulan siswa & FILTER hanya untuk tugas yang MASIH ADA
+    # 2. Ambil riwayat pengumpulan siswa & FILTER tugas aktif
     my_subs_docs = db.collection("jawaban_siswa").where("username_siswa", "==", username_s).stream()
     my_subs = {}
     for d in my_subs_docs:
@@ -937,21 +938,215 @@ def render_siswa():
         if t_id in active_task_ids:
             my_subs[t_id] = data
 
-    # 3. Kalkulasi Metrik Berdasarkan Tugas Aktif
+    # ---------------------------------------------------------
+    # 🔥 MODE FOKUS KUIS (TAMPILAN KHUSUS SAAT MENGERJAKAN SOAL)
+    # ---------------------------------------------------------
+    active_quiz_id = st.session_state.get("active_quiz_id")
+    if active_quiz_id:
+        tg = next((t for t in all_tugas if t["id"] == active_quiz_id), None)
+        if not tg:
+            st.session_state["active_quiz_id"] = None
+            st.rerun()
+
+        tg_id = tg["id"]
+        soal_list = tg.get("soal", [])
+        total_soal = len(soal_list)
+
+        # Inisialisasi state kuis
+        if f"quiz_answers_{tg_id}" not in st.session_state:
+            st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
+        if f"quiz_page_{tg_id}" not in st.session_state:
+            st.session_state[f"quiz_page_{tg_id}"] = 0
+
+        curr_page = st.session_state[f"quiz_page_{tg_id}"]
+        answers = st.session_state[f"quiz_answers_{tg_id}"]
+
+        # Header Mode Fokus
+        col_back, col_title = st.columns([1, 4])
+        with col_back:
+            if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz"):
+                st.session_state["active_quiz_id"] = None
+                st.rerun()
+        with col_title:
+            st.subheader(f"📝 {tg.get('judul')}")
+            st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Soal **{curr_page + 1}** dari **{total_soal}**")
+
+        # Deteksi Kecurangan (Pindah Tab / Kunci Layar Safe)
+        components.html("""
+        <style>
+            #cheat-modal {
+                display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                background: rgba(0,0,0,0.6); z-index: 999999; justify-content: center; align-items: center;
+            }
+            .cheat-box {
+                background: #ffffff; padding: 20px; border-radius: 12px; max-width: 300px;
+                text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.2); font-family: sans-serif;
+            }
+            .cheat-box h4 { margin: 0 0 10px 0; color: #d32f2f; font-size: 16px; }
+            .cheat-box p { font-size: 13px; color: #333; margin-bottom: 15px; line-height: 1.4; }
+            .cheat-btn { background: #1e3c72; color: white; border: none; padding: 8px 18px; border-radius: 8px; font-weight: bold; cursor: pointer; }
+        </style>
+        <div id="cheat-modal">
+            <div class="cheat-box">
+                <h4 id="cheat-title">⚠️ Peringatan Kuis</h4>
+                <p id="cheat-msg">Dilarang berpindah aplikasi atau membuka tab lain!</p>
+                <button class="cheat-btn" onclick="document.getElementById('cheat-modal').style.display='none'">Saya Mengerti</button>
+            </div>
+        </div>
+        <script>
+            let cheatCount = 0; const maxViolations = 2; let isScreenLocked = false; let lastTick = Date.now();
+            async function keepAwake() { try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {} }
+            keepAwake();
+            setInterval(function() {
+                let now = Date.now();
+                if (now - lastTick > 1200) isScreenLocked = true;
+                lastTick = now;
+            }, 400);
+            document.addEventListener("visibilitychange", function() {
+                if (document.hidden) {
+                    setTimeout(function() {
+                        if (isScreenLocked) return;
+                        cheatCount++;
+                        const modal = document.getElementById('cheat-modal');
+                        const msg = document.getElementById('cheat-msg');
+                        if (cheatCount < maxViolations) {
+                            msg.innerText = "⚠️ Dilarang berpindah aplikasi atau membuka tab lain! (Peringatan " + cheatCount + "/" + maxViolations + ")";
+                            modal.style.display = 'flex';
+                        } else {
+                            msg.innerText = "🚨 Kecurangan berulang! Kuis akan dikumpulkan otomatis.";
+                            modal.style.display = 'flex';
+                            setTimeout(function() {
+                                const buttons = window.parent.document.querySelectorAll('button');
+                                for (let btn of buttons) {
+                                    if (btn.innerText.includes("Kumpulkan Semua Jawaban")) { btn.click(); break; }
+                                }
+                            }, 1200);
+                        }
+                    }, 100);
+                } else {
+                    setTimeout(function() { isScreenLocked = false; }, 800);
+                }
+            });
+        </script>
+        """, height=0)
+
+        # Progres Kuis
+        st.progress((curr_page + 1) / total_soal)
+
+        # Kisi Navigasi Nomor Soal
+        st.write("📌 **Navigasi Nomor Soal:**")
+        cols_nav = st.columns(min(total_soal, 10))
+        for p_idx in range(total_soal):
+            col_target = cols_nav[p_idx % 10]
+            is_ans = answers[p_idx] is not None
+            lbl = f"{'✅' if is_ans else ''}{p_idx + 1}"
+            btn_t = "primary" if p_idx == curr_page else "secondary"
+            if col_target.button(lbl, key=f"nav_p_{p_idx}", type=btn_t, use_container_width=True):
+                st.session_state[f"quiz_page_{tg_id}"] = p_idx
+                st.rerun()
+
+        st.divider()
+
+        # Tampilan Soal Tunggal
+        soal_item = soal_list[curr_page]
+        q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
+
+        with st.container(border=True):
+            st.markdown(f"### Soal No. {curr_page + 1}")
+            st.markdown(f"**{q_text}**")
+            st.write("")
+
+            if tg.get("tipe") == "pg":
+                opsi_list = soal_item.get("opsi", [])
+                saved_ans = answers[curr_page]
+
+                # Default pilihan KOSONG (index=None)
+                selected_opt = st.radio(
+                    "Pilih Jawaban Anda:",
+                    options=[0, 1, 2, 3],
+                    index=saved_ans if saved_ans is not None else None,
+                    format_func=lambda x: f"{['A','B','C','D'][x]}. {opsi_list[x]}",
+                    key=f"radio_q_{tg_id}_{curr_page}"
+                )
+
+                if selected_opt != saved_ans:
+                    answers[curr_page] = selected_opt
+                    st.session_state[f"quiz_answers_{tg_id}"] = answers
+            else:
+                saved_text = answers[curr_page] or ""
+                essay_text = st.text_area(
+                    "Jawaban Anda:",
+                    value=saved_text,
+                    placeholder="Ketikkan jawaban secara lengkap...",
+                    key=f"essay_q_{tg_id}_{curr_page}"
+                )
+                if essay_text != saved_text:
+                    answers[curr_page] = essay_text if essay_text.strip() else None
+                    st.session_state[f"quiz_answers_{tg_id}"] = answers
+
+        # Tombol Navigasi Sebelumnya / Selanjutnya
+        c_prev, c_space, c_next = st.columns([2, 1, 2])
+        with c_prev:
+            if curr_page > 0:
+                if st.button("⬅️ Soal Sebelumnya", key="btn_prev_q", use_container_width=True):
+                    st.session_state[f"quiz_page_{tg_id}"] -= 1
+                    st.rerun()
+
+        with c_next:
+            if curr_page < total_soal - 1:
+                if st.button("Soal Selanjutnya ➡️", key="btn_next_q", type="primary", use_container_width=True):
+                    st.session_state[f"quiz_page_{tg_id}"] += 1
+                    st.rerun()
+
+        # Tombol Pengumpulan Akhir
+        st.divider()
+        unanswered = sum(1 for a in answers if a is None)
+        if unanswered > 0:
+            st.warning(f"⚠️ Masih ada **{unanswered} soal** yang belum dijawab.")
+
+        if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
+            if tg.get("tipe") == "pg":
+                correct_count = 0
+                formatted_ans = []
+                for idx_q, sq in enumerate(soal_list):
+                    user_a = answers[idx_q]
+                    formatted_ans.append(user_a if user_a is not None else -1)
+                    if user_a is not None and user_a == sq.get("kunci"):
+                        correct_count += 1
+                score = round((correct_count / total_soal) * 100)
+
+                db.collection("jawaban_siswa").add({
+                    "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
+                    "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "pg", "jawaban": formatted_ans,
+                    "nilai": score, "catatan_guru": "Penilaian Otomatis Sistem", "submitted_at": firestore.SERVER_TIMESTAMP
+                })
+                st.balloons()
+                st.success(f"✅ Berhasil dikumpulkan! Nilai Anda: {score}")
+            else:
+                formatted_ans = [a if a is not None else "" for a in answers]
+                db.collection("jawaban_siswa").add({
+                    "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
+                    "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay", "soal": soal_list,
+                    "jawaban": formatted_ans, "nilai": None, "submitted_at": firestore.SERVER_TIMESTAMP
+                })
+                st.success("✅ Berhasil dikumpulkan! Tugas menunggu koreksi guru.")
+
+            st.session_state["active_quiz_id"] = None
+            if f"quiz_answers_{tg_id}" in st.session_state: del st.session_state[f"quiz_answers_{tg_id}"]
+            if f"quiz_page_{tg_id}" in st.session_state: del st.session_state[f"quiz_page_{tg_id}"]
+            st.rerun()
+
+        return  # Menghentikan eksekusi panel luar agar siswa fokus total pada mode kuis
+
+    # ---------------------------------------------------------
+    # TAMPILAN DASHBOARD SISWA NORMAL
+    # ---------------------------------------------------------
     total_tugas = len(all_tugas)
     tugas_selesai = len(my_subs)
     tugas_belum = total_tugas - tugas_selesai
 
-    # 4. Hitung Rata-Rata Nilai (Tugas Aktif)
     if total_tugas > 0:
-        total_skor = 0
-        for tg in all_tugas:
-            tg_id = tg["id"]
-            sub = my_subs.get(tg_id)
-            if sub and sub.get("nilai") is not None:
-                total_skor += int(sub.get("nilai"))
-            else:
-                total_skor += 0  # Belum dikerjakan / belum dinilai dihitung 0
+        total_skor = sum(int(my_subs[tg["id"]]["nilai"]) for tg in all_tugas if tg["id"] in my_subs and my_subs[tg["id"]].get("nilai") is not None)
         avg_nilai = round(total_skor / total_tugas, 1)
     else:
         avg_nilai = "-"
@@ -974,7 +1169,7 @@ def render_siswa():
     tab_tugas, tab_materi, tab_nilai = st.tabs(["✍️ Tugas Saya", "📚 Modul Materi", "📊 Riwayat Nilai"])
 
     # ------------------------------------------
-    # TAB 1: KERJAKAN TUGAS
+    # TAB 1: DAFTAR TUGAS
     # ------------------------------------------
     with tab_tugas:
         if not all_tugas:
@@ -995,175 +1190,17 @@ def render_siswa():
                     for tg in tugas_belum_list:
                         tg_id = tg["id"]
                         tipe_label = "Pilihan Ganda" if tg.get("tipe") == "pg" else "Essay"
-                        
+
                         with st.container(border=True):
                             st.markdown(f"### 📝 {tg.get('judul')}")
                             st.caption(f"Tipe Soal: **{tipe_label}** | Jumlah: **{len(tg.get('soal', []))} soal**")
-                            
+
                             if tg.get("instruksi"):
                                 st.info(f"💡 **Instruksi:** {tg.get('instruksi')}")
 
-                            with st.expander("▶️ Kerjakan Tugas Sekarang", expanded=False):
-                                # Deteksi Pindah Tab/Aplikasi
-                                components.html("""
-<style>
-    #cheat-modal {
-        display: none;
-        position: fixed;
-        top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.6);
-        z-index: 999999;
-        justify-content: center;
-        align-items: center;
-    }
-    .cheat-box {
-        background: #ffffff;
-        padding: 20px;
-        border-radius: 12px;
-        max-width: 300px;
-        text-align: center;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-    .cheat-box h4 { margin: 0 0 10px 0; color: #d32f2f; font-size: 16px; }
-    .cheat-box p { font-size: 13px; color: #333; margin-bottom: 15px; line-height: 1.4; }
-    .cheat-btn {
-        background: #1e3c72; color: white; border: none;
-        padding: 8px 18px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 13px;
-    }
-</style>
-
-<div id="cheat-modal">
-    <div class="cheat-box">
-        <h4 id="cheat-title">⚠️ Peringatan Kuis</h4>
-        <p id="cheat-msg">Dilarang berpindah aplikasi atau membuka tab lain!</p>
-        <button class="cheat-btn" onclick="closeCheatModal()">Saya Mengerti</button>
-    </div>
-</div>
-
-<script>
-    let cheatCount = 0;
-    const maxViolations = 2;
-    let isScreenLocked = false;
-    let lastTick = Date.now();
-
-    // 1. Mencegah layar redup/sleep otomatis
-    async function keepScreenAwake() {
-        try {
-            if ('wakeLock' in navigator) {
-                await navigator.wakeLock.request('screen');
-            }
-        } catch (e) {}
-    }
-    keepScreenAwake();
-
-    // 2. Deteksi jeda CPU (layar mati / tombol Power ditekan)
-    setInterval(function() {
-        let now = Date.now();
-        // Jika selisih waktu > 1.2 detik, artinya CPU terhenti (HP dikunci / layar mati)
-        if (now - lastTick > 1200) {
-            isScreenLocked = true;
-        }
-        lastTick = now;
-    }, 400);
-
-    // 3. Deteksi Pindah Tab / Buka Aplikasi Lain
-    document.addEventListener("visibilitychange", function() {
-        if (document.hidden) {
-            setTimeout(function() {
-                // Jika dipicu oleh tombol Power / Kunci Layar -> Abaikan
-                if (isScreenLocked) return;
-
-                // Jika murni membuka aplikasi lain -> Pelanggaran
-                cheatCount++;
-                showCheatModal(cheatCount);
-            }, 100);
-        } else {
-            // Reset penanda setelah layar kembali aktif
-            setTimeout(function() {
-                isScreenLocked = false;
-            }, 800);
-        }
-    });
-
-    function showCheatModal(count) {
-        const modal = document.getElementById('cheat-modal');
-        const msg = document.getElementById('cheat-msg');
-        
-        if (count < maxViolations) {
-            msg.innerText = "⚠️ Dilarang berpindah aplikasi atau membuka tab lain saat kuis berlangsung! (Peringatan " + count + "/" + maxViolations + ")";
-            modal.style.display = 'flex';
-        } else {
-            msg.innerText = "🚨 Anda telah melakukan kecurangan berulang kali. Kuis akan dikumpulkan otomatis!";
-            modal.style.display = 'flex';
-            
-            setTimeout(function() {
-                const buttons = window.parent.document.querySelectorAll('button');
-                for (let btn of buttons) {
-                    if (btn.innerText.includes("Kumpulkan Jawaban")) {
-                        btn.click();
-                        break;
-                    }
-                }
-            }, 1200);
-        }
-    }
-
-    function closeCheatModal() {
-        document.getElementById('cheat-modal').style.display = 'none';
-    }
-</script>
-""", height=0)
-                                with st.form(key=f"form_kerjakan_{tg_id}"):
-                                    answers = []
-                                    for idx, s in enumerate(tg.get("soal", []), 1):
-                                        st.markdown(f"**{idx}. {s.get('pertanyaan') if isinstance(s, dict) else s}**")
-                                        if tg.get("tipe") == "pg":
-                                            ans = st.radio(
-                                                "Pilih Jawaban:", 
-                                                [0, 1, 2, 3], 
-                                                format_func=lambda x, opts=s.get("opsi", []): f"{['A','B','C','D'][x]}. {opts[x]}", 
-                                                key=f"pg_{tg_id}_{idx}"
-                                            )
-                                            answers.append(ans)
-                                        else:
-                                            ans = st.text_area("Jawaban Anda:", placeholder="Ketikkan jawaban secara lengkap...", key=f"es_{tg_id}_{idx}")
-                                            answers.append(ans)
-                                        st.write("")
-
-                                    submit_btn = st.form_submit_button("🚀 Kumpulkan Jawaban")
-                                    if submit_btn:
-                                        if tg.get("tipe") == "pg":
-                                            score = round((sum(1 for idx_q, sq in enumerate(tg.get("soal", [])) if answers[idx_q] == sq.get("kunci")) / len(answers)) * 100)
-                                            db.collection("jawaban_siswa").add({
-                                                "id_tugas": tg_id, 
-                                                "judul_tugas": tg.get("judul"), 
-                                                "username_siswa": username_s,
-                                                "nama_siswa": nama_s, 
-                                                "kelas_siswa": kelas_s, 
-                                                "tipe": "pg", 
-                                                "jawaban": answers,
-                                                "nilai": score, 
-                                                "catatan_guru": "Penilaian Otomatis Sistem", 
-                                                "submitted_at": firestore.SERVER_TIMESTAMP
-                                            })
-                                            st.balloons()
-                                            st.success(f"✅ Berhasil dikumpulkan! Nilai Anda: {score}")
-                                        else:
-                                            db.collection("jawaban_siswa").add({
-                                                "id_tugas": tg_id, 
-                                                "judul_tugas": tg.get("judul"), 
-                                                "username_siswa": username_s,
-                                                "nama_siswa": nama_s, 
-                                                "kelas_siswa": kelas_s, 
-                                                "tipe": "essay", 
-                                                "soal": tg.get("soal"),
-                                                "jawaban": answers, 
-                                                "nilai": None, 
-                                                "submitted_at": firestore.SERVER_TIMESTAMP
-                                            })
-                                            st.success("✅ Berhasil dikumpulkan! Tugas menunggu koreksi guru.")
-                                        st.rerun()
+                            if st.button("🚀 Mulai Kerjakan Kuis Sekarang", key=f"start_{tg_id}", type="primary", use_container_width=True):
+                                st.session_state["active_quiz_id"] = tg_id
+                                st.rerun()
 
             with sub_tab_sudah:
                 if not tugas_sudah_list:
@@ -1174,7 +1211,7 @@ def render_siswa():
                         val = sub_data.get("nilai")
                         val_str = f"💯 Nilai: {val}" if val is not None else "⏳ Menunggu Koreksi"
                         tipe_tugas = tg.get("tipe", "pg")
-                        
+
                         with st.container(border=True):
                             st.markdown(f"### 📝 {tg.get('judul')}")
                             st.caption(f"Tipe: **{tipe_tugas.upper()}** | Status: **{val_str}**")
@@ -1189,27 +1226,22 @@ def render_siswa():
                                     for idx, (q, a) in enumerate(zip(soal_items, jawaban_items), 1):
                                         q_text = q.get('pertanyaan') if isinstance(q, dict) else str(q)
                                         st.markdown(f"**{idx}. {q_text}**")
-                                        
+
                                         if tipe_tugas == "pg":
                                             opsi_list = q.get("opsi", []) if isinstance(q, dict) else []
                                             ans_idx = a if isinstance(a, int) else 0
-                                            
                                             ans_text = opsi_list[ans_idx] if (isinstance(ans_idx, int) and 0 <= ans_idx < len(opsi_list)) else str(a)
-                                            
                                             kunci_idx = q.get("kunci", 0) if isinstance(q, dict) else 0
                                             is_correct = (ans_idx == kunci_idx)
-                                            status_tag = "✅ Benar" if is_correct else "❌ Salah"
-                                            
-                                            st.markdown(f"👉 **Jawaban Anda:** {ans_text} ({status_tag})")
-                                            
+
+                                            st.markdown(f"👉 **Jawaban Anda:** {ans_text} ({'✅ Benar' if is_correct else '❌ Salah'})")
                                             if not is_correct and 0 <= kunci_idx < len(opsi_list):
                                                 st.caption(f"🔑 **Kunci Jawaban:** {['A','B','C','D'][kunci_idx]}. {opsi_list[kunci_idx]}")
                                         else:
-                                            ans_str = str(a).strip() if a else "(Kosong / Tidak dijawab)"
                                             st.markdown("👉 **Jawaban Anda:**")
-                                            st.info(ans_str)
-                                        
-                                        st.write("---")        
+                                            st.info(str(a).strip() if a else "(Kosong)")
+
+                                        st.write("---")
 
     # ------------------------------------------
     # TAB 2: MODUL MATERI
@@ -1224,16 +1256,13 @@ def render_siswa():
             for m in materi_docs:
                 with st.container(border=True):
                     st.markdown(f"#### 📘 [{m.get('bab')}] {m.get('judul')}")
-                    
-                    if m.get("konten"):
-                        st.write(m.get("konten"))
-                    
+                    if m.get("konten"): st.write(m.get("konten"))
                     if m.get("file_url"):
                         st.markdown("---")
                         st.link_button("📎 Buka / Unduh Lampiran Dokumen", m.get("file_url"))
 
     # ------------------------------------------
-    # TAB 3: RIWAYAT NILAI (MOBILE CARD VIEW)
+    # TAB 3: RIWAYAT NILAI
     # ------------------------------------------
     with tab_nilai:
         if not my_subs:
@@ -1243,7 +1272,7 @@ def render_siswa():
             for sub_id, sub_info in my_subs.items():
                 nilai_val = sub_info.get("nilai")
                 catatan = sub_info.get("catatan_guru", "-")
-                
+
                 with st.container(border=True):
                     c_left, c_right = st.columns([3, 1])
                     with c_left:
@@ -1256,6 +1285,7 @@ def render_siswa():
                             st.metric("Nilai", f"{nilai_val}")
                         else:
                             st.warning("Menunggu Koreksi")
+
 # ==========================================
 # 9. MAIN ROUTER
 # ==========================================
