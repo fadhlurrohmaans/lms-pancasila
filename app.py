@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import firebase_admin
 from firebase_admin import credentials, firestore
 import pandas as pd
