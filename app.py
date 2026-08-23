@@ -933,7 +933,6 @@ def render_siswa():
     for d in my_subs_docs:
         data = d.to_dict()
         t_id = data.get("id_tugas")
-        # Jika id_tugas terdaftar di tugas aktif, baru dihitung sebagai tugas selesai
         if t_id in active_task_ids:
             my_subs[t_id] = data
 
@@ -972,40 +971,10 @@ def render_siswa():
     st.divider()
 
     tab_tugas, tab_materi, tab_nilai = st.tabs(["✍️ Tugas Saya", "📚 Modul Materi", "📊 Riwayat Nilai"])
-    
-    # ... (Sisa kode tab_tugas, tab_materi, tab_nilai di render_siswa tetap sama)
+
     # ------------------------------------------
     # TAB 1: KERJAKAN TUGAS
     # ------------------------------------------
-    import streamlit.components.v1 as components
-
-# Sisipkan komponen ini di dalam tampilan kuis siswa (Tab 1 Kerjakan Tugas)
-components.html("""
-<script>
-    let cheatCount = 0;
-    const maxViolations = 2;
-
-    document.addEventListener("visibilitychange", function() {
-        if (document.hidden) {
-            cheatCount++;
-            if (cheatCount < maxViolations) {
-                alert("⚠️ PERINGATAN! Dilarang berpindah tab atau membuka aplikasi lain saat kuis berlangsung!");
-            } else {
-                alert("⚠️ Anda telah melakukan kecurangan berulang kali. Kuis akan dikumpulkan otomatis!");
-                // Cari tombol submit pada form Streamlit dan klik otomatis
-                const buttons = window.parent.document.querySelectorAll('button');
-                for (let btn of buttons) {
-                    if (btn.innerText.includes("Kumpulkan Jawaban")) {
-                        btn.click();
-                        break;
-                    }
-                }
-            }
-        }
-    });
-</script>
-""", height=0)
-    
     with tab_tugas:
         if not all_tugas:
             st.info("🎉 Belum ada tugas yang diberikan untuk kelas Anda saat ini.")
@@ -1034,6 +1003,32 @@ components.html("""
                                 st.info(f"💡 **Instruksi:** {tg.get('instruksi')}")
 
                             with st.expander("▶️ Kerjakan Tugas Sekarang", expanded=False):
+                                # Deteksi Pindah Tab/Aplikasi
+                                components.html("""
+                                <script>
+                                    let cheatCount = 0;
+                                    const maxViolations = 2;
+
+                                    document.addEventListener("visibilitychange", function() {
+                                        if (document.hidden) {
+                                            cheatCount++;
+                                            if (cheatCount < maxViolations) {
+                                                alert("⚠️ PERINGATAN! Dilarang berpindah tab atau membuka aplikasi lain saat kuis berlangsung!");
+                                            } else {
+                                                alert("⚠️ Anda telah melakukan kecurangan berulang kali. Kuis akan dikumpulkan otomatis!");
+                                                const buttons = window.parent.document.querySelectorAll('button');
+                                                for (let btn of buttons) {
+                                                    if (btn.innerText.includes("Kumpulkan Jawaban")) {
+                                                        btn.click();
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+                                </script>
+                                """, height=0)
+
                                 with st.form(key=f"form_kerjakan_{tg_id}"):
                                     answers = []
                                     for idx, s in enumerate(tg.get("soal", []), 1):
@@ -1176,7 +1171,6 @@ components.html("""
                             st.metric("Nilai", f"{nilai_val}")
                         else:
                             st.warning("Menunggu Koreksi")
-
 # ==========================================
 # 9. MAIN ROUTER
 # ==========================================
