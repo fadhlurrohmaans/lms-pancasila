@@ -196,6 +196,40 @@ def export_tugas_ke_word(judul, instruksi, daftar_soal, tipe="pg"):
     buffer.seek(0)
     return buffer
 
+def generate_docx_template(tipe="pg"):
+    """Membuat buffer file .docx berisi contoh template soal PG atau Essay."""
+    doc = docx.Document()
+    if tipe == "pg":
+        doc.add_heading("Template Soal Pilihan Ganda", level=1)
+        doc.add_paragraph("Petunjuk: Tuliskan nomor, pertanyaan, dan opsi A-D di bawahnya.")
+        doc.add_paragraph()
+        
+        doc.add_paragraph("1. Sila pertama Pancasila dilambangkan oleh simbol...")
+        doc.add_paragraph("   A. Bintang")
+        doc.add_paragraph("   B. Rantai")
+        doc.add_paragraph("   C. Pohon Beringin")
+        doc.add_paragraph("   D. Kepala Banteng")
+        doc.add_paragraph()
+        
+        doc.add_paragraph("2. Rumusan Pancasila yang sah tercantum dalam...")
+        doc.add_paragraph("   A. Piagam Jakarta")
+        doc.add_paragraph("   B. Batang Tubuh UUD 1945")
+        doc.add_paragraph("   C. Pembukaan UUD 1945 Alinea IV")
+        doc.add_paragraph("   D. Dekrit Presiden 5 Juli 1959")
+    else:
+        doc.add_heading("Template Soal Essay", level=1)
+        doc.add_paragraph("Petunjuk: Tuliskan pertanyaan soal essay secara berurutan.")
+        doc.add_paragraph()
+        
+        doc.add_paragraph("1. Jelaskan makna Sila ke-3 Pancasila bagi persatuan dan kesatuan bangsa Indonesia!")
+        doc.add_paragraph()
+        doc.add_paragraph("2. Sebutkan 3 contoh penerapan nilai keadilan sosial dalam kehidupan sehari-hari di sekolah!")
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
+
 def hash_pass(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -745,16 +779,21 @@ def render_guru():
 
         with t_imp:
             st.subheader("📥 Import Soal Tugas")
-            st.write("💡 **Unduh Template CSV:** Silakan unduh format template di bawah ini sebelum mengunggah file CSV.")
+            st.write("💡 **Unduh Template:** Silakan unduh format template sesuai jenis file yang ingin Anda unggah.")
             
             csv_pg_example = "pertanyaan,opsi_a,opsi_b,opsi_c,opsi_d,kunci\nSila pertama Pancasila dilambangkan oleh?,Bintang,Rantai,Pohon Beringin,Banteng,A\n"
             csv_essay_example = "pertanyaan\nJelaskan makna Sila ke-3 Pancasila bagi persatuan bangsa!\n"
 
             c_tmp1, c_tmp2 = st.columns(2)
             with c_tmp1:
-                st.download_button("📄 Unduh Template PG (.csv)", csv_pg_example.encode('utf-8'), "template_soal_pg.csv", "text/csv")
+                st.markdown("**📄 Template CSV**")
+                st.download_button("📄 Unduh Template PG (.csv)", csv_pg_example.encode('utf-8'), "template_soal_pg.csv", "text/csv", use_container_width=True)
+                st.download_button("📄 Unduh Template Essay (.csv)", csv_essay_example.encode('utf-8'), "template_soal_essay.csv", "text/csv", use_container_width=True)
+
             with c_tmp2:
-                st.download_button("📄 Unduh Template Essay (.csv)", csv_essay_example.encode('utf-8'), "template_soal_essay.csv", "text/csv")
+                st.markdown("**📝 Template Word (.docx)**")
+                st.download_button("📝 Unduh Template PG (.docx)", data=generate_docx_template("pg"), file_name="template_soal_pg.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+                st.download_button("📝 Unduh Template Essay (.docx)", data=generate_docx_template("essay"), file_name="template_soal_essay.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
 
             st.divider()
 
