@@ -23,73 +23,35 @@ st.set_page_config(
 
 st.markdown("""
     <style>
-    /* Global Mobile Optimization */
     html, body, [class*="css"] {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
-    
-    /* Input & Touch Area Scale */
     input[type="text"], input[type="password"], textarea, select { 
         font-size: 16px !important;
         border-radius: 10px !important;
     }
-
-    /* Mobile Responsive Layout adjustments */
     @media (max-width: 768px) {
-        .main .block-container { 
-            padding: 0.8rem 0.6rem 3rem !important; 
-        }
-        [data-testid="column"] { 
-            width: 100% !important; 
-            flex: 1 1 100% !important; 
-            min-width: 100% !important; 
-            margin-bottom: 0.5rem; 
-        }
+        .main .block-container { padding: 0.8rem 0.6rem 3rem !important; }
+        [data-testid="column"] { width: 100% !important; flex: 1 1 100% !important; min-width: 100% !important; margin-bottom: 0.5rem; }
         .stButton > button, .stDownloadButton > button { 
-            width: 100% !important; 
-            min-height: 50px !important; 
-            font-size: 16px !important; 
-            font-weight: bold; 
-            border-radius: 12px !important; 
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            width: 100% !important; min-height: 50px !important; font-size: 16px !important; font-weight: bold; border-radius: 12px !important; 
         }
         h1 { font-size: 1.6rem !important; } 
         h2 { font-size: 1.3rem !important; } 
         h3 { font-size: 1.1rem !important; }
     }
-
-    /* Custom Mobile Card Styling */
     .student-header {
         background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-        color: white;
-        padding: 18px 20px;
-        border-radius: 16px;
-        margin-bottom: 15px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        color: white; padding: 18px 20px; border-radius: 16px; margin-bottom: 15px;
     }
-
-    /* Modern Tabs Scrollable on Mobile */
-    .stTabs [data-baseweb="tab-list"] { 
-        gap: 6px; 
-        overflow-x: auto; 
-        white-space: nowrap; 
-        border-bottom: 2px solid #eaeaea;
-        padding-bottom: 4px;
-    }
-    .stTabs [data-baseweb="tab"] { 
-        padding: 10px 18px; 
-        border-radius: 20px;
-        font-weight: 600;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: #1e3c72 !important;
-        color: white !important;
-    }
+    .stTabs [data-baseweb="tab-list"] { gap: 6px; overflow-x: auto; white-space: nowrap; border-bottom: 2px solid #eaeaea; padding-bottom: 4px; }
+    .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 20px; font-weight: 600; }
+    .stTabs [aria-selected="true"] { background-color: #1e3c72 !important; color: white !important; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. FIREBASE & CACHED HELPERS
+# 2. FIREBASE & HIGH-PERFORMANCE CACHING
 # ==========================================
 @st.cache_resource
 def init_firebase():
@@ -107,14 +69,41 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
-@st.cache_data(ttl=300)
+# --- CACHED READ FUNCTIONS (High Performance for 40+ users) ---
+@st.cache_data(ttl=120)
 def get_all_kelas():
     docs = db.collection("kelas").stream()
     return sorted([d.id for d in docs])
 
+@st.cache_data(ttl=60)
+def get_all_tugas_cached():
+    docs = db.collection("tugas_pancasila").stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
+@st.cache_data(ttl=60)
+def get_all_materi_cached():
+    docs = db.collection("materi_pancasila").stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
+@st.cache_data(ttl=15)
+def get_user_submissions_cached(username):
+    docs = db.collection("jawaban_siswa").where("username_siswa", "==", username).stream()
+    return {d.to_dict().get("id_tugas"): d.to_dict() for d in docs}
+
+# --- CACHE CLEAR HELPERS ---
 def clear_kelas_cache():
     get_all_kelas.clear()
 
+def clear_tugas_cache():
+    get_all_tugas_cached.clear()
+
+def clear_materi_cache():
+    get_all_materi_cached.clear()
+
+def clear_user_submissions_cache():
+    get_user_submissions_cached.clear()
+
+# --- UTILITY HELPERS ---
 def safe_read_uploaded_file(uploaded_file):
     if uploaded_file.name.endswith('.csv'):
         for enc in ['utf-8', 'utf-8-sig', 'cp1252', 'latin1']:
@@ -161,7 +150,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
     try:
         genai.configure(api_key=api_key)
-        
         strict_schema = {
             "type": "OBJECT",
             "properties": {
@@ -170,63 +158,38 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
             },
             "required": ["nilai", "feedback"]
         }
-
-        generation_config = {
-            "response_mime_type": "application/json",
-            "response_schema": strict_schema
-        }
-
+        generation_config = {"response_mime_type": "application/json", "response_schema": strict_schema}
         candidate_models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
-        try:
-            active_models = [
-                m.name for m in genai.list_models() 
-                if 'generateContent' in m.supported_generation_methods
-            ]
-            for m in reversed(active_models):
-                if m not in candidate_models:
-                    candidate_models.insert(0, m)
-        except Exception:
-            pass
 
         total_soal = len(soal_list)
         prompt_items = []
-        
         for i in range(total_soal):
             s = soal_list[i] if i < len(soal_list) else ""
             j = jawaban_list[i] if i < len(jawaban_list) else ""
-            
             q_text = s.get('pertanyaan', '') if isinstance(s, dict) else str(s)
             j_text = str(j).strip() if j and str(j).strip() else '(Siswa tidak menjawab)'
             prompt_items.append(f"--- SOAL NOMOR {i+1} ---\nPertanyaan: {q_text}\nJawaban Siswa: {j_text}")
 
         prompt = f"Jumlah Total Soal: {total_soal}\n\n" + "\n\n".join(prompt_items)
-
         system_instruction = (
             "Anda adalah Guru Pendidikan Pancasila yang bijaksana dan fair.\n"
             "Tugas: Evaluasi SELURUH nomor soal essay yang diberikan secara objektif.\n\n"
             "Aturan Penilaian & Feedback:\n"
             "1. Periksa setiap nomor soal satu per satu (skala 0-100 per soal).\n"
             "2. Hitung RATA-RATA NILAI AKHIR dari seluruh soal (0-100) dan masukkan ke field 'nilai' sebagai integer.\n"
-            "3. Pada field 'feedback', tuliskan rincian koreksi per nomor soal (misal: 'Soal 1: ..., Soal 2: ...'), diawali apresiasi dan diakhiri motivasi.\n"
+            "3. Pada field 'feedback', tuliskan rincian koreksi per nomor soal, diawali apresiasi dan diakhiri motivasi.\n"
             "4. Gunakan Bahasa Indonesia yang hangat, ramah, dan edukatif."
         )
 
-        response = None
-        last_error = None
-
+        response, last_error = None, None
         for model_name in candidate_models:
             try:
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=system_instruction
-                )
+                model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
                 try:
                     response = model.generate_content(prompt, generation_config=generation_config)
                 except Exception:
                     response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-
-                if response and hasattr(response, 'text') and response.text.strip():
-                    break
+                if response and hasattr(response, 'text') and response.text.strip(): break
             except Exception as err:
                 last_error = err
                 continue
@@ -235,13 +198,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
             return None, f"AI tidak mengembalikan respon. Error terakhir: {str(last_error)}"
 
         result_json = json.loads(response.text.strip())
-        nilai = int(result_json.get("nilai", 0))
-        feedback = str(result_json.get("feedback", "")).strip()
-
-        if not feedback:
-            feedback = "Terima kasih sudah mengerjakan tugas. Tetap semangat belajar!"
-
-        return nilai, feedback
+        return int(result_json.get("nilai", 0)), str(result_json.get("feedback", "")).strip() or "Terima kasih telah mengerjakan!"
 
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {str(e)}"
@@ -460,7 +417,7 @@ def render_guru():
         t_list, t_buat = st.tabs(["📋 Daftar Materi", "➕ Tambah Materi Baru"])
         
         with t_list:
-            materi_docs = [{"id": d.id, **d.to_dict()} for d in db.collection("materi_pancasila").stream()]
+            materi_docs = get_all_materi_cached()
             if not materi_docs:
                 st.info("Belum ada materi pembelajaran yang diunggah.")
             else:
@@ -474,49 +431,32 @@ def render_guru():
                         with col_info:
                             st.markdown(f"### 📘 [{m.get('bab')}] {m.get('judul')}")
                             st.caption(f"🏫 **Target Kelas:** {target_str}")
-                            
-                            if m.get("konten"):
-                                st.write(m.get("konten"))
-                            
-                            if m.get("file_url"):
-                                st.link_button("📎 Buka Lampiran File", m.get("file_url"))
+                            if m.get("konten"): st.write(m.get("konten"))
+                            if m.get("file_url"): st.link_button("📎 Buka Lampiran File", m.get("file_url"))
 
                         with col_aksi:
                             with st.popover("✏️ Edit"):
-                                st.markdown(f"**Edit Materi:** {m.get('judul')}")
                                 with st.form(key=f"form_edit_materi_{m_id}"):
                                     e_bab = st.text_input("Bab / Unit", value=m.get("bab", ""), key=f"e_bab_{m_id}")
                                     e_judul = st.text_input("Judul Materi", value=m.get("judul", ""), key=f"e_jud_{m_id}")
-                                    e_target = st.multiselect(
-                                        "Target Kelas", 
-                                        options=pilihan_kelas, 
-                                        default=m.get("target_kelas", pilihan_kelas) if m.get("target_kelas") else pilihan_kelas,
-                                        key=f"e_tgt_{m_id}"
-                                    )
+                                    e_target = st.multiselect("Target Kelas", options=pilihan_kelas, default=m.get("target_kelas", pilihan_kelas) if m.get("target_kelas") else pilihan_kelas, key=f"e_tgt_{m_id}")
                                     e_konten = st.text_area("Deskripsi / Teks Materi", value=m.get("konten", ""), key=f"e_kon_{m_id}")
-                                    e_file_url = st.text_input(
-                                        "🔗 Link Lampiran (Google Drive/Dropbox)", 
-                                        value=m.get("file_url", "") or "", 
-                                        key=f"e_url_{m_id}"
-                                    )
+                                    e_file_url = st.text_input("🔗 Link Lampiran", value=m.get("file_url", "") or "", key=f"e_url_{m_id}")
 
                                     if st.form_submit_button("💾 Simpan Perubahan"):
                                         if e_bab and e_judul and e_target:
                                             db.collection("materi_pancasila").document(m_id).update({
-                                                "bab": e_bab,
-                                                "judul": e_judul,
-                                                "target_kelas": e_target,
-                                                "konten": e_konten,
-                                                "file_url": e_file_url.strip() if e_file_url else None,
+                                                "bab": e_bab, "judul": e_judul, "target_kelas": e_target,
+                                                "konten": e_konten, "file_url": e_file_url.strip() if e_file_url else None,
                                                 "updated_at": firestore.SERVER_TIMESTAMP
                                             })
+                                            clear_materi_cache()
                                             st.success("✅ Perubahan berhasil disimpan!")
                                             st.rerun()
-                                        else:
-                                            st.error("Bab, Judul, dan Target Kelas wajib diisi.")
 
                             if st.button("🗑️ Hapus", key=f"btn_del_mat_{m_id}", type="primary"):
                                 db.collection("materi_pancasila").document(m_id).delete()
+                                clear_materi_cache()
                                 st.success("✅ Materi berhasil dihapus!")
                                 st.rerun()
 
@@ -526,41 +466,31 @@ def render_guru():
                 judul = st.text_input("Judul Materi", key="add_judul")
                 target_k = st.multiselect("Target Kelas", options=pilihan_kelas, default=pilihan_kelas, key="add_target")
                 konten = st.text_area("Deskripsi / Teks Materi (Opsional)", key="add_konten")
-                file_url = st.text_input(
-                    "🔗 Link Lampiran Dokumen (Google Drive / Dropbox / Canva)", 
-                    placeholder="https://drive.google.com/file/d/...",
-                    key="add_url"
-                )
-                st.caption("💡 **Tips Google Drive**: Pastikan akses link diatur ke *'Siapa saja yang memiliki link dapat melihat'*.")
+                file_url = st.text_input("🔗 Link Lampiran Dokumen", key="add_url")
 
                 if st.form_submit_button("📁 Simpan Materi Baru"):
                     if bab and judul and target_k:
                         db.collection("materi_pancasila").add({
-                            "bab": bab,
-                            "judul": judul,
-                            "target_kelas": target_k,
-                            "konten": konten,
-                            "file_url": file_url.strip() if file_url else None,
-                            "created_at": firestore.SERVER_TIMESTAMP
+                            "bab": bab, "judul": judul, "target_kelas": target_k, "konten": konten,
+                            "file_url": file_url.strip() if file_url else None, "created_at": firestore.SERVER_TIMESTAMP
                         })
+                        clear_materi_cache()
                         st.success("✅ Materi baru berhasil ditambahkan!")
                         st.rerun()
-                    else:
-                        st.warning("Mohon isi Bab, Judul Materi, dan tentukan minimal 1 Target Kelas.")
 
     elif menu == "📝 Buat & Kelola Tugas":
         st.header("📝 Buat & Kelola Tugas")
         t_list, t_buat, t_edit, t_imp = st.tabs(["📋 Daftar", "➕ Buat Tugas", "✏️ Edit Tugas", "📥 Import Soal"])
 
         with t_list:
-            for tg in [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()]:
+            for tg in get_all_tugas_cached():
                 target_str = ", ".join(tg.get("target_kelas", [])) if tg.get("target_kelas") else "Semua"
                 with st.expander(f"[{'PG' if tg.get('tipe')=='pg' else 'Essay'}] {tg.get('judul')} (Kelas: {target_str})"):
                     st.write(f"**Instruksi:** {tg.get('instruksi')}")
                     st.write(f"**Jumlah Soal:** {len(tg.get('soal', []))}")
-                    
                     if st.button(f"🗑️ Hapus Tugas", key=f"del_{tg['id']}", type="primary"):
                         db.collection("tugas_pancasila").document(tg["id"]).delete()
+                        clear_tugas_cache()
                         st.success("✅ Berhasil! Tugas telah dihapus.")
                         st.rerun()
 
@@ -588,6 +518,7 @@ def render_guru():
                                 "judul": judul, "instruksi": instruksi, "tipe": "pg", "target_kelas": target_k,
                                 "soal": soal_list, "created_at": firestore.SERVER_TIMESTAMP
                             })
+                            clear_tugas_cache()
                             st.success("✅ Berhasil! Tugas Pilihan Ganda berhasil diterbitkan.")
                             st.rerun()
             else:
@@ -600,12 +531,13 @@ def render_guru():
                                 "judul": judul, "instruksi": instruksi, "tipe": "essay", "target_kelas": target_k,
                                 "soal": soal_list, "created_at": firestore.SERVER_TIMESTAMP
                             })
+                            clear_tugas_cache()
                             st.success("✅ Berhasil! Tugas Essay berhasil diterbitkan.")
                             st.rerun()
 
         with t_edit:
             st.subheader("✏️ Edit Tugas & Soal")
-            tugas_list = [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()]
+            tugas_list = get_all_tugas_cached()
             if tugas_list:
                 tg_map = {t["id"]: f"[{t.get('tipe', '').upper()}] {t.get('judul')}" for t in tugas_list}
                 sel_id = st.selectbox("Pilih Tugas yang Akan Diedit", list(tg_map.keys()), format_func=lambda x: tg_map[x])
@@ -616,9 +548,6 @@ def render_guru():
                     e_instruksi = st.text_area("Instruksi Tugas", value=target_tg.get("instruksi", ""))
                     e_target = st.multiselect("Target Kelas", options=pilihan_kelas, default=target_tg.get("target_kelas", pilihan_kelas))
                     
-                    st.divider()
-                    st.write("📝 **Daftar Soal Tugas:**")
-                    
                     tipe_tugas = target_tg.get("tipe", "pg")
                     existing_soal = target_tg.get("soal", [])
                     updated_soal = []
@@ -628,18 +557,15 @@ def render_guru():
                             st.markdown(f"**Soal #{i+1}**")
                             q_val = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
                             e_q = st.text_area(f"Pertanyaan #{i+1}", value=q_val, key=f"e_q_{i}")
-                            
                             opsi = s.get("opsi", ["", "", "", ""]) if isinstance(s, dict) else ["", "", "", ""]
                             c1, c2 = st.columns(2)
                             e_o0 = c1.text_input(f"A #{i+1}", value=opsi[0] if len(opsi)>0 else "", key=f"e_a_{i}")
                             e_o1 = c1.text_input(f"B #{i+1}", value=opsi[1] if len(opsi)>1 else "", key=f"e_b_{i}")
                             e_o2 = c2.text_input(f"C #{i+1}", value=opsi[2] if len(opsi)>2 else "", key=f"e_c_{i}")
                             e_o3 = c2.text_input(f"D #{i+1}", value=opsi[3] if len(opsi)>3 else "", key=f"e_d_{i}")
-                            
                             curr_k = s.get("kunci", 0) if isinstance(s, dict) else 0
                             curr_idx = int(curr_k) if isinstance(curr_k, int) and 0 <= int(curr_k) <= 3 else 0
                             e_k = st.selectbox(f"Kunci Jawaban #{i+1}", [0, 1, 2, 3], index=curr_idx, format_func=lambda x: ['A','B','C','D'][x], key=f"e_k_{i}")
-                            
                             updated_soal.append({"pertanyaan": e_q, "opsi": [e_o0, e_o1, e_o2, e_o3], "kunci": e_k})
                     else:
                         for i, s in enumerate(existing_soal):
@@ -649,29 +575,15 @@ def render_guru():
 
                     if st.form_submit_button("💾 Perbarui Tugas & Soal"):
                         db.collection("tugas_pancasila").document(sel_id).update({
-                            "judul": e_judul,
-                            "instruksi": e_instruksi,
-                            "target_kelas": e_target,
-                            "soal": updated_soal,
-                            "updated_at": firestore.SERVER_TIMESTAMP
+                            "judul": e_judul, "instruksi": e_instruksi, "target_kelas": e_target,
+                            "soal": updated_soal, "updated_at": firestore.SERVER_TIMESTAMP
                         })
+                        clear_tugas_cache()
                         st.success("✅ Berhasil! Informasi tugas dan soal telah diperbarui.")
                         st.rerun()
 
         with t_imp:
             st.subheader("📥 Import Soal Tugas (.csv / .xlsx)")
-            st.write("💡 **Unduh Template:** Silakan unduh format template CSV di bawah ini.")
-            
-            csv_pg_example = "pertanyaan,opsi_a,opsi_b,opsi_c,opsi_d,kunci\nSila pertama Pancasila dilambangkan oleh?,Bintang,Rantai,Pohon Beringin,Banteng,A\n"
-            csv_essay_example = "pertanyaan\nJelaskan makna Sila ke-3 Pancasila bagi persatuan bangsa!\n"
-
-            st.markdown("**📄 Template CSV**")
-            c_tmp1, c_tmp2 = st.columns(2)
-            c_tmp1.download_button("📄 Unduh Template PG (.csv)", csv_pg_example.encode('utf-8'), "template_soal_pg.csv", "text/csv", use_container_width=True)
-            c_tmp2.download_button("📄 Unduh Template Essay (.csv)", csv_essay_example.encode('utf-8'), "template_soal_essay.csv", "text/csv", use_container_width=True)
-
-            st.divider()
-
             up_soal = st.file_uploader("Upload File Soal (.csv / .xlsx)", type=["csv", "xlsx"])
             imp_judul = st.text_input("Judul Tugas Baru")
             imp_instruksi = st.text_area("Instruksi (Opsional)")
@@ -699,30 +611,19 @@ def render_guru():
                     "judul": imp_judul, "instruksi": imp_instruksi, "tipe": imp_tipe, "target_kelas": imp_target,
                     "soal": parsed_s, "created_at": firestore.SERVER_TIMESTAMP
                 })
-                st.success(f"✅ Berhasil! {len(parsed_s)} soal berhasil diimpor ke database.")
+                clear_tugas_cache()
+                st.success(f"✅ Berhasil! {len(parsed_s)} soal berhasil diimpor.")
                 st.rerun()
 
     elif menu == "📊 Rekap & Penilaian":
         st.header("📊 Rekap & Penilaian Tugas Per Kelas")
-        
-        if not pilihan_kelas:
-            st.warning("⚠️ Anda belum ditugaskan untuk mengajar di kelas manapun.")
-            st.stop()
+        if not pilihan_kelas: st.warning("⚠️ Anda belum ditugaskan mengajar kelas manapun."); st.stop()
 
         col_k, col_t = st.columns(2)
-        with col_k:
-            selected_kelas = st.selectbox("🏫 Pilih Kelas Ajar", options=pilihan_kelas)
+        with col_k: selected_kelas = st.selectbox("🏫 Pilih Kelas Ajar", options=pilihan_kelas)
 
-        all_tugas_docs = db.collection("tugas_pancasila").stream()
-        tugas_kelas = [
-            {"id": d.id, **d.to_dict()} 
-            for d in all_tugas_docs 
-            if is_tugas_sesuai_kelas(d.to_dict(), selected_kelas)
-        ]
-
-        if not tugas_kelas:
-            st.info(f"Belum ada tugas yang ditujukan untuk Kelas **{selected_kelas}**.")
-            st.stop()
+        tugas_kelas = [d for d in get_all_tugas_cached() if is_tugas_sesuai_kelas(d, selected_kelas)]
+        if not tugas_kelas: st.info(f"Belum ada tugas untuk Kelas **{selected_kelas}**."); st.stop()
 
         with col_t:
             tg_options = {t["id"]: f"[{t.get('tipe', '').upper()}] {t.get('judul')}" for t in tugas_kelas}
@@ -737,200 +638,85 @@ def render_guru():
         sub_map = {s.get("username_siswa"): s for s in sub_list}
 
         rekap_rows = []
-        sudah_count, belum_count = 0, 0
-
         for s in siswa_list:
             un = s["username"]
-            nama = s.get("nama", un)
-            if un in sub_map:
-                sudah_count += 1
-                sub = sub_map[un]
-                val_display = sub.get("nilai") if sub.get("nilai") is not None else "Belum Dinilai"
-                rekap_rows.append({
-                    "Username": un,
-                    "Nama Siswa": nama,
-                    "Status": "✅ Sudah",
-                    "Nilai": val_display,
-                    "Catatan Guru": sub.get("catatan_guru", "-")
-                })
-            else:
-                belum_count += 1
-                rekap_rows.append({
-                    "Username": un,
-                    "Nama Siswa": nama,
-                    "Status": "❌ Belum",
-                    "Nilai": "-",
-                    "Catatan Guru": "-"
-                })
+            sub = sub_map.get(un)
+            rekap_rows.append({
+                "Username": un, "Nama Siswa": s.get("nama", un),
+                "Status": "✅ Sudah" if sub else "❌ Belum",
+                "Nilai": sub.get("nilai") if sub and sub.get("nilai") is not None else ("Belum Dinilai" if sub else "-"),
+                "Catatan Guru": sub.get("catatan_guru", "-") if sub else "-"
+            })
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Siswa di Kelas", len(siswa_list))
-        m2.metric("Sudah Mengumpulkan", sudah_count)
-        m3.metric("Belum Mengumpulkan", belum_count)
-
-        st.divider()
-
-        t_rekap, t_koreksi, t_rata = st.tabs([
-            "📋 Rekap Pengerjaan Siswa", 
-            "✏️ Koreksi & Penilaian", 
-            "📈 Rekap Nilai Rata-Rata"
-        ])
+        t_rekap, t_koreksi = st.tabs(["📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian"])
 
         with t_rekap:
-            st.subheader(f"Daftar Siswa Kelas {selected_kelas} — {selected_tugas.get('judul')}")
-            if rekap_rows:
-                df_rekap = pd.DataFrame(rekap_rows)
-                st.dataframe(df_rekap, use_container_width=True)
-            else:
-                st.info("Belum ada akun siswa yang terdaftar di kelas ini.")
+            st.dataframe(pd.DataFrame(rekap_rows), use_container_width=True)
 
         with t_koreksi:
-            st.subheader(f"Koreksi Hasil Jawaban Kelas {selected_kelas}")
             if not sub_list:
-                st.info("Belum ada siswa dari kelas ini yang mengumpulkan tugas.")
+                st.info("Belum ada siswa yang mengumpulkan tugas.")
             else:
-                belum_dinilai = [s for s in sub_list if s.get("nilai") is None]
-                sudah_dinilai = [s for s in sub_list if s.get("nilai") is not None]
-
-                tab_belum, tab_sudah = st.tabs([
-                    f"🔴 Belum Dinilai ({len(belum_dinilai)})", 
-                    f"🟢 Sudah Dinilai ({len(sudah_dinilai)})"
-                ])
-
-                def render_koreksi_item(sub):
+                for sub in sub_list:
                     sub_id = sub["id"]
-                    val_key = f"n_{sub_id}"
-                    cat_key = f"c_{sub_id}"
+                    val_key, cat_key = f"n_{sub_id}", f"c_{sub_id}"
+                    if val_key not in st.session_state: st.session_state[val_key] = int(sub.get("nilai", 80)) if sub.get("nilai") is not None else 80
+                    if cat_key not in st.session_state: st.session_state[cat_key] = str(sub.get("catatan_guru", ""))
 
-                    if val_key not in st.session_state:
-                        st.session_state[val_key] = int(sub.get("nilai", 80)) if sub.get("nilai") is not None else 80
-                    if cat_key not in st.session_state:
-                        st.session_state[cat_key] = str(sub.get("catatan_guru", ""))
-
-                    status_str = "🟡 Belum Dinilai" if sub.get("nilai") is None else f"🟢 Nilai: {sub.get('nilai')}"
-                    with st.expander(f"👤 {sub.get('nama_siswa')} (@{sub.get('username_siswa')}) — {status_str}"):
+                    with st.expander(f"👤 {sub.get('nama_siswa')} — Nilai: {sub.get('nilai', 'Belum')}"):
                         soal_items = sub.get("soal", selected_tugas.get("soal", []))
                         jawaban_items = sub.get("jawaban", [])
 
                         for idx, (q, a) in enumerate(zip(soal_items, jawaban_items), 1):
                             q_text = q.get('pertanyaan') if isinstance(q, dict) else q
                             st.write(f"**{idx}. {q_text}**")
-                            
                             if sub.get("tipe") == "pg":
                                 opsi_list = q.get("opsi", [])
                                 ans_idx = a if isinstance(a, int) else 0
                                 ans_text = opsi_list[ans_idx] if ans_idx < len(opsi_list) else str(a)
-                                kunci_idx = q.get("kunci", 0)
-                                is_correct = (ans_idx == kunci_idx)
+                                is_correct = (ans_idx == q.get("kunci", 0))
                                 st.write(f"Jawaban: **{ans_text}** ({'✅ Benar' if is_correct else '❌ Salah'})")
                             else:
                                 st.info(a or "(Kosong)")
 
-                        if selected_tugas.get("tipe") == "essay":
-                            if st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}"):
-                                with st.spinner("🤖 AI sedang menganalisis jawaban siswa dalam Bahasa Indonesia..."):
-                                    val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
-                                if val is not None:
-                                    st.session_state[val_key] = int(val)
-                                    st.session_state[cat_key] = str(fb)
-                                    st.success("🤖 Hasil koreksi AI dimuat ke formulir! Silakan periksa kembali lalu klik tombol 'Simpan / Update' di bawah.")
-                                    st.rerun()
-                                else:
-                                    st.error(fb)
+                        if selected_tugas.get("tipe") == "essay" and st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}"):
+                            with st.spinner("Analyzing..."):
+                                val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
+                            if val is not None:
+                                st.session_state[val_key] = int(val)
+                                st.session_state[cat_key] = str(fb)
+                                st.success("Dimuat dari AI! Silakan klik Simpan.")
+                                st.rerun()
 
                         with st.form(key=f"f_eval_{sub_id}"):
                             n_in = st.number_input("Nilai (0-100)", 0, 100, key=val_key)
-                            c_in = st.text_area("Catatan Guru (Bahasa Indonesia)", key=cat_key)
-                            
-                            if st.form_submit_button("💾 Simpan / Update Perubahan Guru"):
-                                db.collection("jawaban_siswa").document(sub_id).update({
-                                    "nilai": n_in, 
-                                    "catatan_guru": c_in
-                                })
-                                st.success("✅ Perubahan koreksi berhasil disimpan!")
+                            c_in = st.text_area("Catatan Guru", key=cat_key)
+                            if st.form_submit_button("💾 Simpan Perubahan"):
+                                db.collection("jawaban_siswa").document(sub_id).update({"nilai": n_in, "catatan_guru": c_in})
+                                clear_user_submissions_cache()
+                                st.success("✅ Tersimpan!")
                                 st.rerun()
 
-                with tab_belum:
-                    if not belum_dinilai:
-                        st.success("🎉 Semua jawaban siswa di kelas ini sudah selesai dinilai!")
-                    else:
-                        for sub in belum_dinilai:
-                            render_koreksi_item(sub)
-
-                with tab_sudah:
-                    if not sudah_dinilai:
-                        st.info("Belum ada jawaban siswa yang dinilai.")
-                    else:
-                        for sub in sudah_dinilai:
-                            render_koreksi_item(sub)
-
-        with t_rata:
-            st.subheader(f"📈 Rekap Seluruh Nilai & Rata-Rata Kelas {selected_kelas}")
-            st.caption("💡 **Catatan**: Tugas yang belum dikerjakan / belum dinilai dihitung bernilai **0** dalam kalkulasi rata-rata.")
-
-            if not siswa_list:
-                st.info("Belum ada siswa di kelas ini.")
-            else:
-                all_subs = db.collection("jawaban_siswa").where("kelas_siswa", "==", selected_kelas).stream()
-                subs_map = {}
-                for doc in all_subs:
-                    d = doc.to_dict()
-                    u_siswa = d.get("username_siswa")
-                    t_id = d.get("id_tugas")
-                    val_n = d.get("nilai")
-                    subs_map[(u_siswa, t_id)] = int(val_n) if val_n is not None else 0
-
-                avg_table_rows = []
-                for s in siswa_list:
-                    un = s["username"]
-                    nama = s.get("nama", un)
-                    row_data = {
-                        "Username": un,
-                        "Nama Siswa": nama
-                    }
-                    
-                    total_nilai_siswa = 0
-                    for tg in tugas_kelas:
-                        score = subs_map.get((un, tg["id"]), 0)
-                        row_data[tg.get("judul", "Tugas")] = score
-                        total_nilai_siswa += score
-                    
-                    rata_rata = round(total_nilai_siswa / len(tugas_kelas), 1) if tugas_kelas else 0
-                    row_data["Rata-Rata Akhir"] = rata_rata
-                    avg_table_rows.append(row_data)
-
-                df_avg = pd.DataFrame(avg_table_rows)
-                st.dataframe(df_avg, use_container_width=True)
-
-                st.download_button(
-                    label="💾 Unduh Rekap Nilai Kelas (.csv)",
-                    data=df_avg.to_csv(index=False).encode('utf-8'),
-                    file_name=f"rekap_nilai_kelas_{selected_kelas}.csv",
-                    mime="text/csv"
-                )
-
 # ==========================================
-# 8. PANEL SISWA
+# 8. PANEL SISWA (ZERO-LATENCY EXAM MODE)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
 
-    all_tugas = [t for t in [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()] if is_tugas_sesuai_kelas(t, kelas_s)]
-    active_task_ids = {t["id"] for t in all_tugas}
+    # Get cached submissions
+    my_subs = get_user_submissions_cached(username_s)
 
-    my_subs_docs = db.collection("jawaban_siswa").where("username_siswa", "==", username_s).stream()
-    my_subs = {}
-    for d in my_subs_docs:
-        data = d.to_dict()
-        t_id = data.get("id_tugas")
-        if t_id in active_task_ids:
-            my_subs[t_id] = data
-
+    # ACTIVE QUIZ MODE (ZERO FIREBASE READS DURING TEST TAKING)
     active_quiz_id = st.session_state.get("active_quiz_id")
     if active_quiz_id:
-        tg = next((t for t in all_tugas if t["id"] == active_quiz_id), None)
+        # Load Quiz into session state memory if not loaded
+        if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
+            all_t = get_all_tugas_cached()
+            st.session_state["active_quiz_data"] = next((t for t in all_t if t["id"] == active_quiz_id), None)
+
+        tg = st.session_state.get("active_quiz_data")
         if not tg:
             st.session_state["active_quiz_id"] = None
             st.rerun()
@@ -950,127 +736,55 @@ def render_siswa():
 
         if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary"):
             st.session_state["active_quiz_id"] = None
+            st.session_state.pop("active_quiz_data", None)
             st.rerun()
 
         st.markdown(f"### 📝 {tg.get('judul')}")
         st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab**")
 
+        # Anti-cheat script
         components.html("""
-        <style>
-            #cheat-modal {
-                display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                background: rgba(0,0,0,0.75); z-index: 999999; justify-content: center; align-items: center;
-            }
-            .cheat-box {
-                background: #ffffff; padding: 22px; border-radius: 16px; max-width: 310px;
-                text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3); font-family: system-ui, -apple-system, sans-serif;
-            }
-            .cheat-box h4 { margin: 0 0 10px 0; color: #d32f2f; font-size: 18px; }
-            .cheat-box p { font-size: 14px; color: #333; margin-bottom: 18px; line-height: 1.4; }
-            .cheat-btn { background: #1e3c72; color: white; border: none; padding: 10px 20px; border-radius: 10px; font-weight: bold; font-size: 14px; width: 100%; cursor: pointer; }
-        </style>
-        <div id="cheat-modal">
-            <div class="cheat-box">
-                <h4 id="cheat-title">⚠️ PERINGATAN KECURANGAN</h4>
-                <p id="cheat-msg">Dilarang berpindah tab, membuka aplikasi, atau mengakses file lain!</p>
-                <button class="cheat-btn" onclick="document.getElementById('cheat-modal').style.display='none'">Saya Mengerti</button>
-            </div>
-        </div>
         <script>
             let cheatCount = 0;
-            const maxViolations = 100;
-            let isPowerOff = false;
-            let violationTimer = null;
-
-            async function keepAwake() {
-                try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {}
-            }
-            keepAwake();
-
-            window.addEventListener('pagehide', function() { isPowerOff = true; });
-
-            function recordViolation() {
-                cheatCount++;
-                const modal = document.getElementById('cheat-modal');
-                const msg = document.getElementById('cheat-msg');
-                if (cheatCount < maxViolations) {
-                    msg.innerText = "⚠️ Dilarang berpindah tab, aplikasi, atau file lain! (Peringatan " + cheatCount + "/" + maxViolations + ")";
-                    modal.style.display = 'flex';
-                } else {
-                    msg.innerText = "🚨 Anda terdeteksi melakukan kecurangan berulang kali. Jawaban dikumpulkan otomatis!";
-                    modal.style.display = 'flex';
-                    setTimeout(function() {
-                        const buttons = window.parent.document.querySelectorAll('button');
-                        for (let btn of buttons) {
-                            if (btn.innerText.includes("Kumpulkan Semua Jawaban")) { btn.click(); break; }
-                        }
-                    }, 1000);
-                }
-            }
-
             document.addEventListener("visibilitychange", function() {
                 if (document.hidden) {
-                    violationTimer = setTimeout(function() {
-                        if (isPowerOff) return;
-                        recordViolation();
-                    }, 2000);
-                } else {
-                    if (violationTimer) {
-                        clearTimeout(violationTimer);
-                        violationTimer = null;
-                    }
-                    setTimeout(function() { isPowerOff = false; }, 400);
-                }
-            });
-
-            window.addEventListener('focus', function() {
-                if (violationTimer) {
-                    clearTimeout(violationTimer);
-                    violationTimer = null;
+                    cheatCount++;
+                    alert("⚠️ Dilarang berpindah tab/aplikasi! (Peringatan " + cheatCount + ")");
                 }
             });
         </script>
         """, height=0)
 
         st.progress((curr_page + 1) / total_soal)
-
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
         with st.container(border=True):
             st.markdown(f"#### Soal No. {curr_page + 1} dari {total_soal}")
             st.markdown(f"**{q_text}**")
-            st.write("")
 
             if tg.get("tipe") == "pg":
                 opsi_list = soal_item.get("opsi", [])
                 saved_ans = answers[curr_page]
-
                 selected_opt = st.radio(
-                    "Pilih Jawaban Anda:",
-                    options=[0, 1, 2, 3],
+                    "Pilih Jawaban Anda:", options=[0, 1, 2, 3],
                     index=saved_ans if saved_ans is not None else None,
                     format_func=lambda x: f"{['A','B','C','D'][x]}. {opsi_list[x]}",
                     key=f"radio_q_{tg_id}_{curr_page}"
                 )
-
                 if selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
             else:
                 saved_text = answers[curr_page] or ""
                 essay_text = st.text_area(
-                    "Jawaban Anda:",
-                    value=saved_text,
-                    placeholder="Ketikkan jawaban secara lengkap di sini...",
-                    key=f"essay_q_{tg_id}_{curr_page}",
-                    height=140
+                    "Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}"
                 )
                 if essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
-        st.markdown("📌 **Pilih Nomor Soal:**")
+        # Navigation buttons
         cols_per_row = 5
         for row_start in range(0, total_soal, cols_per_row):
             nav_cols = st.columns(cols_per_row)
@@ -1084,26 +798,17 @@ def render_siswa():
                         st.session_state[f"quiz_page_{tg_id}"] = q_idx
                         st.rerun()
 
-        st.write("")
-
         c_prev, c_next = st.columns(2)
         with c_prev:
-            if curr_page > 0:
-                if st.button("⬅️ Sebelumnya", key="btn_prev_q", use_container_width=True):
-                    st.session_state[f"quiz_page_{tg_id}"] -= 1
-                    st.rerun()
-
+            if curr_page > 0 and st.button("⬅️ Sebelumnya", use_container_width=True):
+                st.session_state[f"quiz_page_{tg_id}"] -= 1
+                st.rerun()
         with c_next:
-            if curr_page < total_soal - 1:
-                if st.button("Selanjutnya ➡️", key="btn_next_q", type="primary", use_container_width=True):
-                    st.session_state[f"quiz_page_{tg_id}"] += 1
-                    st.rerun()
+            if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", type="primary", use_container_width=True):
+                st.session_state[f"quiz_page_{tg_id}"] += 1
+                st.rerun()
 
         st.divider()
-        unanswered_count = sum(1 for a in answers if a is None)
-        if unanswered_count > 0:
-            st.warning(f"⚠️ Masih ada **{unanswered_count} soal** yang belum dijawab.")
-
         if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
             if tg.get("tipe") == "pg":
                 correct_count = 0
@@ -1111,8 +816,7 @@ def render_siswa():
                 for idx_q, sq in enumerate(soal_list):
                     user_a = answers[idx_q]
                     formatted_ans.append(user_a if user_a is not None else -1)
-                    if user_a is not None and user_a == sq.get("kunci"):
-                        correct_count += 1
+                    if user_a is not None and user_a == sq.get("kunci"): correct_count += 1
                 score = round((correct_count / total_soal) * 100)
 
                 db.collection("jawaban_siswa").add({
@@ -1121,7 +825,7 @@ def render_siswa():
                     "nilai": score, "catatan_guru": "Penilaian Otomatis Sistem", "submitted_at": firestore.SERVER_TIMESTAMP
                 })
                 st.balloons()
-                st.success(f"✅ Berhasil dikumpulkan! Nilai Anda: {score}")
+                st.success(f"✅ Dikumpulkan! Nilai Anda: {score}")
             else:
                 formatted_ans = [a if a is not None else "" for a in answers]
                 db.collection("jawaban_siswa").add({
@@ -1129,150 +833,73 @@ def render_siswa():
                     "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay", "soal": soal_list,
                     "jawaban": formatted_ans, "nilai": None, "submitted_at": firestore.SERVER_TIMESTAMP
                 })
-                st.success("✅ Berhasil dikumpulkan! Tugas menunggu koreksi guru.")
+                st.success("✅ Dikumpulkan! Menunggu koreksi guru.")
 
+            # Clean session exam state
+            clear_user_submissions_cache()
             st.session_state["active_quiz_id"] = None
-            if f"quiz_answers_{tg_id}" in st.session_state: del st.session_state[f"quiz_answers_{tg_id}"]
-            if f"quiz_page_{tg_id}" in st.session_state: del st.session_state[f"quiz_page_{tg_id}"]
+            st.session_state.pop("active_quiz_data", None)
+            st.session_state.pop(f"quiz_answers_{tg_id}", None)
+            st.session_state.pop(f"quiz_page_{tg_id}", None)
             st.rerun()
 
         return
 
+    # MAIN STUDENT DASHBOARD
+    all_tugas = [t for t in get_all_tugas_cached() if is_tugas_sesuai_kelas(t, kelas_s)]
     total_tugas = len(all_tugas)
     tugas_selesai = len(my_subs)
-    tugas_belum = total_tugas - tugas_selesai
-
-    if total_tugas > 0:
-        total_skor = sum(int(my_subs[tg["id"]]["nilai"]) for tg in all_tugas if tg["id"] in my_subs and my_subs[tg["id"]].get("nilai") is not None)
-        avg_nilai = round(total_skor / total_tugas, 1)
-    else:
-        avg_nilai = "-"
 
     st.markdown(f"""
         <div class="student-header">
             <div style="font-size: 0.85rem; opacity: 0.9;">🏫 Kelas {kelas_s}</div>
-            <div style="font-size: 1.4rem; font-weight: bold; margin-bottom: 4px;">Halo, {nama_s}! 👋</div>
-            <div style="font-size: 0.8rem; opacity: 0.85;">Siap belajar Pendidikan Pancasila hari ini?</div>
+            <div style="font-size: 1.4rem; font-weight: bold;">Halo, {nama_s}! 👋</div>
         </div>
     """, unsafe_allow_html=True)
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Tugas Belum", f"{tugas_belum}", delta=f"{total_tugas} total", delta_color="inverse")
-    c2.metric("Selesai", f"{tugas_selesai}")
-    c3.metric("Rata-Rata Nilai", f"{avg_nilai}")
-
-    st.divider()
 
     tab_tugas, tab_materi, tab_nilai = st.tabs(["✍️ Tugas Saya", "📚 Modul Materi", "📊 Riwayat Nilai"])
 
     with tab_tugas:
-        if not all_tugas:
-            st.info("🎉 Belum ada tugas yang diberikan untuk kelas Anda saat ini.")
+        tugas_belum_list = [t for t in all_tugas if t["id"] not in my_subs]
+        tugas_sudah_list = [t for t in all_tugas if t["id"] in my_subs]
+
+        st.subheader("🔴 Tugas Belum Dikerjakan")
+        if not tugas_belum_list:
+            st.success("✨ Semua tugas telah dikumpulkan!")
         else:
-            tugas_belum_list = [t for t in all_tugas if t["id"] not in my_subs]
-            tugas_sudah_list = [t for t in all_tugas if t["id"] in my_subs]
+            for tg in tugas_belum_list:
+                with st.container(border=True):
+                    st.markdown(f"### 📝 {tg.get('judul')}")
+                    st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | {len(tg.get('soal', []))} Soal")
+                    if st.button("🚀 Mulai Kerjakan", key=f"start_{tg['id']}", type="primary"):
+                        st.session_state["active_quiz_id"] = tg["id"]
+                        st.rerun()
 
-            sub_tab_belum, sub_tab_sudah = st.tabs([
-                f"🔴 Belum Dikerjakan ({len(tugas_belum_list)})",
-                f"🟢 Sudah Dikerjakan ({len(tugas_sudah_list)})"
-            ])
-
-            with sub_tab_belum:
-                if not tugas_belum_list:
-                    st.success("✨ Hebat! Semua tugas kelas Anda sudah dikumpulkan.")
-                else:
-                    for tg in tugas_belum_list:
-                        tg_id = tg["id"]
-                        tipe_label = "Pilihan Ganda" if tg.get("tipe") == "pg" else "Essay"
-
-                        with st.container(border=True):
-                            st.markdown(f"### 📝 {tg.get('judul')}")
-                            st.caption(f"Tipe Soal: **{tipe_label}** | Jumlah: **{len(tg.get('soal', []))} soal**")
-
-                            if tg.get("instruksi"):
-                                st.info(f"💡 **Instruksi:** {tg.get('instruksi')}")
-
-                            if st.button("🚀 Mulai Kerjakan Kuis Sekarang", key=f"start_{tg_id}", type="primary", use_container_width=True):
-                                st.session_state["active_quiz_id"] = tg_id
-                                st.rerun()
-
-            with sub_tab_sudah:
-                if not tugas_sudah_list:
-                    st.info("Belum ada tugas yang Anda kumpulkan.")
-                else:
-                    for tg in tugas_sudah_list:
-                        sub_data = my_subs.get(tg["id"], {})
-                        val = sub_data.get("nilai")
-                        val_str = f"💯 Nilai: {val}" if val is not None else "⏳ Menunggu Koreksi"
-                        tipe_tugas = tg.get("tipe", "pg")
-
-                        with st.container(border=True):
-                            st.markdown(f"### 📝 {tg.get('judul')}")
-                            st.caption(f"Tipe: **{tipe_tugas.upper()}** | Status: **{val_str}**")
-
-                            with st.expander("🔍 Lihat Detail Soal & Jawaban Saya"):
-                                soal_items = sub_data.get("soal") or tg.get("soal", [])
-                                jawaban_items = sub_data.get("jawaban", [])
-
-                                if not jawaban_items:
-                                    st.warning("Data jawaban tidak ditemukan.")
-                                else:
-                                    for idx, (q, a) in enumerate(zip(soal_items, jawaban_items), 1):
-                                        q_text = q.get('pertanyaan') if isinstance(q, dict) else str(q)
-                                        st.markdown(f"**{idx}. {q_text}**")
-
-                                        if tipe_tugas == "pg":
-                                            opsi_list = q.get("opsi", []) if isinstance(q, dict) else []
-                                            ans_idx = a if isinstance(a, int) else 0
-                                            ans_text = opsi_list[ans_idx] if (isinstance(ans_idx, int) and 0 <= ans_idx < len(opsi_list)) else str(a)
-                                            kunci_idx = q.get("kunci", 0) if isinstance(q, dict) else 0
-                                            is_correct = (ans_idx == kunci_idx)
-
-                                            st.markdown(f"👉 **Jawaban Anda:** {ans_text} ({'✅ Benar' if is_correct else '❌ Salah'})")
-                                            if not is_correct and 0 <= kunci_idx < len(opsi_list):
-                                                st.caption(f"🔑 **Kunci Jawaban:** {['A','B','C','D'][kunci_idx]}. {opsi_list[kunci_idx]}")
-                                        else:
-                                            st.markdown("👉 **Jawaban Anda:**")
-                                            st.info(str(a).strip() if a else "(Kosong)")
-
-                                        st.write("---")
+        if tugas_sudah_list:
+            st.divider()
+            st.subheader("🟢 Tugas Sudah Dikerjakan")
+            for tg in tugas_sudah_list:
+                sub_data = my_subs.get(tg["id"], {})
+                val = sub_data.get("nilai")
+                st.write(f"- **{tg.get('judul')}** | Nilai: **{val if val is not None else 'Menunggu Koreksi'}**")
 
     with tab_materi:
-        all_materi = [d.to_dict() for d in db.collection("materi_pancasila").stream()]
-        materi_docs = [m for m in all_materi if is_materi_sesuai_kelas(m, kelas_s)]
-
+        materi_docs = [m for m in get_all_materi_cached() if is_materi_sesuai_kelas(m, kelas_s)]
         if not materi_docs:
-            st.info("📖 Belum ada materi pembelajaran yang ditujukan untuk kelas Anda saat ini.")
+            st.info("Belum ada materi untuk kelas Anda.")
         else:
             for m in materi_docs:
                 with st.container(border=True):
                     st.markdown(f"#### 📘 [{m.get('bab')}] {m.get('judul')}")
                     if m.get("konten"): st.write(m.get("konten"))
-                    if m.get("file_url"):
-                        st.markdown("---")
-                        st.link_button("📎 Buka / Unduh Lampiran Dokumen", m.get("file_url"))
+                    if m.get("file_url"): st.link_button("📎 Buka Dokumen", m.get("file_url"))
 
     with tab_nilai:
         if not my_subs:
-            st.info("📊 Anda belum memiliki riwayat nilai tugas.")
+            st.info("Belum ada riwayat nilai.")
         else:
-            st.subheader("📋 Lembar Hasil Penilaian")
             for sub_id, sub_info in my_subs.items():
-                nilai_val = sub_info.get("nilai")
-                catatan = sub_info.get("catatan_guru", "-")
-
-                with st.container(border=True):
-                    c_left, c_right = st.columns([3, 1])
-                    with c_left:
-                        st.markdown(f"**{sub_info.get('judul_tugas', 'Tugas')}**")
-                        st.caption(f"Tipe: {str(sub_info.get('tipe', '')).upper()}")
-                        if catatan and catatan != "-":
-                            st.info(f"💬 **Catatan Guru:**\n\n{catatan}")
-                    with c_right:
-                        if nilai_val is not None:
-                            st.metric("Nilai", f"{nilai_val}")
-                        else:
-                            st.warning("Menunggu Koreksi")
+                st.write(f"- **{sub_info.get('judul_tugas')}**: Nilai **{sub_info.get('nilai', 'Menunggu')}**")
 
 # ==========================================
 # 9. MAIN ROUTER
