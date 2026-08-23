@@ -107,7 +107,7 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def get_all_kelas():
     docs = db.collection("kelas").stream()
     return sorted([d.id for d in docs])
