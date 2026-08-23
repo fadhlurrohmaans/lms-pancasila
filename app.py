@@ -916,7 +916,7 @@ def render_guru():
                     mime="text/csv"
                 )
 # ==========================================
-# 8. PANEL SISWA (MOBILE FRIENDLY DESIGN)
+# 8. PANEL SISWA (MOBILE & ANDROID FRIENDLY)
 # ==========================================
 def render_siswa():
     import streamlit.components.v1 as components
@@ -925,11 +925,11 @@ def render_siswa():
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
 
-    # 1. Ambil daftar tugas aktif yang berlaku untuk kelas siswa
+    # 1. Ambil daftar tugas aktif
     all_tugas = [t for t in [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()] if is_tugas_sesuai_kelas(t, kelas_s)]
     active_task_ids = {t["id"] for t in all_tugas}
 
-    # 2. Ambil riwayat pengumpulan siswa & FILTER tugas aktif
+    # 2. Ambil riwayat pengumpulan siswa
     my_subs_docs = db.collection("jawaban_siswa").where("username_siswa", "==", username_s).stream()
     my_subs = {}
     for d in my_subs_docs:
@@ -939,7 +939,7 @@ def render_siswa():
             my_subs[t_id] = data
 
     # ---------------------------------------------------------
-    # 🔥 MODE FOKUS KUIS (TAMPILAN KHUSUS SAAT MENGERJAKAN SOAL)
+    # 🔥 MODE FOKUS KUIS (TAMPILAN OPTIMAL UNTUK ANDROID)
     # ---------------------------------------------------------
     active_quiz_id = st.session_state.get("active_quiz_id")
     if active_quiz_id:
@@ -960,99 +960,125 @@ def render_siswa():
 
         curr_page = st.session_state[f"quiz_page_{tg_id}"]
         answers = st.session_state[f"quiz_answers_{tg_id}"]
+        terjawab_count = sum(1 for a in answers if a is None)
 
-        # Header Mode Fokus
-        col_back, col_title = st.columns([1, 4])
-        with col_back:
-            if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz"):
-                st.session_state["active_quiz_id"] = None
-                st.rerun()
-        with col_title:
-            st.subheader(f"📝 {tg.get('judul')}")
-            st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Soal **{curr_page + 1}** dari **{total_soal}**")
+        # Header Kuis Mobile
+        st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary")
+        if st.session_state.get("btn_exit_quiz"):
+            st.session_state["active_quiz_id"] = None
+            st.rerun()
 
-        # Deteksi Kecurangan (Pindah Tab / Kunci Layar Safe)
+        st.markdown(f"### 📝 {tg.get('judul')}")
+        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Progress: **{total_soal - terjawab_count}/{total_soal} Dijawab**")
+
+        # Deteksi Anti-Contek Pintar (Mengabaikan Kunci Layar / Power Button Android)
         components.html("""
         <style>
             #cheat-modal {
                 display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                background: rgba(0,0,0,0.6); z-index: 999999; justify-content: center; align-items: center;
+                background: rgba(0,0,0,0.65); z-index: 999999; justify-content: center; align-items: center;
             }
             .cheat-box {
-                background: #ffffff; padding: 20px; border-radius: 12px; max-width: 300px;
-                text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.2); font-family: sans-serif;
+                background: #ffffff; padding: 22px; border-radius: 16px; max-width: 310px;
+                text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3); font-family: -apple-system, sans-serif;
             }
-            .cheat-box h4 { margin: 0 0 10px 0; color: #d32f2f; font-size: 16px; }
-            .cheat-box p { font-size: 13px; color: #333; margin-bottom: 15px; line-height: 1.4; }
-            .cheat-btn { background: #1e3c72; color: white; border: none; padding: 8px 18px; border-radius: 8px; font-weight: bold; cursor: pointer; }
+            .cheat-box h4 { margin: 0 0 10px 0; color: #d32f2f; font-size: 18px; }
+            .cheat-box p { font-size: 14px; color: #333; margin-bottom: 18px; line-height: 1.4; }
+            .cheat-btn { background: #1e3c72; color: white; border: none; padding: 10px 20px; border-radius: 10px; font-weight: bold; font-size: 14px; width: 100%; }
         </style>
         <div id="cheat-modal">
             <div class="cheat-box">
-                <h4 id="cheat-title">⚠️ Peringatan Kuis</h4>
+                <h4 id="cheat-title">⚠️ Peringatan Ujian</h4>
                 <p id="cheat-msg">Dilarang berpindah aplikasi atau membuka tab lain!</p>
                 <button class="cheat-btn" onclick="document.getElementById('cheat-modal').style.display='none'">Saya Mengerti</button>
             </div>
         </div>
         <script>
-            let cheatCount = 0; const maxViolations = 2; let isScreenLocked = false; let lastTick = Date.now();
-            async function keepAwake() { try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {} }
+            let cheatCount = 0;
+            const maxViolations = 2;
+            let hideStartTime = 0;
+            let hiddenTicks = 0;
+            let tickInterval = null;
+
+            // Mencegah layar meredup/sleep otomatis saat membaca soal
+            async function keepAwake() {
+                try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {}
+            }
             keepAwake();
-            setInterval(function() {
-                let now = Date.now();
-                if (now - lastTick > 1200) isScreenLocked = true;
-                lastTick = now;
-            }, 400);
+
             document.addEventListener("visibilitychange", function() {
                 if (document.hidden) {
-                    setTimeout(function() {
-                        if (isScreenLocked) return;
-                        cheatCount++;
-                        const modal = document.getElementById('cheat-modal');
-                        const msg = document.getElementById('cheat-msg');
-                        if (cheatCount < maxViolations) {
-                            msg.innerText = "⚠️ Dilarang berpindah aplikasi atau membuka tab lain! (Peringatan " + cheatCount + "/" + maxViolations + ")";
-                            modal.style.display = 'flex';
-                        } else {
-                            msg.innerText = "🚨 Kecurangan berulang! Kuis akan dikumpulkan otomatis.";
-                            modal.style.display = 'flex';
-                            setTimeout(function() {
-                                const buttons = window.parent.document.querySelectorAll('button');
-                                for (let btn of buttons) {
-                                    if (btn.innerText.includes("Kumpulkan Semua Jawaban")) { btn.click(); break; }
-                                }
-                            }, 1200);
-                        }
-                    }, 100);
+                    hideStartTime = Date.now();
+                    hiddenTicks = 0;
+                    // Hitung detak CPU saat di latar belakang
+                    tickInterval = setInterval(function() { hiddenTicks++; }, 100);
                 } else {
-                    setTimeout(function() { isScreenLocked = false; }, 800);
+                    if (tickInterval) clearInterval(tickInterval);
+                    
+                    let timeHidden = Date.now() - hideStartTime;
+                    let expectedTicks = timeHidden / 100;
+
+                    // Abaikan jika hanya kedipan layar / sentuhan tidak sengaja (< 350ms)
+                    if (timeHidden < 350) return;
+
+                    // Jika detak CPU riil jauh lebih sedikit dari estimasi (< 40%),
+                    // berarti HP sedang DILOCK/LAYAR MATI (CPU suspended). ABAIKAN!
+                    let wasCpuSuspended = (hiddenTicks < expectedTicks * 0.4);
+
+                    if (wasCpuSuspended) {
+                        return; // Layar HP mati/terkunci -> Bukan Pelanggaran!
+                    }
+
+                    // Murni berpindah aplikasi / pindah tab browser
+                    cheatCount++;
+                    const modal = document.getElementById('cheat-modal');
+                    const msg = document.getElementById('cheat-msg');
+                    if (cheatCount < maxViolations) {
+                        msg.innerText = "⚠️ Dilarang berpindah aplikasi atau membuka tab lain! (Peringatan " + cheatCount + "/" + maxViolations + ")";
+                        modal.style.display = 'flex';
+                    } else {
+                        msg.innerText = "🚨 Anda terdeteksi berpindah aplikasi berulang kali. Jawaban akan dikumpulkan otomatis!";
+                        modal.style.display = 'flex';
+                        setTimeout(function() {
+                            const buttons = window.parent.document.querySelectorAll('button');
+                            for (let btn of buttons) {
+                                if (btn.innerText.includes("Kumpulkan Semua Jawaban")) { btn.click(); break; }
+                            }
+                        }, 1200);
+                    }
                 }
             });
         </script>
         """, height=0)
 
-        # Progres Kuis
+        # Bilah Kemajuan (Progress Bar)
         st.progress((curr_page + 1) / total_soal)
 
-        # Kisi Navigasi Nomor Soal
-        st.write("📌 **Navigasi Nomor Soal:**")
-        cols_nav = st.columns(min(total_soal, 10))
-        for p_idx in range(total_soal):
-            col_target = cols_nav[p_idx % 10]
-            is_ans = answers[p_idx] is not None
-            lbl = f"{'✅' if is_ans else ''}{p_idx + 1}"
-            btn_t = "primary" if p_idx == curr_page else "secondary"
-            if col_target.button(lbl, key=f"nav_p_{p_idx}", type=btn_t, use_container_width=True):
-                st.session_state[f"quiz_page_{tg_id}"] = p_idx
-                st.rerun()
+        # ---------------------------------------------------------
+        # NAVIGASI NOMOR SOAL (RAMAH LAYAR SENTUH HP - 5 KOLOM)
+        # ---------------------------------------------------------
+        with st.expander("📌 **Navigasi Nomor Soal**", expanded=False):
+            cols_per_row = 5  # 5 Kolom pas untuk ukuran layar HP
+            for row_start in range(0, total_soal, cols_per_row):
+                cols = st.columns(cols_per_row)
+                for idx in range(cols_per_row):
+                    q_idx = row_start + idx
+                    if q_idx < total_soal:
+                        is_ans = answers[q_idx] is not None
+                        label_btn = f"{'🟢' if is_ans else '⚪'} {q_idx + 1}"
+                        btn_t = "primary" if q_idx == curr_page else "secondary"
+                        if cols[idx].button(label_btn, key=f"nav_p_{q_idx}", type=btn_t, use_container_width=True):
+                            st.session_state[f"quiz_page_{tg_id}"] = q_idx
+                            st.rerun()
 
-        st.divider()
-
-        # Tampilan Soal Tunggal
+        # ---------------------------------------------------------
+        # AREA SOAL & PILIHAN JAWABAN
+        # ---------------------------------------------------------
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
         with st.container(border=True):
-            st.markdown(f"### Soal No. {curr_page + 1}")
+            st.markdown(f"#### Soal No. {curr_page + 1} dari {total_soal}")
             st.markdown(f"**{q_text}**")
             st.write("")
 
@@ -1077,32 +1103,36 @@ def render_siswa():
                 essay_text = st.text_area(
                     "Jawaban Anda:",
                     value=saved_text,
-                    placeholder="Ketikkan jawaban secara lengkap...",
-                    key=f"essay_q_{tg_id}_{curr_page}"
+                    placeholder="Ketikkan jawaban secara lengkap di sini...",
+                    key=f"essay_q_{tg_id}_{curr_page}",
+                    height=140
                 )
                 if essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
-        # Tombol Navigasi Sebelumnya / Selanjutnya
-        c_prev, c_space, c_next = st.columns([2, 1, 2])
+        # ---------------------------------------------------------
+        # TOMBOL NAVIGASI SEBELUMNYA / SELANJUTNYA
+        # ---------------------------------------------------------
+        c_prev, c_next = st.columns(2)
         with c_prev:
             if curr_page > 0:
-                if st.button("⬅️ Soal Sebelumnya", key="btn_prev_q", use_container_width=True):
+                if st.button("⬅️ Sebelumnya", key="btn_prev_q", use_container_width=True):
                     st.session_state[f"quiz_page_{tg_id}"] -= 1
                     st.rerun()
 
         with c_next:
             if curr_page < total_soal - 1:
-                if st.button("Soal Selanjutnya ➡️", key="btn_next_q", type="primary", use_container_width=True):
+                if st.button("Selanjutnya ➡️", key="btn_next_q", type="primary", use_container_width=True):
                     st.session_state[f"quiz_page_{tg_id}"] += 1
                     st.rerun()
 
-        # Tombol Pengumpulan Akhir
+        # ---------------------------------------------------------
+        # TOMBOL AKHIR SUBMIT SOAL
+        # ---------------------------------------------------------
         st.divider()
-        unanswered = sum(1 for a in answers if a is None)
-        if unanswered > 0:
-            st.warning(f"⚠️ Masih ada **{unanswered} soal** yang belum dijawab.")
+        if terjawab_count > 0:
+            st.warning(f"⚠️ Masih ada **{terjawab_count} soal** yang belum dijawab.")
 
         if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
             if tg.get("tipe") == "pg":
@@ -1136,7 +1166,7 @@ def render_siswa():
             if f"quiz_page_{tg_id}" in st.session_state: del st.session_state[f"quiz_page_{tg_id}"]
             st.rerun()
 
-        return  # Menghentikan eksekusi panel luar agar siswa fokus total pada mode kuis
+        return
 
     # ---------------------------------------------------------
     # TAMPILAN DASHBOARD SISWA NORMAL
@@ -1285,7 +1315,6 @@ def render_siswa():
                             st.metric("Nilai", f"{nilai_val}")
                         else:
                             st.warning("Menunggu Koreksi")
-
 # ==========================================
 # 9. MAIN ROUTER
 # ==========================================
