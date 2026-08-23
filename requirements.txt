@@ -2,4 +2,5 @@ streamlit
 firebase-admin
 pandas
 openpyxl
+python-docx
 google-generativeai
