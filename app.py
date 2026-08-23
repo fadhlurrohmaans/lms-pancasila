@@ -9,8 +9,6 @@ import random
 import string
 import json
 import io
-import docx
-from docx.oxml.ns import qn
 import google.generativeai as genai
 
 # ==========================================
@@ -129,171 +127,6 @@ def safe_read_uploaded_file(uploaded_file):
         return pd.read_csv(uploaded_file, encoding='utf-8', errors='replace')
     return pd.read_excel(uploaded_file)
 
-def parse_word_latex_equation(file_stream, tipe="pg"):
-    """Membaca file .docx dan menyusun struktur Soal, Opsi (A-D), serta Kunci Jawaban secara akurat."""
-    doc = docx.Document(file_stream)
-    ns_w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-
-    def extract_element_text(elem):
-        text_parts = []
-        for child in elem:
-            tag = child.tag
-            if tag.endswith('t'):
-                if child.text: text_parts.append(child.text)
-            elif tag.endswith('sym'):
-                char_hex = child.attrib.get(f'{{{ns_w}}}char') or child.attrib.get('char')
-                if char_hex:
-                    try: text_parts.append(chr(int(char_hex, 16)))
-                    except ValueError: pass
-            elif tag.endswith('tab'): text_parts.append(' ')
-            elif tag.endswith('br') or tag.endswith('cr'): text_parts.append('\n')
-            elif tag.endswith('oMath') or tag.endswith('oMathPara'):
-                math_texts = [t.text for t in child.iter() if t.tag.endswith('t') and t.text]
-                full_math = "".join(math_texts).strip()
-                if full_math: text_parts.append(f" ${full_math}$ ")
-            else:
-                if not (tag.endswith('oMath') or tag.endswith('oMathPara')):
-                    text_parts.append(extract_element_text(child))
-        return "".join(text_parts)
-
-    raw_lines = []
-    for p in doc.paragraphs:
-        txt = extract_element_text(p._element).strip()
-        txt = re.sub(r'[ \t]+', ' ', txt)
-        if txt: raw_lines.append(txt)
-
-    soal_list = []
-
-    if tipe == "pg":
-        current_soal = None
-        option_pattern = re.compile(r'^\s*\*?\s*([A-Da-d])[\.\)]\s*(.*)$')
-        q_num_pattern = re.compile(r'^\s*(?:Soal\s*)?(\d+)[\.\)]\s*(.*)$')
-        key_pattern = re.compile(r'^\s*(?:Kunci|Jawaban)\s*:\s*([A-Da-d])\s*$', re.IGNORECASE)
-
-        for line in raw_lines:
-            opt_match = option_pattern.match(line)
-            q_match = q_num_pattern.match(line)
-            key_match = key_pattern.match(line)
-
-            if key_match and current_soal:
-                k_char = key_match.group(1).upper()
-                key_map = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
-                current_soal["kunci"] = key_map.get(k_char, 0)
-            elif opt_match and current_soal:
-                opt_text = opt_match.group(2).strip()
-                current_soal["opsi"].append(opt_text)
-            elif q_match:
-                if current_soal:
-                    while len(current_soal["opsi"]) < 4:
-                        current_soal["opsi"].append("-")
-                    soal_list.append(current_soal)
-                
-                current_soal = {
-                    "pertanyaan": q_match.group(2).strip(),
-                    "opsi": [],
-                    "kunci": 0
-                }
-            else:
-                if current_soal:
-                    if len(current_soal["opsi"]) == 0:
-                        current_soal["pertanyaan"] += "\n" + line
-                    else:
-                        current_soal["opsi"][-1] += "\n" + line
-                else:
-                    current_soal = {
-                        "pertanyaan": line,
-                        "opsi": [],
-                        "kunci": 0
-                    }
-
-        if current_soal:
-            while len(current_soal["opsi"]) < 4:
-                current_soal["opsi"].append("-")
-            soal_list.append(current_soal)
-
-    else:
-        current_soal = None
-        q_num_pattern = re.compile(r'^\s*(?:Soal\s*)?(\d+)[\.\)]\s*(.*)$')
-
-        for line in raw_lines:
-            q_match = q_num_pattern.match(line)
-            if q_match:
-                if current_soal:
-                    soal_list.append(current_soal)
-                current_soal = {"pertanyaan": q_match.group(2).strip()}
-            else:
-                if current_soal:
-                    current_soal["pertanyaan"] += "\n" + line
-                else:
-                    current_soal = {"pertanyaan": line}
-        
-        if current_soal:
-            soal_list.append(current_soal)
-
-    return soal_list
-
-def export_tugas_ke_word(judul, instruksi, daftar_soal, tipe="pg"):
-    """Mengekspor daftar soal ke file Microsoft Word (.docx)."""
-    doc = docx.Document()
-    doc.add_heading(judul, level=1)
-    if instruksi:
-        doc.add_paragraph(f"Instruksi: {instruksi}")
-    
-    doc.add_paragraph()
-
-    for i, s in enumerate(daftar_soal, 1):
-        q_text = s.get('pertanyaan', '') if isinstance(s, dict) else str(s)
-        doc.add_paragraph(f"{i}. {q_text}")
-        
-        if tipe == "pg":
-            opsi = s.get('opsi', [])
-            labels = ['A', 'B', 'C', 'D']
-            for idx, opt in enumerate(opsi):
-                if idx < len(labels):
-                    doc.add_paragraph(f"   {labels[idx]}. {opt}")
-        doc.add_paragraph()
-
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return buffer
-
-def generate_docx_template(tipe="pg"):
-    """Membuat buffer file .docx berisi contoh template soal PG atau Essay."""
-    doc = docx.Document()
-    if tipe == "pg":
-        doc.add_heading("Template Soal Pilihan Ganda", level=1)
-        doc.add_paragraph("Petunjuk: Tuliskan nomor, pertanyaan, opsi A-D, dan kunci jawaban.")
-        doc.add_paragraph()
-        
-        doc.add_paragraph("1. Sila pertama Pancasila dilambangkan oleh simbol...")
-        doc.add_paragraph("   A. Bintang")
-        doc.add_paragraph("   B. Rantai")
-        doc.add_paragraph("   C. Pohon Beringin")
-        doc.add_paragraph("   D. Kepala Banteng")
-        doc.add_paragraph("   Kunci: A")
-        doc.add_paragraph()
-        
-        doc.add_paragraph("2. Rumusan Pancasila yang sah tercantum dalam...")
-        doc.add_paragraph("   A. Piagam Jakarta")
-        doc.add_paragraph("   B. Batang Tubuh UUD 1945")
-        doc.add_paragraph("   C. Pembukaan UUD 1945 Alinea IV")
-        doc.add_paragraph("   D. Dekrit Presiden 5 Juli 1959")
-        doc.add_paragraph("   Kunci: C")
-    else:
-        doc.add_heading("Template Soal Essay", level=1)
-        doc.add_paragraph("Petunjuk: Tuliskan pertanyaan soal essay secara berurutan.")
-        doc.add_paragraph()
-        
-        doc.add_paragraph("1. Jelaskan makna Sila ke-3 Pancasila bagi persatuan dan kesatuan bangsa Indonesia!")
-        doc.add_paragraph()
-        doc.add_paragraph("2. Sebutkan 3 contoh penerapan nilai keadilan sosial dalam kehidupan sehari-hari di sekolah!")
-
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return buffer
-
 def hash_pass(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -319,7 +152,7 @@ def is_materi_sesuai_kelas(materi_doc, kelas_siswa):
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
 # ==========================================
-# 3. AI EVALUATION HELPER (MULTI-ESSAY ACCURATE)
+# 3. AI EVALUATION HELPER
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -726,26 +559,10 @@ def render_guru():
                     st.write(f"**Instruksi:** {tg.get('instruksi')}")
                     st.write(f"**Jumlah Soal:** {len(tg.get('soal', []))}")
                     
-                    c_btn1, c_btn2 = st.columns([1, 1])
-                    with c_btn1:
-                        word_buf = export_tugas_ke_word(
-                            tg.get('judul', 'Tugas'), 
-                            tg.get('instruksi', ''), 
-                            tg.get('soal', []), 
-                            tg.get('tipe', 'pg')
-                        )
-                        st.download_button(
-                            "📄 Export Word (.docx)", 
-                            data=word_buf, 
-                            file_name=f"{tg.get('judul', 'Tugas')}.docx", 
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            key=f"exp_doc_{tg['id']}"
-                        )
-                    with c_btn2:
-                        if st.button(f"🗑️ Hapus Tugas", key=f"del_{tg['id']}"):
-                            db.collection("tugas_pancasila").document(tg["id"]).delete()
-                            st.success("✅ Berhasil! Tugas telah dihapus.")
-                            st.rerun()
+                    if st.button(f"🗑️ Hapus Tugas", key=f"del_{tg['id']}", type="primary"):
+                        db.collection("tugas_pancasila").document(tg["id"]).delete()
+                        st.success("✅ Berhasil! Tugas telah dihapus.")
+                        st.rerun()
 
         with t_buat:
             judul = st.text_input("Judul Tugas")
@@ -842,50 +659,41 @@ def render_guru():
                         st.rerun()
 
         with t_imp:
-            st.subheader("📥 Import Soal Tugas")
-            st.write("💡 **Unduh Template:** Silakan unduh format template sesuai jenis file yang ingin Anda unggah.")
+            st.subheader("📥 Import Soal Tugas (.csv / .xlsx)")
+            st.write("💡 **Unduh Template:** Silakan unduh format template CSV di bawah ini.")
             
             csv_pg_example = "pertanyaan,opsi_a,opsi_b,opsi_c,opsi_d,kunci\nSila pertama Pancasila dilambangkan oleh?,Bintang,Rantai,Pohon Beringin,Banteng,A\n"
             csv_essay_example = "pertanyaan\nJelaskan makna Sila ke-3 Pancasila bagi persatuan bangsa!\n"
 
+            st.markdown("**📄 Template CSV**")
             c_tmp1, c_tmp2 = st.columns(2)
-            with c_tmp1:
-                st.markdown("**📄 Template CSV**")
-                st.download_button("📄 Unduh Template PG (.csv)", csv_pg_example.encode('utf-8'), "template_soal_pg.csv", "text/csv", use_container_width=True)
-                st.download_button("📄 Unduh Template Essay (.csv)", csv_essay_example.encode('utf-8'), "template_soal_essay.csv", "text/csv", use_container_width=True)
-
-            with c_tmp2:
-                st.markdown("**📝 Template Word (.docx)**")
-                st.download_button("📝 Unduh Template PG (.docx)", data=generate_docx_template("pg"), file_name="template_soal_pg.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
-                st.download_button("📝 Unduh Template Essay (.docx)", data=generate_docx_template("essay"), file_name="template_soal_essay.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
+            c_tmp1.download_button("📄 Unduh Template PG (.csv)", csv_pg_example.encode('utf-8'), "template_soal_pg.csv", "text/csv", use_container_width=True)
+            c_tmp2.download_button("📄 Unduh Template Essay (.csv)", csv_essay_example.encode('utf-8'), "template_soal_essay.csv", "text/csv", use_container_width=True)
 
             st.divider()
 
-            up_soal = st.file_uploader("Upload File Soal (.docx / .csv / .xlsx)", type=["docx", "csv", "xlsx"])
+            up_soal = st.file_uploader("Upload File Soal (.csv / .xlsx)", type=["csv", "xlsx"])
             imp_judul = st.text_input("Judul Tugas Baru")
             imp_instruksi = st.text_area("Instruksi (Opsional)")
             imp_target = st.multiselect("Target Kelas Import", options=pilihan_kelas, default=pilihan_kelas)
             imp_tipe = st.selectbox("Tipe Soal Import", ["pg", "essay"])
 
             if up_soal and imp_judul and imp_target and st.button("🚀 Import Soal Sekarang", type="primary"):
-                if up_soal.name.endswith('.docx'):
-                    parsed_s = parse_word_latex_equation(up_soal, tipe=imp_tipe)
+                df_s = safe_read_uploaded_file(up_soal)
+                df_s.columns = [str(c).strip().lower() for c in df_s.columns]
+                parsed_s = []
+                
+                if imp_tipe == "pg":
+                    key_m = {'a':0, 'b':1, 'c':2, 'd':3, '0':0, '1':1, '2':2, '3':3}
+                    for _, r in df_s.iterrows():
+                        parsed_s.append({
+                            "pertanyaan": str(r["pertanyaan"]),
+                            "opsi": [str(r["opsi_a"]), str(r["opsi_b"]), str(r["opsi_c"]), str(r["opsi_d"])],
+                            "kunci": key_m.get(str(r["kunci"]).strip().lower(), 0)
+                        })
                 else:
-                    df_s = safe_read_uploaded_file(up_soal)
-                    df_s.columns = [str(c).strip().lower() for c in df_s.columns]
-                    parsed_s = []
-                    
-                    if imp_tipe == "pg":
-                        key_m = {'a':0, 'b':1, 'c':2, 'd':3, '0':0, '1':1, '2':2, '3':3}
-                        for _, r in df_s.iterrows():
-                            parsed_s.append({
-                                "pertanyaan": str(r["pertanyaan"]),
-                                "opsi": [str(r["opsi_a"]), str(r["opsi_b"]), str(r["opsi_c"]), str(r["opsi_d"])],
-                                "kunci": key_m.get(str(r["kunci"]).strip().lower(), 0)
-                            })
-                    else:
-                        for _, r in df_s.iterrows():
-                            parsed_s.append({"pertanyaan": str(r["pertanyaan"])})
+                    for _, r in df_s.iterrows():
+                        parsed_s.append({"pertanyaan": str(r["pertanyaan"])})
 
                 db.collection("tugas_pancasila").add({
                     "judul": imp_judul, "instruksi": imp_instruksi, "tipe": imp_tipe, "target_kelas": imp_target,
@@ -1102,7 +910,7 @@ def render_guru():
                 )
 
 # ==========================================
-# 8. PANEL SISWA (MOBILE & NOTIFICATION SAFE)
+# 8. PANEL SISWA
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
