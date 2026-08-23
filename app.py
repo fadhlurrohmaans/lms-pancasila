@@ -8,6 +8,9 @@ import re
 import random
 import string
 import json
+import io
+import docx
+from docx.oxml.ns import qn
 import google.generativeai as genai
 
 # ==========================================
@@ -125,6 +128,73 @@ def safe_read_uploaded_file(uploaded_file):
         uploaded_file.seek(0)
         return pd.read_csv(uploaded_file, encoding='utf-8', errors='replace')
     return pd.read_excel(uploaded_file)
+
+def parse_word_latex_equation(file_stream):
+    """Membaca file .docx, merender Word Equation (OMML/LaTeX) & Tabel."""
+    doc = docx.Document(file_stream)
+    soal_list = []
+
+    # 1. Ekstrak Paragraf dan Rumus Matematika (m:oMath)
+    for p in doc.paragraphs:
+        text_parts = []
+        for child in p._element:
+            # Mengambil Teks Biasa (w:r)
+            if child.tag.endswith('r') and not child.tag.startswith('{http://schemas.openxmlformats.org/officeDocument/2006/math}'):
+                for t in child.findall(qn('w:t')):
+                    if t.text:
+                        text_parts.append(t.text)
+            
+            # Mengambil Rumus Matematika Word Equation (m:oMath / m:oMathPara)
+            elif child.tag.endswith('oMath') or child.tag.endswith('oMathPara'):
+                math_texts = [t.text for t in child.iter() if t.tag.endswith('t') and t.text]
+                full_math = "".join(math_texts).strip()
+                if full_math:
+                    text_parts.append(f" ${full_math}$ ")
+
+        full_text = "".join(text_parts).strip()
+        if full_text:
+            soal_list.append({"pertanyaan": full_text})
+
+    # 2. Ekstrak Tabel jika ada di dalam file Word
+    for table in doc.tables:
+        table_rows = []
+        for i, row in enumerate(table.rows):
+            cells = [cell.text.strip().replace('\n', ' ') for cell in row.cells]
+            table_rows.append("| " + " | ".join(cells) + " |")
+            if i == 0:
+                table_rows.append("| " + " | ".join(["---"] * len(cells)) + " |")
+        
+        if table_rows:
+            table_markdown = "\n".join(table_rows)
+            soal_list.append({"pertanyaan": f"Perhatikan tabel berikut:\n\n{table_markdown}"})
+
+    return soal_list
+
+def export_tugas_ke_word(judul, instruksi, daftar_soal, tipe="pg"):
+    """Mengekspor daftar soal ke file Microsoft Word (.docx)."""
+    doc = docx.Document()
+    doc.add_heading(judul, level=1)
+    if instruksi:
+        doc.add_paragraph(f"Instruksi: {instruksi}")
+    
+    doc.add_paragraph()
+
+    for i, s in enumerate(daftar_soal, 1):
+        q_text = s.get('pertanyaan', '') if isinstance(s, dict) else str(s)
+        doc.add_paragraph(f"{i}. {q_text}")
+        
+        if tipe == "pg":
+            opsi = s.get('opsi', [])
+            labels = ['A', 'B', 'C', 'D']
+            for idx, opt in enumerate(opsi):
+                if idx < len(labels):
+                    doc.add_paragraph(f"   {labels[idx]}. {opt}")
+        doc.add_paragraph()
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
 
 def hash_pass(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -458,9 +528,6 @@ def render_guru():
         st.header("📖 Kelola Materi Pembelajaran")
         t_list, t_buat = st.tabs(["📋 Daftar Materi", "➕ Tambah Materi Baru"])
         
-        # ------------------------------------------
-        # TAB 1: DAFTAR MATERI (RINGKAS & EDIT POPOVER)
-        # ------------------------------------------
         with t_list:
             materi_docs = [{"id": d.id, **d.to_dict()} for d in db.collection("materi_pancasila").stream()]
             if not materi_docs:
@@ -522,9 +589,6 @@ def render_guru():
                                 st.success("✅ Materi berhasil dihapus!")
                                 st.rerun()
 
-        # ------------------------------------------
-        # TAB 2: TAMBAH MATERI BARU
-        # ------------------------------------------
         with t_buat:
             with st.form(key="form_tambah_materi_baru", clear_on_submit=True):
                 bab = st.text_input("Bab / Unit", key="add_bab")
@@ -552,6 +616,7 @@ def render_guru():
                         st.rerun()
                     else:
                         st.warning("Mohon isi Bab, Judul Materi, dan tentukan minimal 1 Target Kelas.")
+
     elif menu == "📝 Buat & Kelola Tugas":
         st.header("📝 Buat & Kelola Tugas")
         t_list, t_buat, t_edit, t_imp = st.tabs(["📋 Daftar", "➕ Buat Tugas", "✏️ Edit Tugas", "📥 Import Soal"])
@@ -562,10 +627,27 @@ def render_guru():
                 with st.expander(f"[{'PG' if tg.get('tipe')=='pg' else 'Essay'}] {tg.get('judul')} (Kelas: {target_str})"):
                     st.write(f"**Instruksi:** {tg.get('instruksi')}")
                     st.write(f"**Jumlah Soal:** {len(tg.get('soal', []))}")
-                    if st.button(f"🗑️ Hapus Tugas", key=f"del_{tg['id']}"):
-                        db.collection("tugas_pancasila").document(tg["id"]).delete()
-                        st.success("✅ Berhasil! Tugas telah dihapus.")
-                        st.rerun()
+                    
+                    c_btn1, c_btn2 = st.columns([1, 1])
+                    with c_btn1:
+                        word_buf = export_tugas_ke_word(
+                            tg.get('judul', 'Tugas'), 
+                            tg.get('instruksi', ''), 
+                            tg.get('soal', []), 
+                            tg.get('tipe', 'pg')
+                        )
+                        st.download_button(
+                            "📄 Export Word (.docx)", 
+                            data=word_buf, 
+                            file_name=f"{tg.get('judul', 'Tugas')}.docx", 
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            key=f"exp_doc_{tg['id']}"
+                        )
+                    with c_btn2:
+                        if st.button(f"🗑️ Hapus Tugas", key=f"del_{tg['id']}"):
+                            db.collection("tugas_pancasila").document(tg["id"]).delete()
+                            st.success("✅ Berhasil! Tugas telah dihapus.")
+                            st.rerun()
 
         with t_buat:
             judul = st.text_input("Judul Tugas")
@@ -663,7 +745,7 @@ def render_guru():
 
         with t_imp:
             st.subheader("📥 Import Soal Tugas")
-            st.write("💡 **Unduh Template CSV:** Silakan unduh format template di bawah ini sebelum mengunggah file soal.")
+            st.write("💡 **Unduh Template CSV:** Silakan unduh format template di bawah ini sebelum mengunggah file CSV.")
             
             csv_pg_example = "pertanyaan,opsi_a,opsi_b,opsi_c,opsi_d,kunci\nSila pertama Pancasila dilambangkan oleh?,Bintang,Rantai,Pohon Beringin,Banteng,A\n"
             csv_essay_example = "pertanyaan\nJelaskan makna Sila ke-3 Pancasila bagi persatuan bangsa!\n"
@@ -676,34 +758,37 @@ def render_guru():
 
             st.divider()
 
-            up_soal = st.file_uploader("Upload File Soal (.csv / .xlsx)", type=["csv", "xlsx"])
+            up_soal = st.file_uploader("Upload File Soal (.docx / .csv / .xlsx)", type=["docx", "csv", "xlsx"])
             imp_judul = st.text_input("Judul Tugas Baru")
             imp_instruksi = st.text_area("Instruksi (Opsional)")
             imp_target = st.multiselect("Target Kelas Import", options=pilihan_kelas, default=pilihan_kelas)
             imp_tipe = st.selectbox("Tipe Soal Import", ["pg", "essay"])
 
             if up_soal and imp_judul and imp_target and st.button("🚀 Import Soal Sekarang", type="primary"):
-                df_s = safe_read_uploaded_file(up_soal)
-                df_s.columns = [str(c).strip().lower() for c in df_s.columns]
-                parsed_s = []
-                
-                if imp_tipe == "pg":
-                    key_m = {'a':0, 'b':1, 'c':2, 'd':3, '0':0, '1':1, '2':2, '3':3}
-                    for _, r in df_s.iterrows():
-                        parsed_s.append({
-                            "pertanyaan": str(r["pertanyaan"]),
-                            "opsi": [str(r["opsi_a"]), str(r["opsi_b"]), str(r["opsi_c"]), str(r["opsi_d"])],
-                            "kunci": key_m.get(str(r["kunci"]).strip().lower(), 0)
-                        })
+                if up_soal.name.endswith('.docx'):
+                    parsed_s = parse_word_latex_equation(up_soal)
                 else:
-                    for _, r in df_s.iterrows():
-                        parsed_s.append({"pertanyaan": str(r["pertanyaan"])})
+                    df_s = safe_read_uploaded_file(up_soal)
+                    df_s.columns = [str(c).strip().lower() for c in df_s.columns]
+                    parsed_s = []
+                    
+                    if imp_tipe == "pg":
+                        key_m = {'a':0, 'b':1, 'c':2, 'd':3, '0':0, '1':1, '2':2, '3':3}
+                        for _, r in df_s.iterrows():
+                            parsed_s.append({
+                                "pertanyaan": str(r["pertanyaan"]),
+                                "opsi": [str(r["opsi_a"]), str(r["opsi_b"]), str(r["opsi_c"]), str(r["opsi_d"])],
+                                "kunci": key_m.get(str(r["kunci"]).strip().lower(), 0)
+                            })
+                    else:
+                        for _, r in df_s.iterrows():
+                            parsed_s.append({"pertanyaan": str(r["pertanyaan"])})
 
                 db.collection("tugas_pancasila").add({
                     "judul": imp_judul, "instruksi": imp_instruksi, "tipe": imp_tipe, "target_kelas": imp_target,
                     "soal": parsed_s, "created_at": firestore.SERVER_TIMESTAMP
                 })
-                st.success("✅ Berhasil! Soal berhasil diimpor ke database.")
+                st.success(f"✅ Berhasil! {len(parsed_s)} soal berhasil diimpor ke database.")
                 st.rerun()
 
     elif menu == "📊 Rekap & Penilaian":
@@ -733,16 +818,13 @@ def render_guru():
             selected_tugas_id = st.selectbox("📝 Pilih Tugas", list(tg_options.keys()), format_func=lambda x: tg_options[x])
             selected_tugas = next(t for t in tugas_kelas if t["id"] == selected_tugas_id)
 
-        # Query Siswa di Kelas Terpilih
         siswa_docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", selected_kelas).stream()
         siswa_list = [{"username": d.id, **d.to_dict()} for d in siswa_docs]
 
-        # Query Jawaban Siswa
         sub_docs = db.collection("jawaban_siswa").where("id_tugas", "==", selected_tugas_id).where("kelas_siswa", "==", selected_kelas).stream()
         sub_list = [{"id": d.id, **d.to_dict()} for d in sub_docs]
         sub_map = {s.get("username_siswa"): s for s in sub_list}
 
-        # Kalkulasi Rekap Status
         rekap_rows = []
         sudah_count, belum_count = 0, 0
 
@@ -915,21 +997,18 @@ def render_guru():
                     file_name=f"rekap_nilai_kelas_{selected_kelas}.csv",
                     mime="text/csv"
                 )
+
 # ==========================================
 # 8. PANEL SISWA (MOBILE & NOTIFICATION SAFE)
 # ==========================================
 def render_siswa():
-    import streamlit.components.v1 as components
-
     kelas_s = user_info.get("kelas", "-")
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
 
-    # 1. Ambil daftar tugas aktif
     all_tugas = [t for t in [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()] if is_tugas_sesuai_kelas(t, kelas_s)]
     active_task_ids = {t["id"] for t in all_tugas}
 
-    # 2. Ambil riwayat pengumpulan siswa
     my_subs_docs = db.collection("jawaban_siswa").where("username_siswa", "==", username_s).stream()
     my_subs = {}
     for d in my_subs_docs:
@@ -938,9 +1017,6 @@ def render_siswa():
         if t_id in active_task_ids:
             my_subs[t_id] = data
 
-    # ---------------------------------------------------------
-    # 🔥 MODE FOKUS KUIS
-    # ---------------------------------------------------------
     active_quiz_id = st.session_state.get("active_quiz_id")
     if active_quiz_id:
         tg = next((t for t in all_tugas if t["id"] == active_quiz_id), None)
@@ -952,7 +1028,6 @@ def render_siswa():
         soal_list = tg.get("soal", [])
         total_soal = len(soal_list)
 
-        # Inisialisasi state kuis
         if f"quiz_answers_{tg_id}" not in st.session_state:
             st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
         if f"quiz_page_{tg_id}" not in st.session_state:
@@ -962,7 +1037,6 @@ def render_siswa():
         answers = st.session_state[f"quiz_answers_{tg_id}"]
         terjawab_count = sum(1 for a in answers if a is not None)
 
-        # Header Kuis
         if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary"):
             st.session_state["active_quiz_id"] = None
             st.rerun()
@@ -970,9 +1044,6 @@ def render_siswa():
         st.markdown(f"### 📝 {tg.get('judul')}")
         st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab**")
 
-        # ---------------------------------------------------------
-        # ANTI-KECURANGAN PINTAR (ABAIKAN NOTIFIKASI & POP-UP BANNER)
-        # ---------------------------------------------------------
         components.html("""
         <style>
             #cheat-modal {
@@ -1000,13 +1071,11 @@ def render_siswa():
             let isPowerOff = false;
             let violationTimer = null;
 
-            // Mencegah layar meredup/sleep otomatis saat membaca soal
             async function keepAwake() {
                 try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {}
             }
             keepAwake();
 
-            // Membedakan tombol Power/Kunci Layar fisik Android
             window.addEventListener('pagehide', function() { isPowerOff = true; });
 
             function recordViolation() {
@@ -1028,16 +1097,13 @@ def render_siswa():
                 }
             }
 
-            // Deteksi Pindah Tab / App dengan toleransi Notifikasi (2 Detik Jeda)
             document.addEventListener("visibilitychange", function() {
                 if (document.hidden) {
-                    // Tunggu 2 detik untuk memastikan apakah ini sekadar notifikasi melintas / usap layar
                     violationTimer = setTimeout(function() {
-                        if (isPowerOff) return; // Mengabaikan jika layar HP dimatikan
+                        if (isPowerOff) return;
                         recordViolation();
                     }, 2000);
                 } else {
-                    // Jika pengguna kembali dalam waktu < 2 detik (mengabaikan notifikasi), BATALKAN pelanggaran!
                     if (violationTimer) {
                         clearTimeout(violationTimer);
                         violationTimer = null;
@@ -1046,7 +1112,6 @@ def render_siswa():
                 }
             });
 
-            // Pembatalan otomatis saat layar kembali mendapatkan fokus penuh
             window.addEventListener('focus', function() {
                 if (violationTimer) {
                     clearTimeout(violationTimer);
@@ -1056,12 +1121,8 @@ def render_siswa():
         </script>
         """, height=0)
 
-        # Bilah Kemajuan (Progress Bar)
         st.progress((curr_page + 1) / total_soal)
 
-        # ---------------------------------------------------------
-        # AREA SOAL & PILIHAN JAWABAN
-        # ---------------------------------------------------------
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
@@ -1074,7 +1135,6 @@ def render_siswa():
                 opsi_list = soal_item.get("opsi", [])
                 saved_ans = answers[curr_page]
 
-                # Default pilihan KOSONG (index=None)
                 selected_opt = st.radio(
                     "Pilih Jawaban Anda:",
                     options=[0, 1, 2, 3],
@@ -1099,9 +1159,6 @@ def render_siswa():
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
-        # ---------------------------------------------------------
-        # NAVIGASI NOMOR SOAL DI BAWAH (MENYAMPING / HORIZONTAL)
-        # ---------------------------------------------------------
         st.markdown("📌 **Pilih Nomor Soal:**")
         cols_per_row = 5
         for row_start in range(0, total_soal, cols_per_row):
@@ -1118,9 +1175,6 @@ def render_siswa():
 
         st.write("")
 
-        # ---------------------------------------------------------
-        # TOMBOL NAVIGASI SEBELUMNYA / SELANJUTNYA
-        # ---------------------------------------------------------
         c_prev, c_next = st.columns(2)
         with c_prev:
             if curr_page > 0:
@@ -1134,9 +1188,6 @@ def render_siswa():
                     st.session_state[f"quiz_page_{tg_id}"] += 1
                     st.rerun()
 
-        # ---------------------------------------------------------
-        # TOMBOL AKHIR SUBMIT SOAL
-        # ---------------------------------------------------------
         st.divider()
         unanswered_count = sum(1 for a in answers if a is None)
         if unanswered_count > 0:
@@ -1176,9 +1227,6 @@ def render_siswa():
 
         return
 
-    # ---------------------------------------------------------
-    # TAMPILAN DASHBOARD SISWA NORMAL
-    # ---------------------------------------------------------
     total_tugas = len(all_tugas)
     tugas_selesai = len(my_subs)
     tugas_belum = total_tugas - tugas_selesai
@@ -1206,9 +1254,6 @@ def render_siswa():
 
     tab_tugas, tab_materi, tab_nilai = st.tabs(["✍️ Tugas Saya", "📚 Modul Materi", "📊 Riwayat Nilai"])
 
-    # ------------------------------------------
-    # TAB 1: DAFTAR TUGAS
-    # ------------------------------------------
     with tab_tugas:
         if not all_tugas:
             st.info("🎉 Belum ada tugas yang diberikan untuk kelas Anda saat ini.")
@@ -1281,9 +1326,6 @@ def render_siswa():
 
                                         st.write("---")
 
-    # ------------------------------------------
-    # TAB 2: MODUL MATERI
-    # ------------------------------------------
     with tab_materi:
         all_materi = [d.to_dict() for d in db.collection("materi_pancasila").stream()]
         materi_docs = [m for m in all_materi if is_materi_sesuai_kelas(m, kelas_s)]
@@ -1299,9 +1341,6 @@ def render_siswa():
                         st.markdown("---")
                         st.link_button("📎 Buka / Unduh Lampiran Dokumen", m.get("file_url"))
 
-    # ------------------------------------------
-    # TAB 3: RIWAYAT NILAI
-    # ------------------------------------------
     with tab_nilai:
         if not my_subs:
             st.info("📊 Anda belum memiliki riwayat nilai tugas.")
@@ -1323,7 +1362,7 @@ def render_siswa():
                             st.metric("Nilai", f"{nilai_val}")
                         else:
                             st.warning("Menunggu Koreksi")
-                            
+
 # ==========================================
 # 9. MAIN ROUTER
 # ==========================================
