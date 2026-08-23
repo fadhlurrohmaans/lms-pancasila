@@ -128,80 +128,109 @@ def safe_read_uploaded_file(uploaded_file):
         uploaded_file.seek(0)
         return pd.read_csv(uploaded_file, encoding='utf-8', errors='replace')
     return pd.read_excel(uploaded_file)
-def parse_word_latex_equation(file_stream):
-    """Membaca file .docx, mengekstrak teks, simbol khusus (Hex/Symbol font), & Word Equation secara presisi."""
-    doc = docx.Document(file_stream)
-    soal_list = []
 
+def parse_word_latex_equation(file_stream, tipe="pg"):
+    """Membaca file .docx dan menyusun struktur Soal, Opsi (A-D), serta Kunci Jawaban secara akurat."""
+    doc = docx.Document(file_stream)
     ns_w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
     def extract_element_text(elem):
-        """Ekstraksi teks rekursif untuk menangani simbol (w:sym), rumus (m:oMath), tab, dan line break."""
         text_parts = []
         for child in elem:
             tag = child.tag
-            # 1. Teks Biasa (w:t) atau Teks Math (m:t)
             if tag.endswith('t'):
-                if child.text:
-                    text_parts.append(child.text)
-            
-            # 2. Simbol Khusus Font Word (w:sym) -> Konversi Hex ke Unicode
+                if child.text: text_parts.append(child.text)
             elif tag.endswith('sym'):
                 char_hex = child.attrib.get(f'{{{ns_w}}}char') or child.attrib.get('char')
                 if char_hex:
-                    try:
-                        char_code = int(char_hex, 16)
-                        text_parts.append(chr(char_code))
-                    except ValueError:
-                        pass
-            
-            # 3. Tab dan Line Break
-            elif tag.endswith('tab'):
-                text_parts.append(' ')
-            elif tag.endswith('br') or tag.endswith('cr'):
-                text_parts.append('\n')
-            
-            # 4. Word Equation / Math (m:oMath / m:oMathPara)
+                    try: text_parts.append(chr(int(char_hex, 16)))
+                    except ValueError: pass
+            elif tag.endswith('tab'): text_parts.append(' ')
+            elif tag.endswith('br') or tag.endswith('cr'): text_parts.append('\n')
             elif tag.endswith('oMath') or tag.endswith('oMathPara'):
                 math_texts = [t.text for t in child.iter() if t.tag.endswith('t') and t.text]
                 full_math = "".join(math_texts).strip()
-                if full_math:
-                    text_parts.append(f" ${full_math}$ ")
-            
-            # 5. Rekursif ke Anak Elemen Lainnya
+                if full_math: text_parts.append(f" ${full_math}$ ")
             else:
                 if not (tag.endswith('oMath') or tag.endswith('oMathPara')):
                     text_parts.append(extract_element_text(child))
-                    
         return "".join(text_parts)
 
-    # 1. Ekstrak Paragraf Soal
+    raw_lines = []
     for p in doc.paragraphs:
-        full_text = extract_element_text(p._element).strip()
-        # Bersihkan spasi ganda berlebih
-        full_text = re.sub(r'[ \t]+', ' ', full_text)
-        if full_text:
-            soal_list.append({"pertanyaan": full_text})
+        txt = extract_element_text(p._element).strip()
+        txt = re.sub(r'[ \t]+', ' ', txt)
+        if txt: raw_lines.append(txt)
 
-    # 2. Ekstrak Tabel Soal (Jika ada)
-    for table in doc.tables:
-        table_rows = []
-        for i, row in enumerate(table.rows):
-            cells = []
-            for cell in row.cells:
-                cell_text = " ".join([extract_element_text(p._element) for p in cell.paragraphs]).strip()
-                cell_text = cell_text.replace('\n', ' ')
-                cells.append(cell_text)
-            table_rows.append("| " + " | ".join(cells) + " |")
-            if i == 0:
-                table_rows.append("| " + " | ".join(["---"] * len(cells)) + " |")
+    soal_list = []
+
+    if tipe == "pg":
+        current_soal = None
+        option_pattern = re.compile(r'^\s*\*?\s*([A-Da-d])[\.\)]\s*(.*)$')
+        q_num_pattern = re.compile(r'^\s*(?:Soal\s*)?(\d+)[\.\)]\s*(.*)$')
+        key_pattern = re.compile(r'^\s*(?:Kunci|Jawaban)\s*:\s*([A-Da-d])\s*$', re.IGNORECASE)
+
+        for line in raw_lines:
+            opt_match = option_pattern.match(line)
+            q_match = q_num_pattern.match(line)
+            key_match = key_pattern.match(line)
+
+            if key_match and current_soal:
+                k_char = key_match.group(1).upper()
+                key_map = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
+                current_soal["kunci"] = key_map.get(k_char, 0)
+            elif opt_match and current_soal:
+                opt_text = opt_match.group(2).strip()
+                current_soal["opsi"].append(opt_text)
+            elif q_match:
+                if current_soal:
+                    while len(current_soal["opsi"]) < 4:
+                        current_soal["opsi"].append("-")
+                    soal_list.append(current_soal)
+                
+                current_soal = {
+                    "pertanyaan": q_match.group(2).strip(),
+                    "opsi": [],
+                    "kunci": 0
+                }
+            else:
+                if current_soal:
+                    if len(current_soal["opsi"]) == 0:
+                        current_soal["pertanyaan"] += "\n" + line
+                    else:
+                        current_soal["opsi"][-1] += "\n" + line
+                else:
+                    current_soal = {
+                        "pertanyaan": line,
+                        "opsi": [],
+                        "kunci": 0
+                    }
+
+        if current_soal:
+            while len(current_soal["opsi"]) < 4:
+                current_soal["opsi"].append("-")
+            soal_list.append(current_soal)
+
+    else:
+        current_soal = None
+        q_num_pattern = re.compile(r'^\s*(?:Soal\s*)?(\d+)[\.\)]\s*(.*)$')
+
+        for line in raw_lines:
+            q_match = q_num_pattern.match(line)
+            if q_match:
+                if current_soal:
+                    soal_list.append(current_soal)
+                current_soal = {"pertanyaan": q_match.group(2).strip()}
+            else:
+                if current_soal:
+                    current_soal["pertanyaan"] += "\n" + line
+                else:
+                    current_soal = {"pertanyaan": line}
         
-        if table_rows:
-            table_markdown = "\n".join(table_rows)
-            soal_list.append({"pertanyaan": f"Perhatikan tabel berikut:\n\n{table_markdown}"})
+        if current_soal:
+            soal_list.append(current_soal)
 
     return soal_list
-
 
 def export_tugas_ke_word(judul, instruksi, daftar_soal, tipe="pg"):
     """Mengekspor daftar soal ke file Microsoft Word (.docx)."""
@@ -234,7 +263,7 @@ def generate_docx_template(tipe="pg"):
     doc = docx.Document()
     if tipe == "pg":
         doc.add_heading("Template Soal Pilihan Ganda", level=1)
-        doc.add_paragraph("Petunjuk: Tuliskan nomor, pertanyaan, dan opsi A-D di bawahnya.")
+        doc.add_paragraph("Petunjuk: Tuliskan nomor, pertanyaan, opsi A-D, dan kunci jawaban.")
         doc.add_paragraph()
         
         doc.add_paragraph("1. Sila pertama Pancasila dilambangkan oleh simbol...")
@@ -242,6 +271,7 @@ def generate_docx_template(tipe="pg"):
         doc.add_paragraph("   B. Rantai")
         doc.add_paragraph("   C. Pohon Beringin")
         doc.add_paragraph("   D. Kepala Banteng")
+        doc.add_paragraph("   Kunci: A")
         doc.add_paragraph()
         
         doc.add_paragraph("2. Rumusan Pancasila yang sah tercantum dalam...")
@@ -249,6 +279,7 @@ def generate_docx_template(tipe="pg"):
         doc.add_paragraph("   B. Batang Tubuh UUD 1945")
         doc.add_paragraph("   C. Pembukaan UUD 1945 Alinea IV")
         doc.add_paragraph("   D. Dekrit Presiden 5 Juli 1959")
+        doc.add_paragraph("   Kunci: C")
     else:
         doc.add_heading("Template Soal Essay", level=1)
         doc.add_paragraph("Petunjuk: Tuliskan pertanyaan soal essay secara berurutan.")
@@ -838,7 +869,7 @@ def render_guru():
 
             if up_soal and imp_judul and imp_target and st.button("🚀 Import Soal Sekarang", type="primary"):
                 if up_soal.name.endswith('.docx'):
-                    parsed_s = parse_word_latex_equation(up_soal)
+                    parsed_s = parse_word_latex_equation(up_soal, tipe=imp_tipe)
                 else:
                     df_s = safe_read_uploaded_file(up_soal)
                     df_s.columns = [str(c).strip().lower() for c in df_s.columns]
