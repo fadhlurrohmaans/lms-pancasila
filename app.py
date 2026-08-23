@@ -1006,30 +1006,65 @@ def render_siswa():
                             with st.expander("▶️ Kerjakan Tugas Sekarang", expanded=False):
                                 # Deteksi Pindah Tab/Aplikasi
                                 components.html("""
-                                <script>
-                                    let cheatCount = 0;
-                                    const maxViolations = 3;
+<script>
+    let cheatCount = 0;
+    const maxViolations = 2;
+    let isSystemLock = false;
 
-                                    document.addEventListener("visibilitychange", function() {
-                                        if (document.hidden) {
-                                            cheatCount++;
-                                            if (cheatCount < maxViolations) {
-                                                alert("⚠️ PERINGATAN! Dilarang berpindah tab atau membuka aplikasi lain saat kuis berlangsung!");
-                                            } else {
-                                                alert("⚠️ Anda telah melakukan kecurangan berulang kali. Kuis akan dikumpulkan otomatis!");
-                                                const buttons = window.parent.document.querySelectorAll('button');
-                                                for (let btn of buttons) {
-                                                    if (btn.innerText.includes("Kumpulkan Jawaban")) {
-                                                        btn.click();
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    });
-                                </script>
-                                """, height=0)
+    // 1. Minta akses agar layar HP tidak mati otomatis (Screen Timeout / Sleep) saat kuis
+    async function keepScreenAwake() {
+        try {
+            if ('wakeLock' in navigator) {
+                await navigator.wakeLock.request('screen');
+            }
+        } catch (err) {
+            console.log("WakeLock error:", err);
+        }
+    }
+    keepScreenAwake();
 
+    // 2. Deteksi jika layar dimatikan manual via tombol Power / Sistem HP Kunci
+    window.addEventListener('pagehide', function() {
+        isSystemLock = true;
+    });
+    
+    document.addEventListener('freeze', function() {
+        isSystemLock = true;
+    });
+
+    // 3. Deteksi Pindah Tab / Buka Aplikasi Lain
+    document.addEventListener("visibilitychange", function() {
+        if (document.hidden) {
+            // Beri sedikit jeda waktu untuk membedakan antara mati layar vs pindah aplikasi
+            setTimeout(function() {
+                if (isSystemLock) {
+                    // Jika layar mati / HP terkunci, abaikan (jangan hitung pelanggaran)
+                    isSystemLock = false;
+                    return;
+                }
+
+                // Jika murni membuka aplikasi lain atau tab baru -> Hitung Pelanggaran
+                cheatCount++;
+                if (cheatCount < maxViolations) {
+                    alert("⚠️ PERINGATAN! Dilarang berpindah tab atau membuka aplikasi lain saat kuis berlangsung!");
+                } else {
+                    alert("⚠️ Anda telah melakukan kecurangan berulang kali. Kuis akan dikumpulkan otomatis!");
+                    const buttons = window.parent.document.querySelectorAll('button');
+                    for (let btn of buttons) {
+                        if (btn.innerText.includes("Kumpulkan Jawaban")) {
+                            btn.click();
+                            break;
+                        }
+                    }
+                }
+            }, 150);
+        } else {
+            // Reset status saat layar kembali aktif
+            isSystemLock = false;
+        }
+    });
+</script>
+""", height=0)
                                 with st.form(key=f"form_kerjakan_{tg_id}"):
                                     answers = []
                                     for idx, s in enumerate(tg.get("soal", []), 1):
