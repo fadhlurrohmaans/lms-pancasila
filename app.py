@@ -916,7 +916,7 @@ def render_guru():
                     mime="text/csv"
                 )
 # ==========================================
-# 8. PANEL SISWA (MOBILE & ANDROID OPTIMIZED)
+# 8. PANEL SISWA (MOBILE & NOTIFICATION SAFE)
 # ==========================================
 def render_siswa():
     import streamlit.components.v1 as components
@@ -939,7 +939,7 @@ def render_siswa():
             my_subs[t_id] = data
 
     # ---------------------------------------------------------
-    # 🔥 MODE FOKUS KUIS (TAMPILAN OPTIMAL UNTUK ANDROID)
+    # 🔥 MODE FOKUS KUIS
     # ---------------------------------------------------------
     active_quiz_id = st.session_state.get("active_quiz_id")
     if active_quiz_id:
@@ -971,7 +971,7 @@ def render_siswa():
         st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab**")
 
         # ---------------------------------------------------------
-        # ANTI-KECURANGAN PINTAR (DETEKSI TAB/APP/FILE TERLINDUNGI)
+        # ANTI-KECURANGAN PINTAR (ABAIKAN NOTIFIKASI & POP-UP BANNER)
         # ---------------------------------------------------------
         components.html("""
         <style>
@@ -998,6 +998,7 @@ def render_siswa():
             let cheatCount = 0;
             const maxViolations = 2;
             let isPowerOff = false;
+            let violationTimer = null;
 
             // Mencegah layar meredup/sleep otomatis saat membaca soal
             async function keepAwake() {
@@ -1027,25 +1028,30 @@ def render_siswa():
                 }
             }
 
-            // Deteksi Pindah Tab, Buka Situs Lain, Buka Aplikasi / File Lain
+            // Deteksi Pindah Tab / App dengan toleransi Notifikasi (2 Detik Jeda)
             document.addEventListener("visibilitychange", function() {
                 if (document.hidden) {
-                    setTimeout(function() {
-                        if (isPowerOff) return; // Mengabaikan jika murni layar HP dimatikan
+                    // Tunggu 2 detik untuk memastikan apakah ini sekadar notifikasi melintas / usap layar
+                    violationTimer = setTimeout(function() {
+                        if (isPowerOff) return; // Mengabaikan jika layar HP dimatikan
                         recordViolation();
-                    }, 200);
+                    }, 2000);
                 } else {
+                    // Jika pengguna kembali dalam waktu < 2 detik (mengabaikan notifikasi), BATALKAN pelanggaran!
+                    if (violationTimer) {
+                        clearTimeout(violationTimer);
+                        violationTimer = null;
+                    }
                     setTimeout(function() { isPowerOff = false; }, 400);
                 }
             });
 
-            // Deteksi tambahan jika aplikasi kehilangan fokus (split screen / floating app / file viewer)
-            window.addEventListener('blur', function() {
-                setTimeout(function() {
-                    if (document.hidden && !isPowerOff) {
-                        // Ditangani oleh visibilitychange
-                    }
-                }, 200);
+            // Pembatalan otomatis saat layar kembali mendapatkan fokus penuh
+            window.addEventListener('focus', function() {
+                if (violationTimer) {
+                    clearTimeout(violationTimer);
+                    violationTimer = null;
+                }
             });
         </script>
         """, height=0)
@@ -1097,7 +1103,7 @@ def render_siswa():
         # NAVIGASI NOMOR SOAL DI BAWAH (MENYAMPING / HORIZONTAL)
         # ---------------------------------------------------------
         st.markdown("📌 **Pilih Nomor Soal:**")
-        cols_per_row = 5  # Baris horizontal 5 tombol per baris (pas untuk Android)
+        cols_per_row = 5
         for row_start in range(0, total_soal, cols_per_row):
             nav_cols = st.columns(cols_per_row)
             for idx in range(cols_per_row):
@@ -1317,7 +1323,7 @@ def render_siswa():
                             st.metric("Nilai", f"{nilai_val}")
                         else:
                             st.warning("Menunggu Koreksi")
-
+                            
 # ==========================================
 # 9. MAIN ROUTER
 # ==========================================
