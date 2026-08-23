@@ -128,38 +128,70 @@ def safe_read_uploaded_file(uploaded_file):
         uploaded_file.seek(0)
         return pd.read_csv(uploaded_file, encoding='utf-8', errors='replace')
     return pd.read_excel(uploaded_file)
-
 def parse_word_latex_equation(file_stream):
-    """Membaca file .docx, merender Word Equation (OMML/LaTeX) & Tabel."""
+    """Membaca file .docx, mengekstrak teks, simbol khusus (Hex/Symbol font), & Word Equation secara presisi."""
     doc = docx.Document(file_stream)
     soal_list = []
 
-    # 1. Ekstrak Paragraf dan Rumus Matematika (m:oMath)
-    for p in doc.paragraphs:
+    ns_w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    def extract_element_text(elem):
+        """Ekstraksi teks rekursif untuk menangani simbol (w:sym), rumus (m:oMath), tab, dan line break."""
         text_parts = []
-        for child in p._element:
-            # Mengambil Teks Biasa (w:r)
-            if child.tag.endswith('r') and not child.tag.startswith('{http://schemas.openxmlformats.org/officeDocument/2006/math}'):
-                for t in child.findall(qn('w:t')):
-                    if t.text:
-                        text_parts.append(t.text)
+        for child in elem:
+            tag = child.tag
+            # 1. Teks Biasa (w:t) atau Teks Math (m:t)
+            if tag.endswith('t'):
+                if child.text:
+                    text_parts.append(child.text)
             
-            # Mengambil Rumus Matematika Word Equation (m:oMath / m:oMathPara)
-            elif child.tag.endswith('oMath') or child.tag.endswith('oMathPara'):
+            # 2. Simbol Khusus Font Word (w:sym) -> Konversi Hex ke Unicode
+            elif tag.endswith('sym'):
+                char_hex = child.attrib.get(f'{{{ns_w}}}char') or child.attrib.get('char')
+                if char_hex:
+                    try:
+                        char_code = int(char_hex, 16)
+                        text_parts.append(chr(char_code))
+                    except ValueError:
+                        pass
+            
+            # 3. Tab dan Line Break
+            elif tag.endswith('tab'):
+                text_parts.append(' ')
+            elif tag.endswith('br') or tag.endswith('cr'):
+                text_parts.append('\n')
+            
+            # 4. Word Equation / Math (m:oMath / m:oMathPara)
+            elif tag.endswith('oMath') or tag.endswith('oMathPara'):
                 math_texts = [t.text for t in child.iter() if t.tag.endswith('t') and t.text]
                 full_math = "".join(math_texts).strip()
                 if full_math:
                     text_parts.append(f" ${full_math}$ ")
+            
+            # 5. Rekursif ke Anak Elemen Lainnya
+            else:
+                if not (tag.endswith('oMath') or tag.endswith('oMathPara')):
+                    text_parts.append(extract_element_text(child))
+                    
+        return "".join(text_parts)
 
-        full_text = "".join(text_parts).strip()
+    # 1. Ekstrak Paragraf Soal
+    for p in doc.paragraphs:
+        full_text = extract_element_text(p._element).strip()
+        # Bersihkan spasi ganda berlebih
+        full_text = re.sub(r'[ \t]+', ' ', full_text)
         if full_text:
             soal_list.append({"pertanyaan": full_text})
 
-    # 2. Ekstrak Tabel jika ada di dalam file Word
+    # 2. Ekstrak Tabel Soal (Jika ada)
     for table in doc.tables:
         table_rows = []
         for i, row in enumerate(table.rows):
-            cells = [cell.text.strip().replace('\n', ' ') for cell in row.cells]
+            cells = []
+            for cell in row.cells:
+                cell_text = " ".join([extract_element_text(p._element) for p in cell.paragraphs]).strip()
+                cell_text = cell_text.replace('\n', ' ')
+                cells.append(cell_text)
             table_rows.append("| " + " | ".join(cells) + " |")
             if i == 0:
                 table_rows.append("| " + " | ".join(["---"] * len(cells)) + " |")
@@ -169,6 +201,7 @@ def parse_word_latex_equation(file_stream):
             soal_list.append({"pertanyaan": f"Perhatikan tabel berikut:\n\n{table_markdown}"})
 
     return soal_list
+
 
 def export_tugas_ke_word(judul, instruksi, daftar_soal, tipe="pg"):
     """Mengekspor daftar soal ke file Microsoft Word (.docx)."""
