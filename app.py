@@ -977,6 +977,35 @@ def render_siswa():
     # ------------------------------------------
     # TAB 1: KERJAKAN TUGAS
     # ------------------------------------------
+    import streamlit.components.v1 as components
+
+# Sisipkan komponen ini di dalam tampilan kuis siswa (Tab 1 Kerjakan Tugas)
+components.html("""
+<script>
+    let cheatCount = 0;
+    const maxViolations = 2;
+
+    document.addEventListener("visibilitychange", function() {
+        if (document.hidden) {
+            cheatCount++;
+            if (cheatCount < maxViolations) {
+                alert("⚠️ PERINGATAN! Dilarang berpindah tab atau membuka aplikasi lain saat kuis berlangsung!");
+            } else {
+                alert("⚠️ Anda telah melakukan kecurangan berulang kali. Kuis akan dikumpulkan otomatis!");
+                // Cari tombol submit pada form Streamlit dan klik otomatis
+                const buttons = window.parent.document.querySelectorAll('button');
+                for (let btn of buttons) {
+                    if (btn.innerText.includes("Kumpulkan Jawaban")) {
+                        btn.click();
+                        break;
+                    }
+                }
+            }
+        }
+    });
+</script>
+""", height=0)
+    
     with tab_tugas:
         if not all_tugas:
             st.info("🎉 Belum ada tugas yang diberikan untuk kelas Anda saat ini.")
