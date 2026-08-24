@@ -978,8 +978,10 @@ def render_siswa():
         # PENENTUAN STATUS KUNCI AKSE
         is_locked = (violation_count >= 10 and not ijin_guru)
 
-        # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Pindah Tab / Minimize / Blur App)
-        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
+        # ---------------------------------------------------------
+        # TOMBOL PEMICU PELANGGARAN (TERSEMBUNYI SEMENTARA DI CODE)
+        # ---------------------------------------------------------
+        if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
             violation_count += 1
             db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
                 "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
@@ -1004,37 +1006,8 @@ def render_siswa():
             else:
                 st.rerun()
 
-        # Inisialisasi Soal Kuis
-        if f"quiz_soal_{tg_id}" not in st.session_state:
-            raw_soal = list(tg.get("soal", []))
-            shuffled_soal = []
-            for q in raw_soal:
-                q_copy = dict(q)
-                if tg.get("tipe") == "pg" and "opsi" in q_copy:
-                    opts = list(q_copy.get("opsi", []))
-                    orig_kunci = q_copy.get("kunci", 0)
-                    paired = list(enumerate(opts))
-                    random.shuffle(paired)
-                    q_copy["opsi"] = [p[1] for p in paired]
-                    q_copy["kunci"] = next(new_idx for new_idx, (orig_idx, _) in enumerate(paired) if orig_idx == orig_kunci)
-                shuffled_soal.append(q_copy)
-            random.shuffle(shuffled_soal)
-            st.session_state[f"quiz_soal_{tg_id}"] = shuffled_soal
-
-        soal_list = st.session_state[f"quiz_soal_{tg_id}"]
-        total_soal = len(soal_list)
-
-        if f"quiz_answers_{tg_id}" not in st.session_state:
-            st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
-        if f"quiz_page_{tg_id}" not in st.session_state:
-            st.session_state[f"quiz_page_{tg_id}"] = 0
-
-        curr_page = st.session_state[f"quiz_page_{tg_id}"]
-        answers = st.session_state[f"quiz_answers_{tg_id}"]
-        terjawab_count = sum(1 for a in answers if a is not None)
-
         # ---------------------------------------------------------
-        # ANTI-CHEAT JS: DETEKSI PINDAH TAB / PINDAH APLIKASI
+        # ANTI-CHEAT JS: AUTOMATIC HIDE BUTTON & DETEKSI PINDAH TAB
         # ---------------------------------------------------------
         components.html("""
             <script>
@@ -1042,13 +1015,31 @@ def render_siswa():
                 const parentDoc = window.parent.document;
                 let lastTrigger = 0;
 
+                function getViolationButton() {
+                    const buttons = Array.from(parentDoc.querySelectorAll('button'));
+                    return buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
+                }
+
+                // Sembunyikan tombol dari tampilan secara otomatis melalui JS DOM
+                function hideViolationButton() {
+                    const btn = getViolationButton();
+                    if (btn) {
+                        const container = btn.closest('[data-testid="stElementContainer"]') || btn.parentElement;
+                        if (container && container.style.display !== 'none') {
+                            container.style.display = 'none';
+                        }
+                    }
+                }
+
+                // Sembunyikan tombol secara berkala
+                setInterval(hideViolationButton, 100);
+
                 function triggerViolation() {
                     const now = Date.now();
                     if (now - lastTrigger < 2000) return; // Debounce 2 detik
                     lastTrigger = now;
 
-                    const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                    const triggerBtn = buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
+                    const triggerBtn = getViolationButton();
                     if (triggerBtn) {
                         triggerBtn.click();
                     }
@@ -1068,7 +1059,6 @@ def render_siswa():
             })();
             </script>
         """, height=0)
-
         # ---------------------------------------------------------
         # EVENT PELANGGARAN & LOGIKA PERINGATAN / KUNCI
         # ---------------------------------------------------------
