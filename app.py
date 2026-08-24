@@ -978,8 +978,8 @@ def render_siswa():
         # PENENTUAN STATUS KUNCI AKSES
         is_locked = (violation_count >= 10 and not ijin_guru)
 
-        # Tombol Pemicu JS Disembunyikan (display: none) agar tidak terlihat oleh siswa
-        st.markdown('<div style="display: none;">', unsafe_allow_html=True)
+        # Tombol Pemicu JS Disembunyikan & Dikunci Total dari Klik Siswa (CSS & Pointer-Events)
+        st.markdown('<div style="display: none !important; pointer-events: none !important; visibility: hidden !important;" aria-hidden="true">', unsafe_allow_html=True)
         if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
             if not is_locked:
                 violation_count += 1
