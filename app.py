@@ -1083,12 +1083,44 @@ def render_siswa():
         # 5. TAMPILAN KUIS & STATUS AKUN
         # ---------------------------------------------------------
         if is_locked:
-            st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali**. Layar terkunci dan hitungan pelanggaran dihentikan sementara. Hubungi guru untuk membuka kunci.")
+            st.error(f"🚫 **AKSES DIKUNCI**: Anda telah melakukan pelanggaran **{violation_count} kali**. Layar dikunci dan pengerjaan dihentikan. Minta izin kepada guru untuk membuka kunci.")
+            st.info("⏳ *Sistem sedang mengecek izin dari guru secara otomatis...*")
+
+            # AUTO-POLLING JS: Mengecek status database secara otomatis setiap 3 detik
+            components.html("""
+                <script>
+                setTimeout(function() {
+                    const parentDoc = window.parent.document;
+                    const buttons = Array.from(parentDoc.querySelectorAll('button'));
+                    const checkBtn = buttons.find(b => b.innerText.includes('Cek Status Izin Guru'));
+                    if (checkBtn) {
+                        checkBtn.click();
+                    }
+                }, 3000);
+                </script>
+            """, height=0)
+
+            # Tombol pemicu pengerjaan ulang (disembunyikan oleh JS atau digunakan manual)
+            if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}"):
+                st.rerun()
+
         elif violation_count >= 10 and ijin_guru:
-            st.warning(f"⚠️ **IZIN GURU DIBERIKAN**: Anda diperbolehkan melanjutkan kuis (Pelanggaran saat ini: **{violation_count}/15**). Harap bersikap jujur!")
+            # TOMBOL REFRESH MUNCUL OTOMATIS BEGITU IZIN TERDETEKSI
+            if not st.session_state.get(f"refreshed_after_unlock_{tg_id}", False):
+                st.success("🎉 **IZIN GURU DIBERIKAN**: Guru telah membuka kunci kuis Anda. Klik tombol di bawah ini untuk memuat ulang soal dan melanjutkan pengerjaan.")
+                if st.button("🔄 Refresh Soal & Lanjutkan Ujian", key=f"btn_refresh_quiz_{tg_id}", type="primary", use_container_width=True):
+                    st.session_state[f"refreshed_after_unlock_{tg_id}"] = True
+                    # Refresh data soal terbaru dari database
+                    all_t = get_all_tugas_cached()
+                    st.session_state["active_quiz_data"] = next((t for t in all_t if t["id"] == tg_id), None)
+                    if st.session_state["active_quiz_data"]:
+                        st.session_state[f"quiz_soal_{tg_id}"] = st.session_state["active_quiz_data"].get("soal", [])
+                    st.rerun()
+            else:
+                st.warning(f"⚠️ **IZIN GURU DIBERIKAN**: Anda diperbolehkan melanjutkan kuis (Pelanggaran saat ini: **{violation_count}/15**). Harap bersikap jujur!")
         elif violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/15)**: Terdeteksi keluar dari layar kuis!")
-
+            
         if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary"):
             st.session_state["active_quiz_id"] = None
             st.session_state.pop("active_quiz_data", None)
