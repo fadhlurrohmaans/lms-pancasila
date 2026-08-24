@@ -143,12 +143,17 @@ def is_materi_sesuai_kelas(materi_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
-def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=False):
+def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=False, is_violation=False):
     tg_id = tg["id"]
     soal_list = tg.get("soal", [])
     total_soal = len(soal_list)
     
-    catatan = "Di-submit Paksa oleh Guru" if is_forced else "Penilaian Otomatis Sistem"
+    if is_violation:
+        catatan = "⚠️ Submit Otomatis (Terdeteksi Pindah Tab/Aplikasi)"
+    elif is_forced:
+        catatan = "Di-submit Paksa oleh Guru"
+    else:
+        catatan = "Penilaian Otomatis Sistem"
     
     if tg.get("tipe") == "pg":
         correct_count = 0
@@ -832,7 +837,6 @@ def render_guru():
                 st.divider()
                 st.markdown("### 📋 Tingkat Kesukaran, Validitas & Distribusi Jawaban")
 
-                # Matriks Skor Siswa untuk Perhitungan Pearson (Item vs Total Skor)
                 matrix_data = []
                 for sub in sub_list:
                     ans_list = sub.get("jawaban", [])
@@ -866,7 +870,6 @@ def render_guru():
                     jml_benar = counts[kunci_idx]
                     pct_benar = round((jml_benar / total_responden) * 100, 1) if total_responden > 0 else 0
 
-                    # 1. Tingkat Kesukaran
                     if pct_benar >= 80:
                         kategori_kesukaran = "🟢 Mudah"
                     elif pct_benar >= 30:
@@ -874,7 +877,6 @@ def render_guru():
                     else:
                         kategori_kesukaran = "🔴 Sukar"
 
-                    # 2. Uji Validitas Butir (Korelasi Pearson r_xy)
                     q_col = f"Q_{idx-1}"
                     validity_status = "⚪ N/A"
                     
@@ -961,6 +963,43 @@ def render_siswa():
         answers = st.session_state[f"quiz_answers_{tg_id}"]
         terjawab_count = sum(1 for a in answers if a is not None)
 
+        # ---------------------------------------------------------
+        # ANTI-CHEAT SCRIPT: DETEKSI PINDAH TAB / PINDAH APLIKASI
+        # ---------------------------------------------------------
+        components.html("""
+            <script>
+            (function() {
+                const parentDoc = window.parent.document;
+                let isSubmitted = false;
+
+                function autoSubmitQuiz() {
+                    if (isSubmitted) return;
+                    isSubmitted = true;
+                    
+                    const buttons = Array.from(parentDoc.querySelectorAll('button'));
+                    const triggerBtn = buttons.find(b => b.innerText.includes('Kumpulkan Semua Jawaban') || b.innerText.includes('Auto Submit Trigger'));
+                    if (triggerBtn) {
+                        triggerBtn.click();
+                    }
+                }
+
+                // Deteksi Pindah Tab / Minimize Browser
+                parentDoc.addEventListener('visibilitychange', function() {
+                    if (parentDoc.hidden) {
+                        autoSubmitQuiz();
+                    }
+                });
+
+                // Deteksi Pindah Aplikasi / Window Blur
+                window.parent.addEventListener('blur', function() {
+                    autoSubmitQuiz();
+                });
+            })();
+            </script>
+        """, height=0)
+
+        st.warning("⚠️ **Pengawasan Ujian Aktif**: Dilarang berpindah tab browser, membuka situs lain, atau membuka aplikasi lain! Pelanggaran akan menyebabkan kuis ter-submit otomatis.")
+
         if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary"):
             st.session_state["active_quiz_id"] = None
             st.session_state.pop("active_quiz_data", None)
@@ -1027,7 +1066,7 @@ def render_siswa():
             tg_submit = dict(tg)
             tg_submit["soal"] = soal_list
             
-            with st.spinner("Memproses pengumpulkan jawaban..."):
+            with st.spinner("Memproses pengumpulan jawaban..."):
                 success = submit_jawaban_siswa(
                     tg_submit, username_s, nama_s, kelas_s, answers, 
                     is_forced=False
@@ -1081,7 +1120,8 @@ def render_siswa():
             for tg in tugas_sudah_list:
                 sub_data = my_subs.get(tg["id"], {})
                 val = sub_data.get("nilai")
-                st.write(f"- **{tg.get('judul')}** | Nilai: **{val if val is not None else 'Menunggu Koreksi'}**")
+                catatan = sub_data.get("catatan_guru", "")
+                st.write(f"- **{tg.get('judul')}** | Nilai: **{val if val is not None else 'Menunggu Koreksi'}** {f'({catatan})' if catatan else ''}")
 
     with tab_materi:
         materi_docs = [m for m in get_all_materi_cached() if is_materi_sesuai_kelas(m, kelas_s)]
