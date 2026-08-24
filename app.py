@@ -142,13 +142,20 @@ def is_materi_sesuai_kelas(materi_doc, kelas_siswa):
 
 def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submit=False, is_forced=False):
     tg_id = tg["id"]
+    
+    # Validasi Tambahan: Cegah submit jika status siswa sedang 'paused'
+    status_doc = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
+    if status_doc.exists and status_doc.to_dict().get("status") == "paused" and not is_forced:
+        st.error("🛑 Kuis dalam keadaan terkunci (Paused). Pengumpulan tidak dapat diproses!")
+        return False
+
     soal_list = tg.get("soal", [])
     total_soal = len(soal_list)
     
     if is_forced:
         catatan = "Di-submit Paksa oleh Guru"
     elif is_auto_submit:
-        catatan = "Penilaian Otomatis Sistem (Submit Otomatis Kecurangan)"
+        catatan = "Penilaian Otomatis Sistem (Submit Otomatis Kecurangan 20x)"
     else:
         catatan = "Penilaian Otomatis Sistem"
     
@@ -180,6 +187,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submi
         "username": username_s, "id_tugas": tg_id, "status": "submitted", "updated_at": firestore.SERVER_TIMESTAMP
     }, merge=True)
     clear_user_submissions_cache()
+    return True
 
 # ==========================================
 # 3. AI EVALUATION HELPER
@@ -732,7 +740,6 @@ def render_guru():
         sub_list = [{"id": d.id, **d.to_dict()} for d in sub_docs]
         sub_map = {s.get("username_siswa"): s for s in sub_list}
 
-        # FITUR BARU: TOMBOL SUBMIT ALL / SUBMIT PAKSA SEMUA SISWA
         siswa_belum_submit = [s for s in siswa_list if s["username"] not in sub_map]
         
         st.divider()
@@ -886,14 +893,16 @@ def render_guru():
                             st.caption(f"Status: **Di-pause** | Jumlah Kecurangan: **{p.get('cheat_count', 10)}x**")
                         with col2:
                             if st.button("🔓 Izinkan Lanjut", key=f"unp_{p_un}_{selected_tugas_id}"):
+                                # PERBAIKAN: Reset status dan cheat_count di Firestore agar counter di HP siswa kembali bersih
                                 db.collection("status_ujian").document(f"{p_un}_{selected_tugas_id}").update({
-                                    "status": "active"
+                                    "status": "active",
+                                    "cheat_count": 0
                                 })
                                 st.success(f"Akses {p_nama} berhasil dibuka kembali!")
                                 st.rerun()
 
 # ==========================================
-# 8. PANEL SISWA (ZERO-LATENCY EXAM MODE)
+# 8. PANEL SISWA (EXAM MODE WITH TOTAL LOCKDOWN)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
@@ -907,7 +916,7 @@ def render_siswa():
         doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
         status_data = doc_status.to_dict() if doc_status.exists else {}
 
-        # FITUR PERBAIKAN: DETEKSI EVENT DARI QUERY PARAMS
+        # PERBAIKAN 1: PENANGANAN DETEKSI EVENT KECURANGAN DARI QUERY PARAMS
         if "cheat_event" in st.query_params:
             cheat_ev = st.query_params.get("cheat_event")
             tg_ev = st.query_params.get("tg", active_quiz_id)
@@ -945,10 +954,14 @@ def render_siswa():
                 st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena terdeteksi berpindah tab/aplikasi sebanyak 20 kali.")
                 st.rerun()
 
-        # FITUR PERBAIKAN: KUNCI TOTAL TAMPILAN JIKA PAUSED (TIDAK BISA DIKERJAKAN SAMA SEKALI)
+        # PERBAIKAN 2: KUNCI MATI TOTAL (STRICT LOCKOUT)
+        # Jika status terdeteksi "paused", hentikan eksekusi script sebelum merender radio/soal/tombol submit!
         if status_data.get("status") == "paused":
             st.error("🛑 **KUIS DI-PAUSE SEMENTARA**")
-            st.warning("⚠️ Anda terdeteksi meninggalkan halaman kuis / berpindah tab/aplikasi di HP sebanyak **10 kali**.\n\nHarap hubungi **Guru Pengampu** untuk membuka kunci (unpause) agar Anda dapat melanjutkan kuis.")
+            st.warning(
+                "⚠️ Anda terdeteksi meninggalkan halaman kuis / berpindah tab/aplikasi di HP sebanyak **10 kali**.\n\n"
+                "Sistem telah mengunci kuis Anda secara otomatis. Harap menemui **Guru Pengampu** untuk meminta izin melanjutkan pengerjaan."
+            )
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("🔄 Cek Status Izin Guru", type="primary", use_container_width=True):
@@ -959,7 +972,7 @@ def render_siswa():
                     st.session_state.pop("active_quiz_data", None)
                     st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
                     st.rerun()
-            return  # Kunci mati, menghentikan render soal kuis di bawahnya!
+            return  # Mencegah render soal kuis di bawahnya!
 
         if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
             all_t = get_all_tugas_cached()
@@ -1009,34 +1022,36 @@ def render_siswa():
         st.markdown(f"### 📝 {tg.get('judul')}")
         st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab**")
 
-        # FITUR PERBAIKAN: MULTI-EVENT LISTENER KHUSUS MOBILE BROWSER (visibilitychange, blur, pagehide)
+        # PERBAIKAN 3: SCRIPT JAVASCRIPT TANPA BLOCKING ALERT
+        # Menggunakan lokasi pengalihan langsung agar tidak terblokir oleh mekanisme browser HP saat aplikasi berjalan di background
+        curr_cheat_count = status_data.get("cheat_count", 0)
+        
         cheat_script = f"""
         <script>
             const tgId = "{tg_id}";
-            let cheatCount = parseInt(sessionStorage.getItem("cheatCount_" + tgId) || "0");
+            // Ambil cheat count awal dari server (akan otomatis menjadi 0 jika di-unpause guru)
+            let cheatCount = {curr_cheat_count};
+            sessionStorage.setItem("cheatCount_" + tgId, cheatCount);
+            
             let lastCheatTime = 0;
             const targetWin = window.parent || window;
 
             function triggerCheat(reason) {{
                 const now = Date.now();
-                if (now - lastCheatTime < 1500) return; // Mencegah double counting dalam rentang 1.5 detik
+                if (now - lastCheatTime < 1500) return; // Throttling 1.5 detik
                 lastCheatTime = now;
 
                 cheatCount++;
                 sessionStorage.setItem("cheatCount_" + tgId, cheatCount);
 
-                if (cheatCount === 10) {{
-                    alert("⚠️ KECURANGAN TERDETEKSI 10 KALI! Kuis di-pause sementara. Minta izin ke Guru Anda untuk melanjutkan.");
-                    targetWin.location.search = "?cheat_event=10&tg=" + tgId;
-                }} else if (cheatCount >= 20) {{
-                    alert("⚠️ KECURANGAN TERDETEKSI 20 KALI! Kuis Anda akan otomatis dikumpulkan sekarang!");
-                    targetWin.location.search = "?cheat_event=20&tg=" + tgId;
-                }} else {{
-                    alert("⚠️ Dilarang berpindah tab/aplikasi (" + reason + ")! Peringatan ke-" + cheatCount);
+                if (cheatCount >= 20) {{
+                    targetWin.location.href = targetWin.location.pathname + "?cheat_event=20&tg=" + tgId;
+                }} else if (cheatCount >= 10) {{
+                    targetWin.location.href = targetWin.location.pathname + "?cheat_event=10&tg=" + tgId;
                 }}
             }}
 
-            // Detection untuk Laptop & HP (Mobile Browser Tab Switching/App Minimizing)
+            // Event listener untuk Laptop & HP (Mobile App Minimizing / Tab Switching)
             targetWin.addEventListener("visibilitychange", function() {{
                 if (targetWin.document.hidden) triggerCheat("Pindah Tab/Layar");
             }});
@@ -1108,16 +1123,18 @@ def render_siswa():
         if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
             tg_submit = dict(tg)
             tg_submit["soal"] = soal_list
-            submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_auto_submit=False)
-            st.balloons()
-            st.success("✅ Jawaban Anda berhasil dikumpulkan!")
+            success = submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_auto_submit=False)
+            
+            if success:
+                st.balloons()
+                st.success("✅ Jawaban Anda berhasil dikumpulkan!")
 
-            st.session_state["active_quiz_id"] = None
-            st.session_state.pop("active_quiz_data", None)
-            st.session_state.pop(f"quiz_answers_{tg_id}", None)
-            st.session_state.pop(f"quiz_page_{tg_id}", None)
-            st.session_state.pop(f"quiz_soal_{tg_id}", None)
-            st.rerun()
+                st.session_state["active_quiz_id"] = None
+                st.session_state.pop("active_quiz_data", None)
+                st.session_state.pop(f"quiz_answers_{tg_id}", None)
+                st.session_state.pop(f"quiz_page_{tg_id}", None)
+                st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                st.rerun()
 
         return
 
