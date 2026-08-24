@@ -54,63 +54,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. ANTI-CHEAT CUSTOM COMPONENT FOR ANDROID
-# ==========================================
-COMPONENT_DIR = os.path.join(os.path.dirname(__file__), "anti_cheat_component") if "__file__" in globals() else "anti_cheat_component"
-os.makedirs(COMPONENT_DIR, exist_ok=True)
-
-index_html_path = os.path.join(COMPONENT_DIR, "index.html")
-with open(index_html_path, "w", encoding="utf-8") as f:
-    f.write("""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <script>
-    function sendToStreamlit(violationType) {
-      window.parent.postMessage({
-        type: "streamlit:setComponentValue",
-        value: { type: violationType, ts: Date.now() }
-      }, "*");
-    }
-
-    window.addEventListener("load", function() {
-      window.parent.postMessage({
-        type: "streamlit:setFrameHeight",
-        height: 0
-      }, "*");
-
-      try {
-        var targetWin = window.parent;
-        var targetDoc = window.parent.document;
-
-        // Deteksi pindah tab / minimize browser
-        targetDoc.addEventListener("visibilitychange", function() {
-          if (targetDoc.hidden) {
-            sendToStreamlit("VISIBILITY_HIDDEN");
-          }
-        });
-
-        // Deteksi berpindah ke aplikasi lain (Android/Desktop)
-        targetWin.addEventListener("blur", function() {
-          sendToStreamlit("BLUR");
-        });
-
-        // Deteksi aksi tempel teks (paste) pada area jawaban
-        targetDoc.addEventListener("paste", function() {
-          sendToStreamlit("PASTE");
-        });
-      } catch (e) {
-        console.error("Anti-cheat initialization error:", e);
-      }
-    });
-  </script>
-</head>
-<body style="margin: 0; padding: 0;"></body>
-</html>""")
-
-anti_cheat_detector = components.declare_component("anti_cheat_detector", path=COMPONENT_DIR)
-# ==========================================
-# 3. FIREBASE & CACHING
+# 2. FIREBASE & CACHING
 # ==========================================
 @st.cache_resource
 def init_firebase():
@@ -162,63 +106,6 @@ def clear_materi_cache():
 def clear_user_submissions_cache():
     get_user_submissions_cached.clear()
 
-# --- DEVICE LOCK & AUDIT HELPERS ---
-def try_lock_device(device_id, username):
-    if not device_id:
-        return True, ""
-    ref = db.collection("device_locks").document(device_id)
-    doc = ref.get()
-    
-    if doc.exists:
-        data = doc.to_dict()
-        status = data.get("status")
-        active_user = data.get("active_user_id")
-        
-        if status == "IN_PROGRESS" and active_user != username:
-            return False, f"HP ini sedang terkunci untuk kuis siswa '{active_user}'. Minta Guru/Pengawas mereset status perangkat."
-        
-        if status == "FINISHED" and data.get("unlocked_at"):
-            unlocked_at = data.get("unlocked_at")
-            if hasattr(unlocked_at, 'timestamp'):
-                elapsed = (datetime.now().timestamp() - unlocked_at.timestamp())
-                if elapsed < 60:
-                    return False, f"Harap tunggu {int(60 - elapsed)} detik sebelum pergantian siswa di HP yang sama."
-
-    ref.set({
-        "device_id": device_id,
-        "active_user_id": username,
-        "status": "IN_PROGRESS",
-        "locked_at": firestore.SERVER_TIMESTAMP,
-        "unlocked_at": None
-    }, merge=True)
-    return True, ""
-
-def release_device_lock(device_id, username):
-    if not device_id:
-        return
-    ref = db.collection("device_locks").document(device_id)
-    doc = ref.get()
-    if doc.exists and doc.to_dict().get("active_user_id") == username:
-        ref.update({
-            "status": "FINISHED",
-            "unlocked_at": firestore.SERVER_TIMESTAMP
-        })
-
-def force_unlock_device(device_id):
-    db.collection("device_locks").document(device_id).update({
-        "status": "FORCE_UNLOCKED",
-        "unlocked_at": firestore.SERVER_TIMESTAMP
-    })
-
-def record_violation(username, device_id, id_tugas, violation_type="VISIBILITY_HIDDEN_OR_PASTE"):
-    db.collection("violation_logs").add({
-        "username": username,
-        "device_id": device_id or "UNKNOWN_DEVICE",
-        "id_tugas": id_tugas,
-        "violation_type": violation_type,
-        "timestamp": firestore.SERVER_TIMESTAMP
-    })
-
 # --- UTILITY HELPERS ---
 def safe_read_uploaded_file(uploaded_file):
     if uploaded_file.name.endswith('.csv'):
@@ -256,23 +143,12 @@ def is_materi_sesuai_kelas(materi_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
-def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submit=False, is_forced=False, device_id=None):
+def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=False):
     tg_id = tg["id"]
-    
-    status_doc = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
-    if status_doc.exists and status_doc.to_dict().get("status") == "paused" and not is_forced:
-        st.error("🛑 Kuis dalam keadaan terkunci (Penalti 10+ Poin). Pengumpulkan tidak dapat diproses!")
-        return False
-
     soal_list = tg.get("soal", [])
     total_soal = len(soal_list)
     
-    if is_forced:
-        catatan = "Di-submit Paksa oleh Guru"
-    elif is_auto_submit:
-        catatan = "Diskualifikasi Otomatis (Mencapai 20 Poin Kecurangan)"
-    else:
-        catatan = "Penilaian Otomatis Sistem"
+    catatan = "Di-submit Paksa oleh Guru" if is_forced else "Penilaian Otomatis Sistem"
     
     if tg.get("tipe") == "pg":
         correct_count = 0
@@ -287,29 +163,26 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submi
         db.collection("jawaban_siswa").add({
             "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
             "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "pg", "jawaban": formatted_ans,
-            "nilai": score if not is_auto_submit else 0, "catatan_guru": catatan, "submitted_at": firestore.SERVER_TIMESTAMP
+            "nilai": score, "catatan_guru": catatan, "submitted_at": firestore.SERVER_TIMESTAMP
         })
     else:
         formatted_ans = [a if a is not None else "" for a in (answers if answers else [])]
         db.collection("jawaban_siswa").add({
             "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
             "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay", "soal": soal_list,
-            "jawaban": formatted_ans, "nilai": 0 if is_auto_submit else None, "catatan_guru": catatan,
+            "jawaban": formatted_ans, "nilai": None, "catatan_guru": catatan,
             "submitted_at": firestore.SERVER_TIMESTAMP
         })
 
     db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
-        "username": username_s, "id_tugas": tg_id, "status": "submitted_cheat" if is_auto_submit else "submitted", "updated_at": firestore.SERVER_TIMESTAMP
+        "username": username_s, "id_tugas": tg_id, "status": "submitted", "updated_at": firestore.SERVER_TIMESTAMP
     }, merge=True)
     
-    if device_id:
-        release_device_lock(device_id, username_s)
-        
     clear_user_submissions_cache()
     return True
 
 # ==========================================
-# 4. AI EVALUATION HELPER
+# 3. AI EVALUATION HELPER
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -372,7 +245,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         return None, f"Gagal mengeksekusi AI: {str(e)}"
 
 # ==========================================
-# 5. AUTHENTICATION
+# 4. AUTHENTICATION
 # ==========================================
 if "user" not in st.session_state:
     st.session_state["user"] = None
@@ -405,7 +278,7 @@ if st.session_state["user"] is None:
     st.stop()
 
 # ==========================================
-# 6. SIDEBAR
+# 5. SIDEBAR
 # ==========================================
 user_info = st.session_state["user"]
 role = user_info["role"]
@@ -427,7 +300,7 @@ if st.sidebar.button("🚪 Keluar / Logout"):
 st.sidebar.divider()
 
 # ==========================================
-# 7. PANEL SUPER ADMIN
+# 6. PANEL SUPER ADMIN
 # ==========================================
 def render_superadmin():
     st.title("⚙️ Panel Super Admin")
@@ -573,7 +446,7 @@ def render_superadmin():
                 st.rerun()
 
 # ==========================================
-# 8. PANEL GURU
+# 7. PANEL GURU
 # ==========================================
 def render_guru():
     st.title("🇮🇩 Panel Guru")
@@ -874,7 +747,7 @@ def render_guru():
                         s_nm = s_unsub.get("nama", s_un)
                         submit_jawaban_siswa(
                             selected_tugas, s_un, s_nm, selected_kelas, 
-                            answers=[], is_auto_submit=False, is_forced=True
+                            answers=[], is_forced=True
                         )
                     st.success(f"✅ Berhasil melakukan Submit Paksa untuk {len(siswa_belum_submit)} siswa!")
                     st.rerun()
@@ -890,7 +763,7 @@ def render_guru():
                 "Catatan Guru": sub.get("catatan_guru", "-") if sub else "-"
             })
 
-        t_rekap, t_koreksi, t_analisis, t_unpause, t_locks = st.tabs(["📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "📈 Analisis Soal PG", "🚨 Monitor Kuis", "📱 Reset Lock Perangkat"])
+        t_rekap, t_koreksi, t_analisis = st.tabs(["📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "📈 Analisis Soal PG"])
 
         with t_rekap:
             st.dataframe(pd.DataFrame(rekap_rows), use_container_width=True)
@@ -995,187 +868,18 @@ def render_guru():
 
                 st.dataframe(pd.DataFrame(analisis_rows), use_container_width=True)
 
-        with t_unpause:
-            st.subheader("🚨 Monitor & Buka Kunci Siswa Terpenalti (10+ Poin)")
-            st.info("💡 **Petunjuk**: Siswa yang mengumpulkan 10–19 poin pelanggaran akan terkunci layarnya dan wajib meminta izin ke Guru untuk membuka kunci.")
-            
-            status_docs = db.collection("status_ujian").where("id_tugas", "==", selected_tugas_id).stream()
-            monitored_list = [d.to_dict() for d in status_docs]
-
-            if not monitored_list:
-                st.success("✅ Belum ada data status ujian siswa untuk tugas ini.")
-            else:
-                has_active_locks = False
-                for p in monitored_list:
-                    p_un = p.get("username")
-                    p_nama = p.get("nama", p_un)
-                    p_cnt = p.get("cheat_count", 0)
-                    p_status = p.get("status", "active")
-
-                    if p_cnt >= 5 or p_status in ["paused", "submitted_cheat"]:
-                        has_active_locks = True
-                        with st.container(border=True):
-                            col1, col2 = st.columns([3, 1])
-                            with col1:
-                                badge_status = "🟢 Aktif"
-                                if p_status == "submitted_cheat" or p_cnt >= 20:
-                                    badge_status = "🔴 DISKUALIFIKASI (20 Poin)"
-                                elif p_status == "paused" or p_cnt >= 10:
-                                    badge_status = "🟡 TERKUNCI / PAUSED (10+ Poin)"
-                                elif p_cnt >= 5:
-                                    badge_status = "⚠️ PERINGATAN (5+ Poin)"
-
-                                st.write(f"👤 **{p_nama}** (@{p_un})")
-                                st.caption(f"Status: **{badge_status}** | Poin Kecurangan: **{p_cnt}/20 Poin**")
-
-                            with col2:
-                                if p_status == "paused" or p_cnt >= 10:
-                                    if st.button("🔓 Izinkan Lanjut (Buka Kunci)", key=f"unp_{p_un}_{selected_tugas_id}", type="primary"):
-                                        db.collection("status_ujian").document(f"{p_un}_{selected_tugas_id}").update({
-                                            "status": "active"
-                                        })
-                                        st.success(f"✅ Akses {p_nama} berhasil dibuka kembali!")
-                                        st.rerun()
-                                elif p_status == "submitted_cheat":
-                                    st.write("❌ *Terkunci Permanen*")
-                                else:
-                                    st.write("ℹ️ *Akses Aktif*")
-
-                if not has_active_locks:
-                    st.success("✅ Tidak ada siswa yang terdeteksi melakukan pelanggaran (≥5 Poin) pada tugas ini.")
-
-        with t_locks:
-            st.subheader("📱 Device Lock Master & Force Unlock Perangkat")
-            st.info("💡 **Override Pengawas**: Bebaskan kuncian perangkat HP jika aplikasi crash atau siswa lupa logout.")
-            
-            dev_docs = db.collection("device_locks").where("status", "==", "IN_PROGRESS").stream()
-            active_devs = [d.to_dict() for d in dev_docs]
-
-            if not active_devs:
-                st.success("✅ Tidak ada perangkat/HP yang sedang terkunci saat ini.")
-            else:
-                for dev in active_devs:
-                    d_id = dev.get("device_id")
-                    u_acc = dev.get("active_user_id")
-                    with st.container(border=True):
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.write(f"📱 Device ID: `{d_id}`")
-                            st.caption(f"🔒 Terkunci oleh Akun: **@{u_acc}**")
-                        with col2:
-                            if st.button("🔓 Reset / Unlock Device", key=f"force_dev_{d_id}", type="primary"):
-                                force_unlock_device(d_id)
-                                st.success(f"✅ Device {d_id} berhasil di-reset!")
-                                st.rerun()
-
 # ==========================================
-# 9. PANEL SISWA (EXAM MODE WITH LOCKDOWN)
+# 8. PANEL SISWA
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
 
-    device_id = st.query_params.get("device_id") or st.session_state.get("device_id", "BROWSER_CLIENT")
-
     my_subs = get_user_submissions_cached(username_s)
     active_quiz_id = st.session_state.get("active_quiz_id")
 
     if active_quiz_id:
-        
-        # 1. DETEKSI KECURANGAN VIA NATIVE POSTMESSAGE (ANDROID COMPATIBLE)
-        cheat_data = anti_cheat_detector(key=f"cheat_det_{username_s}_{active_quiz_id}")
-
-        if cheat_data and isinstance(cheat_data, dict):
-            last_processed_ts = st.session_state.get("last_processed_cheat_ts", 0)
-            current_ts = cheat_data.get("ts", 0)
-            
-            # Filter debounce: Abaikan penambahan jika jeda antar-event < 1.5 detik
-            if current_ts - last_processed_ts > 1500:
-                st.session_state["last_processed_cheat_ts"] = current_ts
-                violation_type = cheat_data.get("type", "VISIBILITY_HIDDEN_OR_PASTE")
-                
-                doc_ref = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}")
-                doc_snap = doc_ref.get()
-                curr_count = doc_snap.to_dict().get("cheat_count", 0) if doc_snap.exists else 0
-                new_count = curr_count + 1
-                
-                record_violation(username_s, device_id, active_quiz_id, violation_type=violation_type)
-                
-                new_status = "active"
-                if new_count >= 20:
-                    new_status = "submitted_cheat"
-                elif new_count >= 10:
-                    new_status = "paused"
-                elif new_count >= 5:
-                    new_status = "warning"
-
-                doc_ref.set({
-                    "username": username_s,
-                    "nama": nama_s,
-                    "id_tugas": active_quiz_id,
-                    "status": new_status,
-                    "cheat_count": new_count,
-                    "updated_at": firestore.SERVER_TIMESTAMP
-                }, merge=True)
-
-                if new_status == "submitted_cheat":
-                    all_t = get_all_tugas_cached()
-                    tg_obj = next((t for t in all_t if t["id"] == active_quiz_id), None)
-                    if tg_obj:
-                        answers = st.session_state.get(f"quiz_answers_{active_quiz_id}", [])
-                        soal_sess = st.session_state.get(f"quiz_soal_{active_quiz_id}", tg_obj.get("soal", []))
-                        tg_submit = dict(tg_obj)
-                        tg_submit["soal"] = soal_sess
-                        submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_auto_submit=True, device_id=device_id)
-
-                    st.session_state["active_quiz_id"] = None
-                    st.session_state.pop("active_quiz_data", None)
-                    st.session_state.pop(f"quiz_answers_{active_quiz_id}", None)
-                    st.session_state.pop(f"quiz_page_{active_quiz_id}", None)
-                    st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
-                    st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena mencapai 20 poin kecurangan (Diskualifikasi).")
-
-                st.rerun()
-                
-        # 2. STATUS CHECK TERBARU DARI FIRESTORE
-        doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
-        status_data = doc_status.to_dict() if doc_status.exists else {}
-        cheat_count = status_data.get("cheat_count", 0)
-        quiz_status = status_data.get("status", "active")
-
-        # 3. KONDISI 20 POIN: DISKUALIFIKASI / SUBMITTED CHEAT
-        if quiz_status == "submitted_cheat" or cheat_count >= 20:
-            st.error("🚨 **KUIS DISKUALIFIKASI**")
-            st.warning("Poin kecurangan Anda telah mencapai **20 Poin**. Kuis telah di-submit otomatis oleh sistem dan ditandai Invalid.")
-            if st.button("⬅️ Kembali ke Dashboard", type="primary", use_container_width=True):
-                release_device_lock(device_id, username_s)
-                st.session_state["active_quiz_id"] = None
-                st.session_state.pop("active_quiz_data", None)
-                st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
-                st.rerun()
-            return
-
-        # 4. KONDISI 10 POIN: PENALTI & KUNCI LAYAR
-        if quiz_status == "paused" or cheat_count >= 10:
-            st.error("🛑 **KUIS TERKUNCI — PENALTI KECURANGAN (10+ POIN)**")
-            st.warning(
-                f"⚠️ Akumulasi poin kecurangan Anda saat ini: **{cheat_count}/20 Poin**.\n\n"
-                "Sistem telah mengunci kuis Anda secara otomatis. Harap **minta izin ke Guru Pengampu** untuk membuka kunci ujian."
-            )
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("🔄 Cek Status Izin Guru (Refresh)", type="primary", use_container_width=True):
-                    st.rerun()
-            with col2:
-                if st.button("⬅️ Batal / Keluar", use_container_width=True):
-                    release_device_lock(device_id, username_s)
-                    st.session_state["active_quiz_id"] = None
-                    st.session_state.pop("active_quiz_data", None)
-                    st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
-                    st.rerun()
-            return
-
         if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
             all_t = get_all_tugas_cached()
             st.session_state["active_quiz_data"] = next((t for t in all_t if t["id"] == active_quiz_id), None)
@@ -1216,21 +920,13 @@ def render_siswa():
         terjawab_count = sum(1 for a in answers if a is not None)
 
         if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary"):
-            release_device_lock(device_id, username_s)
             st.session_state["active_quiz_id"] = None
             st.session_state.pop("active_quiz_data", None)
             st.session_state.pop(f"quiz_soal_{tg_id}", None)
             st.rerun()
 
         st.markdown(f"### 📝 {tg.get('judul')}")
-        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Terjawab: **{terjawab_count}/{total_soal}** | Poin Kecurangan: **{cheat_count}/20 Poin**")
-
-        # 5. KONDISI 5 POIN: BANNER PERINGATAN
-        if 5 <= cheat_count < 10:
-            st.warning(
-                f"⚠️ **PERINGATAN KECURANGAN ({cheat_count}/20 POIN)**: "
-                "Harap fokus pada layar kuis! Jika poin mencapai **10 Poin**, kuis akan terkunci secara otomatis."
-            )
+        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Terjawab: **{terjawab_count}/{total_soal}**")
 
         st.progress((curr_page + 1) / total_soal)
         soal_item = soal_list[curr_page]
@@ -1292,7 +988,7 @@ def render_siswa():
             with st.spinner("Memproses pengumpulkan jawaban..."):
                 success = submit_jawaban_siswa(
                     tg_submit, username_s, nama_s, kelas_s, answers, 
-                    is_auto_submit=False, device_id=device_id
+                    is_forced=False
                 )
             
             if success:
@@ -1306,7 +1002,7 @@ def render_siswa():
                 st.session_state.pop(f"quiz_soal_{tg_id}", None)
                 st.rerun()
             else:
-                st.error("❌ Gagal mengumpulkan jawaban! Ujian Anda sedang dalam status terkunci (Penalti) atau telah dikumpulkan sebelumnya.")
+                st.error("❌ Gagal mengumpulkan jawaban!")
 
         return
 
@@ -1334,13 +1030,8 @@ def render_siswa():
                     st.markdown(f"### 📝 {tg.get('judul')}")
                     st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | {len(tg.get('soal', []))} Soal")
                     if st.button("🚀 Mulai Kerjakan", key=f"start_{tg['id']}", type="primary"):
-                        lock_ok, lock_msg = try_lock_device(device_id, username_s)
-                        if not lock_ok:
-                            st.error(f"🛑 {lock_msg}")
-                        else:
-                            st.session_state["active_quiz_id"] = tg["id"]
-                            st.session_state["device_id"] = device_id
-                            st.rerun()
+                        st.session_state["active_quiz_id"] = tg["id"]
+                        st.rerun()
 
         if tugas_sudah_list:
             st.divider()
@@ -1369,7 +1060,7 @@ def render_siswa():
                 st.write(f"- **{sub_info.get('judul_tugas')}**: Nilai **{sub_info.get('nilai', 'Menunggu')}**")
 
 # ==========================================
-# 10. MAIN ROUTER
+# 9. MAIN ROUTER
 # ==========================================
 if role == "superadmin":
     render_superadmin()
