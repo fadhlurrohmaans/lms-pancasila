@@ -140,7 +140,6 @@ def is_materi_sesuai_kelas(materi_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
-# Helper submit jawaban siswa (Digunakan manual maupun auto-submit kecurangan)
 def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submit=False):
     tg_id = tg["id"]
     soal_list = tg.get("soal", [])
@@ -620,6 +619,37 @@ def render_guru():
 
         with t_imp:
             st.subheader("📥 Import Soal Tugas (.csv / .xlsx)")
+            st.info("💡 **Unduh Template Soal:** Gunakan tombol di bawah ini untuk mengunduh format CSV yang sesuai.")
+            
+            # --- GENERAte TEMPLATE FILE ---
+            df_tpl_pg = pd.DataFrame([
+                {
+                    "pertanyaan": "Apa lambang sila ke-1 Pancasila?",
+                    "opsi_a": "Bintang", "opsi_b": "Rantai", "opsi_c": "Pohon Beringin", "opsi_d": "Kepala Banteng",
+                    "kunci": "A"
+                },
+                {
+                    "pertanyaan": "Siapa yang mengusulkan nama Pancasila pada 1 Juni 1945?",
+                    "opsi_a": "Ir. Soekarno", "opsi_b": "Drs. Mohammad Hatta", "opsi_c": "Mr. Muhammad Yamin", "opsi_d": "Prof. Dr. Soepomo",
+                    "kunci": "A"
+                }
+            ])
+            csv_pg = df_tpl_pg.to_csv(index=False).encode('utf-8-sig')
+
+            df_tpl_essay = pd.DataFrame([
+                {"pertanyaan": "Jelaskan penerapan nilai-nilai Pancasila sila ke-3 dalam lingkungan sekolah!"},
+                {"pertanyaan": "Mengapa musyawarah sangat penting dalam mengambil keputusan bersama?"}
+            ])
+            csv_essay = df_tpl_essay.to_csv(index=False).encode('utf-8-sig')
+
+            c_tpl1, c_tpl2 = st.columns(2)
+            with c_tpl1:
+                st.download_button("📄 Unduh Template PG (.csv)", data=csv_pg, file_name="template_soal_pg.csv", mime="text/csv", use_container_width=True)
+            with c_tpl2:
+                st.download_button("📄 Unduh Template Essay (.csv)", data=csv_essay, file_name="template_soal_essay.csv", mime="text/csv", use_container_width=True)
+
+            st.divider()
+
             up_soal = st.file_uploader("Upload File Soal (.csv / .xlsx)", type=["csv", "xlsx"])
             imp_judul = st.text_input("Judul Tugas Baru")
             imp_instruksi = st.text_area("Instruksi (Opsional)")
@@ -629,19 +659,43 @@ def render_guru():
             if up_soal and imp_judul and imp_target and st.button("🚀 Import Soal Sekarang", type="primary"):
                 df_s = safe_read_uploaded_file(up_soal)
                 df_s.columns = [str(c).strip().lower() for c in df_s.columns]
+                
+                q_col = None
+                for candidate in ["pertanyaan", "soal", "question"]:
+                    if candidate in df_s.columns:
+                        q_col = candidate
+                        break
+
+                if not q_col:
+                    st.error(f"❌ Kolom pertanyaan tidak ditemukan. Kolom terdeteksi: `{list(df_s.columns)}`. Pastikan ada kolom **pertanyaan** atau **soal**.")
+                    st.stop()
+
                 parsed_s = []
                 
                 if imp_tipe == "pg":
-                    key_m = {'a':0, 'b':1, 'c':2, 'd':3, '0':0, '1':1, '2':2, '3':3}
+                    required_pg_cols = ["opsi_a", "opsi_b", "opsi_c", "opsi_d", "kunci"]
+                    missing_cols = [c for c in required_pg_cols if c not in df_s.columns]
+                    
+                    if missing_cols:
+                        st.error(f"❌ File PG kekurangan kolom: `{missing_cols}`. Pastikan menggunakan template yang telah disediakan.")
+                        st.stop()
+
+                    key_m = {'a': 0, 'b': 1, 'c': 2, 'd': 3, '0': 0, '1': 1, '2': 2, '3': 3}
                     for _, r in df_s.iterrows():
+                        if pd.isna(r[q_col]): continue
                         parsed_s.append({
-                            "pertanyaan": str(r["pertanyaan"]),
+                            "pertanyaan": str(r[q_col]),
                             "opsi": [str(r["opsi_a"]), str(r["opsi_b"]), str(r["opsi_c"]), str(r["opsi_d"])],
                             "kunci": key_m.get(str(r["kunci"]).strip().lower(), 0)
                         })
                 else:
                     for _, r in df_s.iterrows():
-                        parsed_s.append({"pertanyaan": str(r["pertanyaan"])})
+                        if pd.isna(r[q_col]): continue
+                        parsed_s.append({"pertanyaan": str(r[q_col])})
+
+                if not parsed_s:
+                    st.error("⚠️ Tidak ada data soal valid yang dibaca dari file.")
+                    st.stop()
 
                 db.collection("tugas_pancasila").add({
                     "judul": imp_judul, "instruksi": imp_instruksi, "tipe": imp_tipe, "target_kelas": imp_target,
@@ -765,17 +819,14 @@ def render_siswa():
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
 
-    # Get cached submissions
     my_subs = get_user_submissions_cached(username_s)
 
-    # ACTIVE QUIZ MODE
     active_quiz_id = st.session_state.get("active_quiz_id")
     if active_quiz_id:
-        # 1. TANGGAPI EVENT KECURANGAN DARI JAVASCRIPT URL PARAMETERS
         if "cheat_event" in st.query_params:
             cheat_ev = st.query_params.get("cheat_event")
             tg_ev = st.query_params.get("tg", active_quiz_id)
-            st.query_params.clear() # bersihkan URL agar tidak terjadi loop
+            st.query_params.clear()
             
             doc_ref = db.collection("status_ujian").document(f"{username_s}_{tg_ev}")
             
@@ -792,14 +843,12 @@ def render_siswa():
                     "status": "submitted_cheat", "cheat_count": 20, "updated_at": firestore.SERVER_TIMESTAMP
                 }, merge=True)
                 
-                # Load tugas data untuk auto submit
                 all_t = get_all_tugas_cached()
                 tg_obj = next((t for t in all_t if t["id"] == tg_ev), None)
                 if tg_obj:
                     answers = st.session_state.get(f"quiz_answers_{tg_ev}", [])
                     submit_jawaban_siswa(tg_obj, username_s, nama_s, kelas_s, answers, is_auto_submit=True)
 
-                # Reset state kuis
                 st.session_state["active_quiz_id"] = None
                 st.session_state.pop("active_quiz_data", None)
                 st.session_state.pop(f"quiz_answers_{tg_ev}", None)
@@ -807,7 +856,6 @@ def render_siswa():
                 st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena terdeteksi berpindah tab/aplikasi sebanyak 20 kali.")
                 st.rerun()
 
-        # 2. CEK STATUS UJIAN DI FIREBASE (PAUSED / ACTIVE)
         doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
         status_data = doc_status.to_dict() if doc_status.exists else {}
 
@@ -822,7 +870,6 @@ def render_siswa():
                 st.rerun()
             return
 
-        # Load Quiz into session state memory
         if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
             all_t = get_all_tugas_cached()
             st.session_state["active_quiz_data"] = next((t for t in all_t if t["id"] == active_quiz_id), None)
@@ -853,7 +900,6 @@ def render_siswa():
         st.markdown(f"### 📝 {tg.get('judul')}")
         st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab**")
 
-        # Dynamic Anti-cheat script dengan batas 10x (Pause) dan 20x (Auto-submit)
         cheat_script = f"""
         <script>
             const tgId = "{tg_id}";
@@ -908,7 +954,6 @@ def render_siswa():
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
-        # Navigation buttons
         cols_per_row = 5
         for row_start in range(0, total_soal, cols_per_row):
             nav_cols = st.columns(cols_per_row)
@@ -938,7 +983,6 @@ def render_siswa():
             st.balloons()
             st.success("✅ Jawaban Anda berhasil dikumpulkan!")
 
-            # Clean session exam state
             st.session_state["active_quiz_id"] = None
             st.session_state.pop("active_quiz_data", None)
             st.session_state.pop(f"quiz_answers_{tg_id}", None)
@@ -947,7 +991,6 @@ def render_siswa():
 
         return
 
-    # MAIN STUDENT DASHBOARD
     all_tugas = [t for t in get_all_tugas_cached() if is_tugas_sesuai_kelas(t, kelas_s)]
     total_tugas = len(all_tugas)
     tugas_selesai = len(my_subs)
