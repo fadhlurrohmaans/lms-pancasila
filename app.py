@@ -975,14 +975,11 @@ def render_siswa():
         violation_count = status_data.get("violation_count", 0)
         ijin_guru = status_data.get("ijin_guru", False)
 
-        # PENENTUAN STATUS KUNCI AKSES
+        # PENENTUAN STATUS KUNCI AKSE
         is_locked = (violation_count >= 10 and not ijin_guru)
 
-        # ---------------------------------------------------------
-        # TOMBOL PEMICU JS (SEMBUNYI DARI UI SISWA)
-        # ---------------------------------------------------------
-        st.markdown(
-        if '<div style="display: none;">', unsafe_allow_html=True)' st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary")'</div>', unsafe_allow_html=True)':
+        # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Pindah Tab / Minimize / Blur App)
+        if st.button("⚠️ Catat Pelanggarani", key="btn_record_violation", type="secondary"):
             violation_count += 1
             db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
                 "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
@@ -1006,7 +1003,6 @@ def render_siswa():
                 st.rerun()
             else:
                 st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
 
         # Inisialisasi Soal Kuis
         if f"quiz_soal_{tg_id}" not in st.session_state:
