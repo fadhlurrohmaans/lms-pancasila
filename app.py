@@ -979,7 +979,7 @@ def render_siswa():
         is_locked = (violation_count >= 10 and not ijin_guru)
 
         # ---------------------------------------------------------
-        # SEMBUNYIKAN TOMBOL PEMICU DARI TAMPILAN SISWA
+        # CSS UNTUK MENYEMBUNYIKAN TOMBOL DARI SISWA
         # ---------------------------------------------------------
         st.markdown("""
             <style>
@@ -990,8 +990,8 @@ def render_siswa():
             </style>
         """, unsafe_allow_html=True)
 
-        # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Pindah Tab / Minimize / Blur App)
-        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
+        # Tombol Pemicu JS (Key dibuat unik dengan f"{tg_id}")
+        if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
             violation_count += 1
             db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
                 "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
@@ -1015,7 +1015,8 @@ def render_siswa():
                 st.rerun()
             else:
                 st.rerun()
-        
+
+              
         # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Pindah Tab / Minimize / Blur App)
         if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
             violation_count += 1
