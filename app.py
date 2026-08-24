@@ -979,12 +979,6 @@ def render_siswa():
         is_locked = (violation_count >= 10 and not ijin_guru)
 
         # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Pindah Tab / Minimize / Blur App)
-        if st.button("⚠️ Catat Pelanggarani", key="btn_record_violation", type="secondary"):
-            violation_count += 1
-            db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
-                "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
-                "status": "in_progress", "updated_at": firestore.SERVER_TIMESTAMP
-            }, merge=True)
             
             # Jika mencapai 15x pelanggaran -> Submit Paksa Otomatis
             if violation_count >= 15:
