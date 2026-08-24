@@ -1,18 +1,21 @@
 import os
 import json
+import io
 import re
 import random
 import string
 import hashlib
-import pandas as pd
+from datetime import datetime
+
 import streamlit as st
 import streamlit.components.v1 as components
 import firebase_admin
 from firebase_admin import credentials, firestore
+import pandas as pd
 import google.generativeai as genai
 
 # ==========================================
-# 1. KONFIGURASI APLIKASI & STYLING
+# 1. CONFIG & STYLING
 # ==========================================
 st.set_page_config(
     page_title="LMS Pendidikan Pancasila",
@@ -47,14 +50,11 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 6px; overflow-x: auto; white-space: nowrap; border-bottom: 2px solid #eaeaea; padding-bottom: 4px; }
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 20px; font-weight: 600; }
     .stTabs [aria-selected="true"] { background-color: #1e3c72 !important; color: white !important; }
-    
-    /* Sembunyikan Tombol Pemicu Pelanggaran JS */
-    .hidden-violation-btn button { display: none !important; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. FIREBASE & DATABASE HELPER
+# 2. FIREBASE & CACHING
 # ==========================================
 @st.cache_resource
 def init_firebase():
@@ -72,18 +72,21 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
-# --- CACHE DATA READERS ---
+# --- CACHED READ FUNCTIONS ---
 @st.cache_data(ttl=120)
 def get_all_kelas():
-    return sorted([d.id for d in db.collection("kelas").stream()])
+    docs = db.collection("kelas").stream()
+    return sorted([d.id for d in docs])
 
 @st.cache_data(ttl=60)
 def get_all_tugas_cached():
-    return [{"id": d.id, **d.to_dict()} for d in db.collection("tugas_pancasila").stream()]
+    docs = db.collection("tugas_pancasila").stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
 
 @st.cache_data(ttl=60)
 def get_all_materi_cached():
-    return [{"id": d.id, **d.to_dict()} for d in db.collection("materi_pancasila").stream()]
+    docs = db.collection("materi_pancasila").stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
 
 @st.cache_data(ttl=15)
 def get_user_submissions_cached(username):
@@ -91,10 +94,17 @@ def get_user_submissions_cached(username):
     return {d.to_dict().get("id_tugas"): d.to_dict() for d in docs}
 
 # --- CACHE CLEAR HELPERS ---
-def clear_kelas_cache(): get_all_kelas.clear()
-def clear_tugas_cache(): get_all_tugas_cached.clear()
-def clear_materi_cache(): get_all_materi_cached.clear()
-def clear_user_submissions_cache(): get_user_submissions_cached.clear()
+def clear_kelas_cache():
+    get_all_kelas.clear()
+
+def clear_tugas_cache():
+    get_all_tugas_cached.clear()
+
+def clear_materi_cache():
+    get_all_materi_cached.clear()
+
+def clear_user_submissions_cache():
+    get_user_submissions_cached.clear()
 
 # --- UTILITY HELPERS ---
 def safe_read_uploaded_file(uploaded_file):
@@ -125,18 +135,25 @@ def generate_password(length=6):
 
 def is_tugas_sesuai_kelas(tugas_doc, kelas_siswa):
     target = tugas_doc.get("target_kelas", [])
-    return True if not target else (kelas_siswa in target if isinstance(target, list) else target == kelas_siswa)
+    if not target: return True
+    return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
 def is_materi_sesuai_kelas(materi_doc, kelas_siswa):
     target = materi_doc.get("target_kelas", [])
-    return True if not target else (kelas_siswa in target if isinstance(target, list) else target == kelas_siswa)
+    if not target: return True
+    return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
 def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=False, is_violation=False):
     tg_id = tg["id"]
     soal_list = tg.get("soal", [])
     total_soal = len(soal_list)
     
-    catatan = "⚠️ Submit Otomatis (Mencapai Limit Pelanggaran 15x)" if is_violation else ("Di-submit Paksa oleh Guru" if is_forced else "Penilaian Otomatis Sistem")
+    if is_violation:
+        catatan = "⚠️ Submit Otomatis (Mencapai Limit Maksimal Pelanggaran 15x)"
+    elif is_forced:
+        catatan = "Di-submit Paksa oleh Guru"
+    else:
+        catatan = "Penilaian Otomatis Sistem"
     
     if tg.get("tipe") == "pg":
         correct_count = 0
@@ -170,57 +187,8 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     return True
 
 # ==========================================
-# 3. MODUL ANTI-CHEAT & KUIS HELPER
+# 3. AI EVALUATION HELPER
 # ==========================================
-def inject_anti_cheat_js():
-    """Injeksi script Anti-Cheat: Debounce Pelanggaran & Blokir Copy/Paste/Klik-Kanan"""
-    components.html("""
-        <script>
-        (function() {
-            const parentDoc = window.parent.document;
-            const parentWin = window.parent;
-            let lastTrigger = 0;
-            const DEBOUNCE_MS = 2500;
-
-            function triggerViolation() {
-                const now = Date.now();
-                if (now - lastTrigger < DEBOUNCE_MS) return;
-                lastTrigger = now;
-
-                const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                const triggerBtn = buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
-                if (triggerBtn) triggerBtn.click();
-            }
-
-            // 1. Deteksi Pindah Tab / Minimize
-            parentDoc.addEventListener('visibilitychange', function() {
-                if (parentDoc.hidden) triggerViolation();
-            });
-
-            // 2. Deteksi Pindah Aplikasi / Window (Cegah ganda dengan checking !hidden)
-            parentWin.addEventListener('blur', function() {
-                if (!parentDoc.hidden) triggerViolation();
-            });
-
-            // 3. Blokir Copy, Cut, Paste, Klik Kanan, & Selection Text
-            ['contextmenu', 'copy', 'cut', 'paste', 'selectstart', 'dragstart'].forEach(evtName => {
-                parentDoc.addEventListener(evtName, function(e) {
-                    e.preventDefault();
-                    return false;
-                });
-            });
-        })();
-        </script>
-    """, height=0)
-
-def clear_quiz_session(tg_id):
-    """Clean state session kuis aktif"""
-    st.session_state["active_quiz_id"] = None
-    st.session_state.pop("active_quiz_data", None)
-    st.session_state.pop(f"quiz_answers_{tg_id}", None)
-    st.session_state.pop(f"quiz_page_{tg_id}", None)
-    st.session_state.pop(f"quiz_soal_{tg_id}", None)
-
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
     if not api_key:
@@ -255,7 +223,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
             "Aturan Penilaian & Feedback:\n"
             "1. Periksa setiap nomor soal satu per satu (skala 0-100 per soal).\n"
             "2. Hitung RATA-RATA NILAI AKHIR dari seluruh soal (0-100) dan masukkan ke field 'nilai' sebagai integer.\n"
-            "3. Pada field 'feedback', tuliskan rincian koreksi per nomor soal.\n"
+            "3. Pada field 'feedback', tuliskan rincian koreksi per nomor soal, diawali apresiasi dan diakhiri motivasi.\n"
             "4. Gunakan Bahasa Indonesia yang hangat, ramah, dan edukatif."
         )
 
@@ -273,7 +241,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
                 continue
 
         if not response or not hasattr(response, 'text') or not response.text.strip():
-            return None, f"AI tidak mengembalikan respon. Error: {str(last_error)}"
+            return None, f"AI tidak mengembalikan respon. Error terakhir: {str(last_error)}"
 
         result_json = json.loads(response.text.strip())
         return int(result_json.get("nilai", 0)), str(result_json.get("feedback", "")).strip() or "Terima kasih telah mengerjakan!"
@@ -282,14 +250,14 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         return None, f"Gagal mengeksekusi AI: {str(e)}"
 
 # ==========================================
-# 4. AUTHENTICATION ENGINE
+# 4. AUTHENTICATION
 # ==========================================
 if "user" not in st.session_state:
     st.session_state["user"] = None
 
 if st.session_state["user"] is None:
     st.title("🇮🇩 LMS Pendidikan Pancasila")
-    st.info("💡 Akun Siswa dan Guru dikelola oleh **Super Admin**.")
+    st.info("💡 **Informasi**: Akun Siswa dan Guru dikelola oleh **Super Admin**.")
     
     with st.form("form_login"):
         username = st.text_input("Username").strip().lower()
@@ -315,7 +283,7 @@ if st.session_state["user"] is None:
     st.stop()
 
 # ==========================================
-# 5. SIDEBAR NAVIGATION
+# 5. SIDEBAR
 # ==========================================
 user_info = st.session_state["user"]
 role = user_info["role"]
@@ -663,16 +631,36 @@ def render_guru():
 
         with t_imp:
             st.subheader("📥 Import Soal Tugas (.csv / .xlsx)")
+            st.info("💡 **Unduh Template Soal:** Gunakan tombol di bawah ini untuk mengunduh format CSV yang sesuai.")
+            
             df_tpl_pg = pd.DataFrame([
-                {"pertanyaan": "Apa lambang sila ke-1 Pancasila?", "opsi_a": "Bintang", "opsi_b": "Rantai", "opsi_c": "Pohon Beringin", "opsi_d": "Kepala Banteng", "kunci": "A"}
+                {
+                    "pertanyaan": "Apa lambang sila ke-1 Pancasila?",
+                    "opsi_a": "Bintang", "opsi_b": "Rantai", "opsi_c": "Pohon Beringin", "opsi_d": "Kepala Banteng",
+                    "kunci": "A"
+                },
+                {
+                    "pertanyaan": "Siapa yang mengusulkan nama Pancasila pada 1 Juni 1945?",
+                    "opsi_a": "Ir. Soekarno", "opsi_b": "Drs. Mohammad Hatta", "opsi_c": "Mr. Muhammad Yamin", "opsi_d": "Prof. Dr. Soepomo",
+                    "kunci": "A"
+                }
             ])
-            df_tpl_essay = pd.DataFrame([{"pertanyaan": "Jelaskan penerapan nilai-nilai Pancasila sila ke-3 dalam lingkungan sekolah!"}])
+            csv_pg = df_tpl_pg.to_csv(index=False).encode('utf-8-sig')
+
+            df_tpl_essay = pd.DataFrame([
+                {"pertanyaan": "Jelaskan penerapan nilai-nilai Pancasila sila ke-3 dalam lingkungan sekolah!"},
+                {"pertanyaan": "Mengapa musyawarah sangat penting dalam mengambil keputusan bersama?"}
+            ])
+            csv_essay = df_tpl_essay.to_csv(index=False).encode('utf-8-sig')
 
             c_tpl1, c_tpl2 = st.columns(2)
-            c_tpl1.download_button("📄 Unduh Template PG (.csv)", df_tpl_pg.to_csv(index=False).encode('utf-8-sig'), "template_soal_pg.csv", "text/csv", use_container_width=True)
-            c_tpl2.download_button("📄 Unduh Template Essay (.csv)", df_tpl_essay.to_csv(index=False).encode('utf-8-sig'), "template_soal_essay.csv", "text/csv", use_container_width=True)
+            with c_tpl1:
+                st.download_button("📄 Unduh Template PG (.csv)", data=csv_pg, file_name="template_soal_pg.csv", mime="text/csv", use_container_width=True)
+            with c_tpl2:
+                st.download_button("📄 Unduh Template Essay (.csv)", data=csv_essay, file_name="template_soal_essay.csv", mime="text/csv", use_container_width=True)
 
             st.divider()
+
             up_soal = st.file_uploader("Upload File Soal (.csv / .xlsx)", type=["csv", "xlsx"])
             imp_judul = st.text_input("Judul Tugas Baru")
             imp_instruksi = st.text_area("Instruksi (Opsional)")
@@ -682,14 +670,27 @@ def render_guru():
             if up_soal and imp_judul and imp_target and st.button("🚀 Import Soal Sekarang", type="primary"):
                 df_s = safe_read_uploaded_file(up_soal)
                 df_s.columns = [str(c).strip().lower() for c in df_s.columns]
-                q_col = next((c for c in ["pertanyaan", "soal", "question"] if c in df_s.columns), None)
+                
+                q_col = None
+                for candidate in ["pertanyaan", "soal", "question"]:
+                    if candidate in df_s.columns:
+                        q_col = candidate
+                        break
 
                 if not q_col:
-                    st.error(f"❌ Kolom pertanyaan tidak ditemukan. Pastikan ada kolom **pertanyaan** atau **soal**.")
+                    st.error(f"❌ Kolom pertanyaan tidak ditemukan. Kolom terdeteksi: `{list(df_s.columns)}`. Pastikan ada kolom **pertanyaan** atau **soal**.")
                     st.stop()
 
                 parsed_s = []
+                
                 if imp_tipe == "pg":
+                    required_pg_cols = ["opsi_a", "opsi_b", "opsi_c", "opsi_d", "kunci"]
+                    missing_cols = [c for c in required_pg_cols if c not in df_s.columns]
+                    
+                    if missing_cols:
+                        st.error(f"❌ File PG kekurangan kolom: `{missing_cols}`. Pastikan menggunakan template yang telah disediakan.")
+                        st.stop()
+
                     key_m = {'a': 0, 'b': 1, 'c': 2, 'd': 3, '0': 0, '1': 1, '2': 2, '3': 3}
                     for _, r in df_s.iterrows():
                         if pd.isna(r[q_col]): continue
@@ -702,6 +703,10 @@ def render_guru():
                     for _, r in df_s.iterrows():
                         if pd.isna(r[q_col]): continue
                         parsed_s.append({"pertanyaan": str(r[q_col])})
+
+                if not parsed_s:
+                    st.error("⚠️ Tidak ada data soal valid yang dibaca dari file.")
+                    st.stop()
 
                 db.collection("tugas_pancasila").add({
                     "judul": imp_judul, "instruksi": imp_instruksi, "tipe": imp_tipe, "target_kelas": imp_target,
@@ -733,8 +738,10 @@ def render_guru():
         sub_list = [{"id": d.id, **d.to_dict()} for d in sub_docs]
         sub_map = {s.get("username_siswa"): s for s in sub_list}
 
+        # Status monitoring pelanggaran real-time
         status_docs = db.collection("status_ujian").where("id_tugas", "==", selected_tugas_id).stream()
         status_map = {d.to_dict().get("username"): d.to_dict() for d in status_docs}
+
         siswa_belum_submit = [s for s in siswa_list if s["username"] not in sub_map]
         
         st.divider()
@@ -742,11 +749,17 @@ def render_guru():
         with col_sub_info:
             st.write(f"👥 Total Siswa: **{len(siswa_list)}** | Sudah: **{len(sub_list)}** | Belum: **{len(siswa_belum_submit)}**")
         with col_sub_btn:
-            if siswa_belum_submit and st.button("⚡ Submit Paksa Semua Siswa Belum", type="primary", use_container_width=True):
-                for s_unsub in siswa_belum_submit:
-                    submit_jawaban_siswa(selected_tugas, s_unsub["username"], s_unsub.get("nama", s_unsub["username"]), selected_kelas, answers=[], is_forced=True)
-                st.success(f"✅ Berhasil Submit Paksa {len(siswa_belum_submit)} siswa!")
-                st.rerun()
+            if siswa_belum_submit:
+                if st.button("⚡ Submit Paksa Semua Siswa Belum", type="primary", use_container_width=True):
+                    for s_unsub in siswa_belum_submit:
+                        s_un = s_unsub["username"]
+                        s_nm = s_unsub.get("nama", s_un)
+                        submit_jawaban_siswa(
+                            selected_tugas, s_un, s_nm, selected_kelas, 
+                            answers=[], is_forced=True
+                        )
+                    st.success(f"✅ Berhasil melakukan Submit Paksa untuk {len(siswa_belum_submit)} siswa!")
+                    st.rerun()
 
         rekap_rows = []
         for s in siswa_list:
@@ -769,6 +782,8 @@ def render_guru():
 
         with t_rekap:
             st.dataframe(pd.DataFrame(rekap_rows), use_container_width=True)
+            
+            # Panel Kontrol Izin Guru
             st.markdown("### 🔓 Kontrol Izin & Buka Kunci Siswa")
             locked_students = [s for s in siswa_list if status_map.get(s["username"], {}).get("violation_count", 0) >= 10]
             if not locked_students:
@@ -782,10 +797,12 @@ def render_guru():
                     is_granted = st_l.get("ijin_guru", False)
                     
                     c_info, c_act = st.columns([3, 1])
-                    c_info.write(f"👤 **{nm_l}** (@{un_l}) — Pelanggaran: **{v_c}x** | Status: **{'✅ Diizinkan' if is_granted else '🔒 Terkunci'}**")
-                    if c_act.button("🔓 Beri Izin Ujian", key=f"btn_grant_{un_l}"):
-                        db.collection("status_ujian").document(f"{un_l}_{selected_tugas_id}").set({"ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
-                        st.success(f"✅ Izin diberikan kepada {nm_l}!")
+                    c_info.write(f"👤 **{nm_l}** (@{un_l}) — Pelanggaran: **{v_c}x** | Status Izin: **{'✅ Diizinkan' if is_granted else '🔒 Terkunci'}**")
+                    if c_act.button("🔓 Beri Izin Mengerjakan", key=f"btn_grant_{un_l}"):
+                        db.collection("status_ujian").document(f"{un_l}_{selected_tugas_id}").set({
+                            "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
+                        }, merge=True)
+                        st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
                         st.rerun()
 
         with t_koreksi:
@@ -809,7 +826,8 @@ def render_guru():
                                 opsi_list = q.get("opsi", [])
                                 ans_idx = a if isinstance(a, int) else 0
                                 ans_text = opsi_list[ans_idx] if ans_idx < len(opsi_list) and ans_idx >= 0 else str(a)
-                                st.write(f"Jawaban: **{ans_text}** ({'✅ Benar' if ans_idx == q.get('kunci', 0) else '❌ Salah'})")
+                                is_correct = (ans_idx == q.get("kunci", 0))
+                                st.write(f"Jawaban: **{ans_text}** ({'✅ Benar' if is_correct else '❌ Salah'})")
                             else:
                                 st.info(a or "(Kosong)")
 
@@ -819,7 +837,7 @@ def render_guru():
                             if val is not None:
                                 st.session_state[val_key] = int(val)
                                 st.session_state[cat_key] = str(fb)
-                                st.success("Hasil AI dimuat! Klik Simpan.")
+                                st.success("Dimuat dari AI! Silakan klik Simpan.")
                                 st.rerun()
 
                         with st.form(key=f"f_eval_{sub_id}"):
@@ -833,8 +851,10 @@ def render_guru():
 
         with t_analisis:
             st.subheader("📈 Analisis Butir Soal & Uji Validitas (PG)")
-            if selected_tugas.get("tipe") != "pg" or not sub_list:
-                st.info("ℹ️ Analisis khusus untuk tugas Pilihan Ganda yang sudah memiliki pengerjaan.")
+            if selected_tugas.get("tipe") != "pg":
+                st.info("ℹ️ Analisis dan uji validitas saat ini khusus untuk tugas bertipe **Pilihan Ganda**.")
+            elif not sub_list:
+                st.info("ℹ️ Belum ada siswa yang mengumpulkan tugas ini untuk dianalisis.")
             else:
                 soal_master = selected_tugas.get("soal", [])
                 total_responden = len(sub_list)
@@ -846,44 +866,86 @@ def render_guru():
                 m3.metric("Nilai Tertinggi", f"{max(scores) if scores else 0}")
                 m4.metric("Nilai Terendah", f"{min(scores) if scores else 0}")
 
-                matrix_data, analisis_rows = [], []
+                st.divider()
+                st.markdown("### 📋 Tingkat Kesukaran, Validitas & Distribusi Jawaban")
+
+                matrix_data = []
                 for sub in sub_list:
                     ans_list = sub.get("jawaban", [])
-                    row_scores = {f"Q_{idx}": (1 if isinstance(ans_list[idx], int) and ans_list[idx] == q.get("kunci", 0) else 0) for idx, q in enumerate(soal_master) if idx < len(ans_list)}
-                    row_scores["Total_Benar"] = sum(row_scores.values())
+                    row_scores = {}
+                    total_b = 0
+                    for idx, q in enumerate(soal_master):
+                        kunci_idx = q.get("kunci", 0) if isinstance(q, dict) else 0
+                        ans = ans_list[idx] if idx < len(ans_list) else None
+                        is_correct = 1 if (isinstance(ans, int) and ans == kunci_idx) else 0
+                        row_scores[f"Q_{idx}"] = is_correct
+                        total_b += is_correct
+                    row_scores["Total_Benar"] = total_b
                     matrix_data.append(row_scores)
 
                 df_matrix = pd.DataFrame(matrix_data)
+
+                analisis_rows = []
                 for idx, q in enumerate(soal_master, 1):
                     q_text = q.get("pertanyaan", "") if isinstance(q, dict) else str(q)
                     kunci_idx = q.get("kunci", 0) if isinstance(q, dict) else 0
+                    kunci_str = ['A', 'B', 'C', 'D'][kunci_idx] if 0 <= kunci_idx <= 3 else "A"
+
                     counts = [0, 0, 0, 0]
                     for sub in sub_list:
                         ans_list = sub.get("jawaban", [])
-                        if idx - 1 < len(ans_list) and isinstance(ans_list[idx-1], int) and 0 <= ans_list[idx-1] <= 3:
-                            counts[ans_list[idx-1]] += 1
+                        if idx - 1 < len(ans_list):
+                            ans = ans_list[idx - 1]
+                            if isinstance(ans, int) and 0 <= ans <= 3:
+                                counts[ans] += 1
 
                     jml_benar = counts[kunci_idx]
                     pct_benar = round((jml_benar / total_responden) * 100, 1) if total_responden > 0 else 0
-                    kategori_kesukaran = "🟢 Mudah" if pct_benar >= 80 else ("🟡 Sedang" if pct_benar >= 30 else "🔴 Sukar")
-                    
-                    q_col = f"Q_{idx-1}"
-                    if total_responden >= 3 and q_col in df_matrix.columns and df_matrix[q_col].std() > 0 and df_matrix["Total_Benar"].std() > 0:
-                        r_val = round(df_matrix[q_col].corr(df_matrix["Total_Benar"]), 3)
-                        validity_status = f"🟢 Valid ({r_val})" if r_val >= 0.30 else (f"🟡 Cukup ({r_val})" if r_val >= 0.20 else f"🔴 Tidak Valid ({r_val})")
+
+                    if pct_benar >= 80:
+                        kategori_kesukaran = "🟢 Mudah"
+                    elif pct_benar >= 30:
+                        kategori_kesukaran = "🟡 Sedang"
                     else:
-                        validity_status = "⚪ N/A"
+                        kategori_kesukaran = "🔴 Sukar"
+
+                    q_col = f"Q_{idx-1}"
+                    validity_status = "⚪ N/A"
+                    
+                    if total_responden >= 3 and q_col in df_matrix.columns:
+                        std_q = df_matrix[q_col].std()
+                        std_tot = df_matrix["Total_Benar"].std()
+                        
+                        if std_q > 0 and std_tot > 0:
+                            r_val = df_matrix[q_col].corr(df_matrix["Total_Benar"])
+                            r_val = round(r_val, 3) if not pd.isna(r_val) else 0.0
+                            
+                            if r_val >= 0.30:
+                                validity_status = f"🟢 Valid ({r_val})"
+                            elif r_val >= 0.20:
+                                validity_status = f"🟡 Cukup ({r_val})"
+                            else:
+                                validity_status = f"🔴 Tidak Valid ({r_val})"
+                        else:
+                            validity_status = "⚪ Varian 0"
+                    else:
+                        validity_status = "⚪ Min. 3 Responden"
 
                     analisis_rows.append({
-                        "No": idx, "Soal": q_text[:50] + "...", "Kunci": ['A','B','C','D'][kunci_idx],
-                        "Benar": f"{jml_benar}/{total_responden}", "% Benar": f"{pct_benar}%",
-                        "Kesukaran": kategori_kesukaran, "Validitas (r)": validity_status,
-                        "Distribusi (A|B|C|D)": f"{counts[0]} | {counts[1]} | {counts[2]} | {counts[3]}"
+                        "No": idx,
+                        "Soal": q_text[:50] + ("..." if len(q_text) > 50 else ""),
+                        "Kunci": kunci_str,
+                        "Benar": f"{jml_benar}/{total_responden}",
+                        "% Benar": f"{pct_benar}%",
+                        "Kesukaran": kategori_kesukaran,
+                        "Status Validitas (r)": validity_status,
+                        "Distribusi Opsi (A | B | C | D)": f"A: {counts[0]} | B: {counts[1]} | C: {counts[2]} | D: {counts[3]}"
                     })
+
                 st.dataframe(pd.DataFrame(analisis_rows), use_container_width=True)
 
 # ==========================================
-# 8. PANEL SISWA (UJI & KUIS ENGINE)
+# 8. PANEL SISWA
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
@@ -895,7 +957,8 @@ def render_siswa():
 
     if active_quiz_id:
         if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
-            st.session_state["active_quiz_data"] = next((t for t in get_all_tugas_cached() if t["id"] == active_quiz_id), None)
+            all_t = get_all_tugas_cached()
+            st.session_state["active_quiz_data"] = next((t for t in all_t if t["id"] == active_quiz_id), None)
 
         tg = st.session_state.get("active_quiz_data")
         if not tg:
@@ -904,39 +967,48 @@ def render_siswa():
 
         tg_id = tg["id"]
 
-        # 1. LOAD STATUS PELANGGARAN TERKINI
+        # ---------------------------------------------------------
+        # LOAD / SYNC STATUS PELANGGARAN DARI FIRESTORE
+        # ---------------------------------------------------------
         status_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
         status_data = status_ref.to_dict() if status_ref.exists else {}
         violation_count = status_data.get("violation_count", 0)
         ijin_guru = status_data.get("ijin_guru", False)
+
+        # PENENTUAN STATUS KUNCI AKSES
         is_locked = (violation_count >= 10 and not ijin_guru)
 
-        # 2. INJEKSI SCRIPT ANTI-CHEAT (Debounce + Event Blocker)
-        inject_anti_cheat_js()
-
-        # 3. TOMBOL PELANGGARAN TERSEMBUNYI VIA CSS
-        st.markdown("<div class='hidden-violation-btn'>", unsafe_allow_html=True)
-        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation"):
+        # ---------------------------------------------------------
+        # TOMBOL PEMICU JS (SEMBUNYI DARI UI SISWA)
+        # ---------------------------------------------------------
+        st.markdown('<div style="display: none;">', unsafe_allow_html=True)
+        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
             violation_count += 1
             db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
                 "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
                 "status": "in_progress", "updated_at": firestore.SERVER_TIMESTAMP
             }, merge=True)
             
+            # Jika mencapai 15x pelanggaran -> Submit Paksa Otomatis
             if violation_count >= 15:
                 answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
                 tg_sub = dict(tg)
                 if f"quiz_soal_{tg_id}" in st.session_state:
                     tg_sub["soal"] = st.session_state[f"quiz_soal_{tg_id}"]
                 submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers_curr, is_violation=True)
-                clear_quiz_session(tg_id)
-                st.error("🚨 Kuis di-submit otomatis karena mencapai 15 kali pelanggaran!")
+                
+                st.session_state["active_quiz_id"] = None
+                st.session_state.pop("active_quiz_data", None)
+                st.session_state.pop(f"quiz_answers_{tg_id}", None)
+                st.session_state.pop(f"quiz_page_{tg_id}", None)
+                st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                st.error("🚨 Kuis telah di-submit otomatis karena Anda mencapai 15 kali pelanggaran!")
                 st.rerun()
             else:
                 st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-        # 4. RANDOMISASI SOAL & OPSI JAWABAN
+        # Inisialisasi Soal Kuis
         if f"quiz_soal_{tg_id}" not in st.session_state:
             raw_soal = list(tg.get("soal", []))
             shuffled_soal = []
@@ -965,26 +1037,65 @@ def render_siswa():
         answers = st.session_state[f"quiz_answers_{tg_id}"]
         terjawab_count = sum(1 for a in answers if a is not None)
 
-        # 5. INDIKATOR PELANGGARAN
+        # ---------------------------------------------------------
+        # ANTI-CHEAT JS: DETEKSI PINDAH TAB / PINDAH APLIKASI
+        # ---------------------------------------------------------
+        components.html("""
+            <script>
+            (function() {
+                const parentDoc = window.parent.document;
+                let lastTrigger = 0;
+
+                function triggerViolation() {
+                    const now = Date.now();
+                    if (now - lastTrigger < 2000) return; // Debounce 2 detik
+                    lastTrigger = now;
+
+                    const buttons = Array.from(parentDoc.querySelectorAll('button'));
+                    const triggerBtn = buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
+                    if (triggerBtn) {
+                        triggerBtn.click();
+                    }
+                }
+
+                // Deteksi Pindah Tab / Minimize Browser
+                parentDoc.addEventListener('visibilitychange', function() {
+                    if (parentDoc.hidden) {
+                        triggerViolation();
+                    }
+                });
+
+                // Deteksi Pindah Aplikasi / Focus Lost
+                window.parent.addEventListener('blur', function() {
+                    triggerViolation();
+                });
+            })();
+            </script>
+        """, height=0)
+
+        # ---------------------------------------------------------
+        # EVENT PELANGGARAN & LOGIKA PERINGATAN / KUNCI
+        # ---------------------------------------------------------
         if is_locked:
-            st.error(f"🚫 **AKSES DIKUNCI**: Terdeteksi **{violation_count} kali** pelanggaran. Hubungi guru untuk membuka akses.")
+            st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali** (pindah tab/aplikasi). Navigasi dan pengumpulan soal telah dikunci. Harap hubungi guru untuk memberikan izin melanjutkan kuis.")
         elif violation_count >= 10 and ijin_guru:
-            st.success(f"✅ **IZIN DIBERIKAN**: Anda diizinkan melanjutkan kuis (Total Pelanggaran: {violation_count}x).")
+            st.success(f"✅ **IZIN GURU DIBERIKAN**: Anda telah diberikan izin oleh guru untuk melanjutkan kuis (Total Pelanggaran: {violation_count}x).")
         elif violation_count >= 5:
-            st.warning(f"⚠️ **PERINGATAN ({violation_count}/15)**: Dilarang keluar dari aplikasi/tab kuis.")
+            st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/15)**: Anda terdeteksi keluar dari kuis {violation_count} kali! Jika mencapai 10 kali, kuis akan terkunci. Jika mencapai 15 kali, kuis akan ter-submit otomatis.")
 
         if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary"):
-            clear_quiz_session(tg_id)
+            st.session_state["active_quiz_id"] = None
+            st.session_state.pop("active_quiz_data", None)
+            st.session_state.pop(f"quiz_soal_{tg_id}", None)
             st.rerun()
 
         st.markdown(f"### 📝 {tg.get('judul')}")
         st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Terjawab: **{terjawab_count}/{total_soal}** | Pelanggaran: **{violation_count}x**")
-        st.progress((curr_page + 1) / total_soal)
 
+        st.progress((curr_page + 1) / total_soal)
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
-        # 6. CONTAINER PERTANYAAN
         with st.container(border=True):
             st.markdown(f"#### Soal No. {curr_page + 1} dari {total_soal}")
             st.markdown(f"**{q_text}**")
@@ -997,7 +1108,7 @@ def render_siswa():
                     index=saved_ans if saved_ans is not None else None,
                     format_func=lambda x: f"{['A','B','C','D'][x]}. {opsi_list[x]}",
                     key=f"radio_q_{tg_id}_{curr_page}",
-                    disabled=is_locked
+                    disabled=is_locked  # DIKUNCI SAAT IS_LOCKED
                 )
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
@@ -1006,13 +1117,15 @@ def render_siswa():
                 saved_text = answers[curr_page] or ""
                 essay_text = st.text_area(
                     "Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}",
-                    disabled=is_locked
+                    disabled=is_locked  # DIKUNCI SAAT IS_LOCKED
                 )
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
-        # 7. GRID NAVIGASI NOMOR
+        # ---------------------------------------------------------
+        # NAVIGASI NOMOR SOAL (GRID BUTTONS)
+        # ---------------------------------------------------------
         cols_per_row = 5
         for row_start in range(0, total_soal, cols_per_row):
             nav_cols = st.columns(cols_per_row)
@@ -1022,10 +1135,14 @@ def render_siswa():
                     is_ans = answers[q_idx] is not None
                     lbl = f"{'🟢' if is_ans else '⚪'} {q_idx + 1}"
                     btn_t = "primary" if q_idx == curr_page else "secondary"
+                    # TOMBOL GRID DIKUNCI APABILA IS_LOCKED=TRUE
                     if nav_cols[idx].button(lbl, key=f"nav_p_{q_idx}", type=btn_t, use_container_width=True, disabled=is_locked):
                         st.session_state[f"quiz_page_{tg_id}"] = q_idx
                         st.rerun()
 
+        # ---------------------------------------------------------
+        # NAVIGASI SEBELUMNYA / SELANJUTNYA
+        # ---------------------------------------------------------
         c_prev, c_next = st.columns(2)
         with c_prev:
             if curr_page > 0 and st.button("⬅️ Sebelumnya", use_container_width=True, disabled=is_locked):
@@ -1038,25 +1155,37 @@ def render_siswa():
 
         st.divider()
 
-        # 8. AKSI SUBMIT UJIAN
+        # LOGIKA TOMBOL SUBMIT: HANYA TAMPIL JIKA TIDAK TERKUNCI (IS_LOCKED=FALSE)
         if not is_locked:
             if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
                 tg_submit = dict(tg)
                 tg_submit["soal"] = soal_list
-                with st.spinner("Memproses pengumpulan jawaban..."):
-                    success = submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_forced=False)
+                
+                with st.spinner("Memproses pengumpulkan jawaban..."):
+                    success = submit_jawaban_siswa(
+                        tg_submit, username_s, nama_s, kelas_s, answers, 
+                        is_forced=False
+                    )
+                
                 if success:
                     st.balloons()
                     st.success("✅ Jawaban Anda berhasil dikumpulkan!")
-                    clear_quiz_session(tg_id)
+
+                    st.session_state["active_quiz_id"] = None
+                    st.session_state.pop("active_quiz_data", None)
+                    st.session_state.pop(f"quiz_answers_{tg_id}", None)
+                    st.session_state.pop(f"quiz_page_{tg_id}", None)
+                    st.session_state.pop(f"quiz_soal_{tg_id}", None)
                     st.rerun()
                 else:
                     st.error("❌ Gagal mengumpulkan jawaban!")
         else:
-            st.warning("🔒 Navigasi dan pengumpulan jawaban dinonaktifkan karena ujian terkunci.")
+            st.warning("🔒 **Fitur Navigasi & Submit Dinonaktifkan**: Anda telah melakukan 10 kali pelanggaran. Minta bantuan Guru untuk membuka kunci kuis ini.")
+
         return
 
-    # DASHBOARD UTAMA SISWA (TAMPILAN NON-KUIS)
+    all_tugas = [t for t in get_all_tugas_cached() if is_tugas_sesuai_kelas(t, kelas_s)]
+
     st.markdown(f"""
         <div class="student-header">
             <div style="font-size: 0.85rem; opacity: 0.9;">🏫 Kelas {kelas_s}</div>
@@ -1065,7 +1194,6 @@ def render_siswa():
     """, unsafe_allow_html=True)
 
     tab_tugas, tab_materi, tab_nilai = st.tabs(["✍️ Tugas Saya", "📚 Modul Materi", "📊 Riwayat Nilai"])
-    all_tugas = [t for t in get_all_tugas_cached() if is_tugas_sesuai_kelas(t, kelas_s)]
 
     with tab_tugas:
         tugas_belum_list = [t for t in all_tugas if t["id"] not in my_subs]
