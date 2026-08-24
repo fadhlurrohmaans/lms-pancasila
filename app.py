@@ -975,6 +975,9 @@ def render_siswa():
         violation_count = status_data.get("violation_count", 0)
         ijin_guru = status_data.get("ijin_guru", False)
 
+        # PENENTUAN STATUS KUNCI AKSE
+        is_locked = (violation_count >= 10 and not ijin_guru)
+
         # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Pindah Tab / Minimize / Blur App)
         if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
             violation_count += 1
@@ -1069,8 +1072,8 @@ def render_siswa():
         # ---------------------------------------------------------
         # EVENT PELANGGARAN & LOGIKA PERINGATAN / KUNCI
         # ---------------------------------------------------------
-        if violation_count >= 10 and not ijin_guru:
-            st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali** (pindah tab/aplikasi). Tombol submit disembunyikan. Harap hubungi guru untuk memberikan izin melanjutkan kuis.")
+        if is_locked:
+            st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali** (pindah tab/aplikasi). Navigasi dan pengumpulan soal telah dikunci. Harap hubungi guru untuk memberikan izin melanjutkan kuis.")
         elif violation_count >= 10 and ijin_guru:
             st.success(f"✅ **IZIN GURU DIBERIKAN**: Anda telah diberikan izin oleh guru untuk melanjutkan kuis (Total Pelanggaran: {violation_count}x).")
         elif violation_count >= 5:
@@ -1100,20 +1103,25 @@ def render_siswa():
                     "Pilih Jawaban Anda:", options=[0, 1, 2, 3],
                     index=saved_ans if saved_ans is not None else None,
                     format_func=lambda x: f"{['A','B','C','D'][x]}. {opsi_list[x]}",
-                    key=f"radio_q_{tg_id}_{curr_page}"
+                    key=f"radio_q_{tg_id}_{curr_page}",
+                    disabled=is_locked  # DIKUNCI SAAT IS_LOCKED
                 )
-                if selected_opt != saved_ans:
+                if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
             else:
                 saved_text = answers[curr_page] or ""
                 essay_text = st.text_area(
-                    "Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}"
+                    "Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}",
+                    disabled=is_locked  # DIKUNCI SAAT IS_LOCKED
                 )
-                if essay_text != saved_text:
+                if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
+        # ---------------------------------------------------------
+        # NAVIGASI NOMOR SOAL (GRID BUTTONS)
+        # ---------------------------------------------------------
         cols_per_row = 5
         for row_start in range(0, total_soal, cols_per_row):
             nav_cols = st.columns(cols_per_row)
@@ -1123,24 +1131,28 @@ def render_siswa():
                     is_ans = answers[q_idx] is not None
                     lbl = f"{'🟢' if is_ans else '⚪'} {q_idx + 1}"
                     btn_t = "primary" if q_idx == curr_page else "secondary"
-                    if nav_cols[idx].button(lbl, key=f"nav_p_{q_idx}", type=btn_t, use_container_width=True):
+                    # TOMBOL GRID DIKUNCI APABILA IS_LOCKED=TRUE
+                    if nav_cols[idx].button(lbl, key=f"nav_p_{q_idx}", type=btn_t, use_container_width=True, disabled=is_locked):
                         st.session_state[f"quiz_page_{tg_id}"] = q_idx
                         st.rerun()
 
+        # ---------------------------------------------------------
+        # NAVIGASI SEBELUMNYA / SELANJUTNYA
+        # ---------------------------------------------------------
         c_prev, c_next = st.columns(2)
         with c_prev:
-            if curr_page > 0 and st.button("⬅️ Sebelumnya", use_container_width=True):
+            if curr_page > 0 and st.button("⬅️ Sebelumnya", use_container_width=True, disabled=is_locked):
                 st.session_state[f"quiz_page_{tg_id}"] -= 1
                 st.rerun()
         with c_next:
-            if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", type="primary", use_container_width=True):
+            if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", type="primary", use_container_width=True, disabled=is_locked):
                 st.session_state[f"quiz_page_{tg_id}"] += 1
                 st.rerun()
 
         st.divider()
 
-        # LOGIKA TOMBOL SUBMIT: HANYA TAMPIL JIKA PELANGGARAN < 10 ATAU SUDAH DI-IZINKAN GURU
-        if violation_count < 10 or ijin_guru:
+        # LOGIKA TOMBOL SUBMIT: HANYA TAMPIL JIKA TIDAK TERKUNCI (IS_LOCKED=FALSE)
+        if not is_locked:
             if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
                 tg_submit = dict(tg)
                 tg_submit["soal"] = soal_list
@@ -1164,7 +1176,7 @@ def render_siswa():
                 else:
                     st.error("❌ Gagal mengumpulkan jawaban!")
         else:
-            st.warning("🔒 **Tombol Submit Dinonaktifkan**: Anda telah melakukan 10 kali pelanggaran. Minta bantuan Guru untuk membuka kunci kuis ini.")
+            st.warning("🔒 **Fitur Navigasi & Submit Dinonaktifkan**: Anda telah melakukan 10 kali pelanggaran. Minta bantuan Guru untuk membuka kunci kuis ini.")
 
         return
 
