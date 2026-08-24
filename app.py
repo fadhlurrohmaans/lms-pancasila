@@ -980,7 +980,7 @@ def render_siswa():
 
         # Tombol Pemicu JS Disembunyikan & Dikunci Total dari Klik Siswa (CSS & Pointer-Events)
         st.markdown('<div style="display: none !important; pointer-events: none !important; visibility: hidden !important;" aria-hidden="true">', unsafe_allow_html=True)
-        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary", disabled=True ):
+        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
             if not is_locked:
                 violation_count += 1
                 db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
@@ -1077,6 +1077,8 @@ def render_siswa():
         # ---------------------------------------------------------
         if is_locked:
             st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali** (pindah tab/aplikasi). Navigasi, pengisian, dan hitungan pelanggaran telah dihentikan. Harap hubungi guru untuk memberikan izin melanjutkan kuis.")
+            if st.button("🔄 Cek / Refresh Status Izin Guru", key="btn_refresh_permission", type="primary", use_container_width=True):
+                st.rerun()
         elif violation_count >= 10 and ijin_guru:
             st.success(f"✅ **IZIN GURU DIBERIKAN**: Anda telah diberikan izin oleh guru untuk melanjutkan kuis (Total Pelanggaran: {violation_count}x).")
         elif violation_count >= 5:
@@ -1180,6 +1182,8 @@ def render_siswa():
                     st.error("❌ Gagal mengumpulkan jawaban!")
         else:
             st.warning("🔒 **Fitur Navigasi & Submit Dinonaktifkan**: Anda telah melakukan 10 kali pelanggaran. Minta bantuan Guru untuk membuka kunci kuis ini.")
+            if st.button("🔄 Cek Izin Guru Sekarang", key="btn_refresh_permission_bottom", type="primary", use_container_width=True):
+                st.rerun()
 
         return
 
