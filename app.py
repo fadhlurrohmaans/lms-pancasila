@@ -980,7 +980,7 @@ def render_siswa():
 
         # Tombol Pemicu JS Disembunyikan & Dikunci Total dari Klik Siswa (CSS & Pointer-Events)
         st.markdown('<div style="display: none !important; pointer-events: none !important; visibility: hidden !important;" aria-hidden="true">', unsafe_allow_html=True)
-        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
+        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary", disabled=True ):
             if not is_locked:
                 violation_count += 1
                 db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
