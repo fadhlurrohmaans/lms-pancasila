@@ -969,7 +969,7 @@ def render_siswa():
         tg_id = tg["id"]
 
         # ---------------------------------------------------------
-        # 1. INISIALISASI VARIABEL SOAL & JAWABAN (FIX NAMEERROR)
+        # 1. INISIALISASI VARIABEL SOAL & JAWABAN
         # ---------------------------------------------------------
         if f"quiz_soal_{tg_id}" not in st.session_state:
             st.session_state[f"quiz_soal_{tg_id}"] = tg.get("soal", [])
@@ -991,99 +991,103 @@ def render_siswa():
         violation_count = status_data.get("violation_count", 0)
         ijin_guru = status_data.get("ijin_guru", False)
 
+        # Status penguncian layar: Pelanggaran >= 10 dan BELUM diizinkan guru
         is_locked = (violation_count >= 10 and not ijin_guru)
 
         # ---------------------------------------------------------
         # 3. TOMBOL TERSEMBUNYI PEMICU PELANGGARAN
         # ---------------------------------------------------------
         if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
-            violation_count += 1
-            db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
-                "username": username_s, 
-                "id_tugas": tg_id, 
-                "violation_count": violation_count,
-                "status": "in_progress", 
-                "updated_at": firestore.SERVER_TIMESTAMP
-            }, merge=True)
-            
-            # Auto-submit jika mencapai 15 pelanggaran
-            if violation_count >= 15:
-                answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
-                tg_sub = dict(tg)
-                if f"quiz_soal_{tg_id}" in st.session_state:
-                    tg_sub["soal"] = st.session_state[f"quiz_soal_{tg_id}"]
-                submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers_curr, is_violation=True)
+            # PERBAIKAN: Jika sedang terkunci, abaikan penambahan pelanggaran
+            if not is_locked:
+                violation_count += 1
+                db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
+                    "username": username_s, 
+                    "id_tugas": tg_id, 
+                    "violation_count": violation_count,
+                    "status": "in_progress", 
+                    "updated_at": firestore.SERVER_TIMESTAMP
+                }, merge=True)
                 
-                # Cleaning Session State
-                st.session_state["active_quiz_id"] = None
-                st.session_state.pop("active_quiz_data", None)
-                st.session_state.pop(f"quiz_answers_{tg_id}", None)
-                st.session_state.pop(f"quiz_page_{tg_id}", None)
-                st.session_state.pop(f"quiz_soal_{tg_id}", None)
-                st.error("🚨 Kuis di-submit otomatis karena mencapai 15 kali pelanggaran!")
-                st.rerun()
-            else:
-                st.rerun()
+                # Auto-submit jika melampaui limit maksimal 15 pelanggaran
+                if violation_count >= 15:
+                    answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
+                    tg_sub = dict(tg)
+                    if f"quiz_soal_{tg_id}" in st.session_state:
+                        tg_sub["soal"] = st.session_state[f"quiz_soal_{tg_id}"]
+                    submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers_curr, is_violation=True)
+                    
+                    # Cleaning Session State
+                    st.session_state["active_quiz_id"] = None
+                    st.session_state.pop("active_quiz_data", None)
+                    st.session_state.pop(f"quiz_answers_{tg_id}", None)
+                    st.session_state.pop(f"quiz_page_{tg_id}", None)
+                    st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                    st.error("🚨 Kuis di-submit otomatis karena mencapai 15 kali pelanggaran!")
+                    st.rerun()
+                else:
+                    st.rerun()
 
         # ---------------------------------------------------------
-        # 4. SKRIP JS ANTI-CHEAT (MENYEMBUNYIKAN TOMBOL & BIND EVENT)
+        # 4. SKRIP JS ANTI-CHEAT (HANYA AKTIF JIKA TIDAK TERKUNCI)
         # ---------------------------------------------------------
-        components.html("""
-            <script>
-            (function() {
-                const parentDoc = window.parent.document;
-                let lastTrigger = 0;
+        if not is_locked:
+            components.html("""
+                <script>
+                (function() {
+                    const parentDoc = window.parent.document;
+                    let lastTrigger = 0;
 
-                function getViolationButton() {
-                    const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                    return buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
-                }
+                    function getViolationButton() {
+                        const buttons = Array.from(parentDoc.querySelectorAll('button'));
+                        return buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
+                    }
 
-                function hideViolationButton() {
-                    const btn = getViolationButton();
-                    if (btn) {
-                        const container = btn.closest('[data-testid="stElementContainer"]') || btn.parentElement;
-                        if (container && container.style.display !== 'none') {
-                            container.style.display = 'none';
+                    function hideViolationButton() {
+                        const btn = getViolationButton();
+                        if (btn) {
+                            const container = btn.closest('[data-testid="stElementContainer"]') || btn.parentElement;
+                            if (container && container.style.display !== 'none') {
+                                container.style.display = 'none';
+                            }
                         }
                     }
-                }
 
-                setInterval(hideViolationButton, 100);
+                    setInterval(hideViolationButton, 100);
 
-                function triggerViolation() {
-                    const now = Date.now();
-                    if (now - lastTrigger < 2000) return;
-                    lastTrigger = now;
+                    function triggerViolation() {
+                        const now = Date.now();
+                        if (now - lastTrigger < 2000) return;
+                        lastTrigger = now;
 
-                    const triggerBtn = getViolationButton();
-                    if (triggerBtn) {
-                        triggerBtn.click();
+                        const triggerBtn = getViolationButton();
+                        if (triggerBtn) {
+                            triggerBtn.click();
+                        }
                     }
-                }
 
-                parentDoc.addEventListener('visibilitychange', function() {
-                    if (parentDoc.hidden) {
+                    parentDoc.addEventListener('visibilitychange', function() {
+                        if (parentDoc.hidden) {
+                            triggerViolation();
+                        }
+                    });
+
+                    window.parent.addEventListener('blur', function() {
                         triggerViolation();
-                    }
-                });
-
-                window.parent.addEventListener('blur', function() {
-                    triggerViolation();
-                });
-            })();
-            </script>
-        """, height=0)
+                    });
+                })();
+                </script>
+            """, height=0)
 
         # ---------------------------------------------------------
         # 5. TAMPILAN KUIS & STATUS AKUN
         # ---------------------------------------------------------
         if is_locked:
-            st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali**. Hubungi guru untuk membuka kunci.")
+            st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali**. Layar terkunci dan hitungan pelanggaran dihentikan sementara. Hubungi guru untuk membuka kunci.")
         elif violation_count >= 10 and ijin_guru:
-            st.success(f"✅ **IZIN GURU DIBERIKAN**: Anda dapat melanjutkan kuis (Pelanggaran: {violation_count}x).")
+            st.warning(f"⚠️ **IZIN GURU DIBERIKAN**: Anda diperbolehkan melanjutkan kuis (Pelanggaran saat ini: **{violation_count}/15**). Harap bersikap jujur!")
         elif violation_count >= 5:
-            st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/15)**: Terdeteksi keluar kuis!")
+            st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/15)**: Terdeteksi keluar dari layar kuis!")
 
         if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary"):
             st.session_state["active_quiz_id"] = None
@@ -1110,7 +1114,7 @@ def render_siswa():
                     index=saved_ans if saved_ans is not None else None,
                     format_func=lambda x: f"{['A','B','C','D'][x]}. {opsi_list[x]}",
                     key=f"radio_q_{tg_id}_{curr_page}",
-                    disabled=is_locked  # DIKUNCI SAAT IS_LOCKED
+                    disabled=is_locked  # DIKUNCI SAAT TERKUNCI
                 )
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
@@ -1119,7 +1123,7 @@ def render_siswa():
                 saved_text = answers[curr_page] or ""
                 essay_text = st.text_area(
                     "Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}",
-                    disabled=is_locked  # DIKUNCI SAAT IS_LOCKED
+                    disabled=is_locked  # DIKUNCI SAAT TERKUNCI
                 )
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
@@ -1137,7 +1141,7 @@ def render_siswa():
                     is_ans = answers[q_idx] is not None
                     lbl = f"{'🟢' if is_ans else '⚪'} {q_idx + 1}"
                     btn_t = "primary" if q_idx == curr_page else "secondary"
-                    # TOMBOL GRID DIKUNCI APABILA IS_LOCKED=TRUE
+                    # DIKUNCI SAAT IS_LOCKED=TRUE
                     if nav_cols[idx].button(lbl, key=f"nav_p_{q_idx}", type=btn_t, use_container_width=True, disabled=is_locked):
                         st.session_state[f"quiz_page_{tg_id}"] = q_idx
                         st.rerun()
@@ -1157,13 +1161,13 @@ def render_siswa():
 
         st.divider()
 
-        # LOGIKA TOMBOL SUBMIT: HANYA TAMPIL JIKA TIDAK TERKUNCI (IS_LOCKED=FALSE)
+        # LOGIKA TOMBOL SUBMIT: HANYA TAMPIL JIKA TIDAK TERKUNCI
         if not is_locked:
             if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
                 tg_submit = dict(tg)
                 tg_submit["soal"] = soal_list
                 
-                with st.spinner("Memproses pengumpulkan jawaban..."):
+                with st.spinner("Memproses pengumpulan jawaban..."):
                     success = submit_jawaban_siswa(
                         tg_submit, username_s, nama_s, kelas_s, answers, 
                         is_forced=False
@@ -1182,7 +1186,7 @@ def render_siswa():
                 else:
                     st.error("❌ Gagal mengumpulkan jawaban!")
         else:
-            st.warning("🔒 **Fitur Navigasi & Submit Dinonaktifkan**: Anda telah melakukan 10 kali pelanggaran. Minta bantuan Guru untuk membuka kunci kuis ini.")
+            st.warning("🔒 **Fitur Pengerjaan Dinonaktifkan**: Anda telah melakukan 10 kali pelanggaran. Minta bantuan Guru untuk membuka kunci kuis ini.")
 
         return
 
