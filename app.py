@@ -145,7 +145,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submi
     
     status_doc = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
     if status_doc.exists and status_doc.to_dict().get("status") == "paused" and not is_forced:
-        st.error("🛑 Kuis dalam keadaan terkunci (Paused). Pengumpulan tidak dapat diproses!")
+        st.error("🛑 Kuis dalam keadaan terkunci (Penalti 10+ Poin). Pengumpulan tidak dapat diproses!")
         return False
 
     soal_list = tg.get("soal", [])
@@ -154,7 +154,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submi
     if is_forced:
         catatan = "Di-submit Paksa oleh Guru"
     elif is_auto_submit:
-        catatan = "Penilaian Otomatis Sistem (Submit Otomatis Kecurangan 20x)"
+        catatan = "Diskualifikasi Otomatis (Mencapai 20 Poin Kecurangan)"
     else:
         catatan = "Penilaian Otomatis Sistem"
     
@@ -171,19 +171,19 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submi
         db.collection("jawaban_siswa").add({
             "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
             "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "pg", "jawaban": formatted_ans,
-            "nilai": score, "catatan_guru": catatan, "submitted_at": firestore.SERVER_TIMESTAMP
+            "nilai": score if not is_auto_submit else 0, "catatan_guru": catatan, "submitted_at": firestore.SERVER_TIMESTAMP
         })
     else:
         formatted_ans = [a if a is not None else "" for a in (answers if answers else [])]
         db.collection("jawaban_siswa").add({
             "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
             "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay", "soal": soal_list,
-            "jawaban": formatted_ans, "nilai": None, "catatan_guru": catatan,
+            "jawaban": formatted_ans, "nilai": 0 if is_auto_submit else None, "catatan_guru": catatan,
             "submitted_at": firestore.SERVER_TIMESTAMP
         })
 
     db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
-        "username": username_s, "id_tugas": tg_id, "status": "submitted", "updated_at": firestore.SERVER_TIMESTAMP
+        "username": username_s, "id_tugas": tg_id, "status": "submitted_cheat" if is_auto_submit else "submitted", "updated_at": firestore.SERVER_TIMESTAMP
     }, merge=True)
     clear_user_submissions_cache()
     return True
@@ -876,29 +876,53 @@ def render_guru():
                 st.dataframe(pd.DataFrame(analisis_rows), use_container_width=True)
 
         with t_unpause:
-            st.subheader("🚨 Buka Kunci Siswa Ter-Pause & Akses Khusus")
-            paused_docs = db.collection("status_ujian").where("id_tugas", "==", selected_tugas_id).where("status", "==", "paused").stream()
-            paused_list = [d.to_dict() for d in paused_docs]
+            st.subheader("🚨 Monitor & Buka Kunci Siswa Terpenalti (10+ Poin)")
+            st.info("💡 **Petunjuk**: Siswa yang mengumpulkan 10–19 poin pelanggaran akan terkunci layarnya dan wajib meminta izin ke Guru untuk membuka kunci.")
+            
+            status_docs = db.collection("status_ujian").where("id_tugas", "==", selected_tugas_id).stream()
+            monitored_list = [d.to_dict() for d in status_docs]
 
-            if not paused_list:
-                st.success("✅ Tidak ada siswa yang sedang di-pause pada tugas ini.")
+            if not monitored_list:
+                st.success("✅ Belum ada data status ujian siswa untuk tugas ini.")
             else:
-                for p in paused_list:
+                has_active_locks = False
+                for p in monitored_list:
                     p_un = p.get("username")
                     p_nama = p.get("nama", p_un)
-                    with st.container(border=True):
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.write(f"👤 **{p_nama}** (@{p_un})")
-                            st.caption(f"Status: **Di-pause** | Jumlah Kecurangan: **{p.get('cheat_count', 10)}x**")
-                        with col2:
-                            if st.button("🔓 Izinkan Lanjut", key=f"unp_{p_un}_{selected_tugas_id}"):
-                                db.collection("status_ujian").document(f"{p_un}_{selected_tugas_id}").update({
-                                    "status": "active",
-                                    "cheat_count": 0
-                                })
-                                st.success(f"Akses {p_nama} berhasil dibuka kembali!")
-                                st.rerun()
+                    p_cnt = p.get("cheat_count", 0)
+                    p_status = p.get("status", "active")
+
+                    if p_cnt >= 5 or p_status in ["paused", "submitted_cheat"]:
+                        has_active_locks = True
+                        with st.container(border=True):
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                badge_status = "🟢 Aktif"
+                                if p_status == "submitted_cheat" or p_cnt >= 20:
+                                    badge_status = "🔴 DISKUALIFIKASI (20 Poin)"
+                                elif p_status == "paused" or p_cnt >= 10:
+                                    badge_status = "🟡 TERKUNCI / PAUSED (10+ Poin)"
+                                elif p_cnt >= 5:
+                                    badge_status = "⚠️ PERINGATAN (5+ Poin)"
+
+                                st.write(f"👤 **{p_nama}** (@{p_un})")
+                                st.caption(f"Status: **{badge_status}** | Poin Kecurangan: **{p_cnt}/20 Poin**")
+
+                            with col2:
+                                if p_status == "paused" or p_cnt >= 10:
+                                    if st.button("🔓 Izinkan Lanjut (Buka Kunci)", key=f"unp_{p_un}_{selected_tugas_id}", type="primary"):
+                                        db.collection("status_ujian").document(f"{p_un}_{selected_tugas_id}").update({
+                                            "status": "active"
+                                        })
+                                        st.success(f"✅ Akses {p_nama} berhasil dibuka kembali!")
+                                        st.rerun()
+                                elif p_status == "submitted_cheat":
+                                    st.write("❌ *Terkunci Permanen*")
+                                else:
+                                    st.write("ℹ️ *Akses Aktif*")
+
+                if not has_active_locks:
+                    st.success("✅ Tidak ada siswa yang terdeteksi melakukan pelanggaran (≥5 Poin) pada tugas ini.")
 
 # ==========================================
 # 8. PANEL SISWA (EXAM MODE WITH LOCKDOWN)
@@ -929,6 +953,8 @@ def render_siswa():
                 new_status = "submitted_cheat"
             elif new_count >= 10:
                 new_status = "paused"
+            elif new_count >= 5:
+                new_status = "warning"
 
             doc_ref.set({
                 "username": username_s,
@@ -954,27 +980,40 @@ def render_siswa():
                 st.session_state.pop(f"quiz_answers_{tg_ev}", None)
                 st.session_state.pop(f"quiz_page_{tg_ev}", None)
                 st.session_state.pop(f"quiz_soal_{tg_ev}", None)
-                st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena terdeteksi berpindah tab/aplikasi sebanyak 20 kali.")
+                st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena mencapai 20 poin kecurangan (Diskualifikasi).")
 
             st.rerun()
 
         # 2. STATUS CHECK TERBARU DARI FIRESTORE
         doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
         status_data = doc_status.to_dict() if doc_status.exists else {}
+        cheat_count = status_data.get("cheat_count", 0)
+        quiz_status = status_data.get("status", "active")
 
-        # 3. PENANGANAN KUNCI MATI (LOCKOUT TOTAL)
-        if status_data.get("status") == "paused":
-            st.error("🛑 **KUIS DI-PAUSE SEMENTARA**")
+        # 3. KONDISI 20 POIN: DISKUALIFIKASI / SUBMITTED CHEAT
+        if quiz_status == "submitted_cheat" or cheat_count >= 20:
+            st.error("🚨 **KUIS DISKUALIFIKASI**")
+            st.warning("Poin kecurangan Anda telah mencapai **20 Poin**. Kuis telah di-submit otomatis oleh sistem dan ditandai Invalid.")
+            if st.button("⬅️ Kembali ke Dashboard", type="primary", use_container_width=True):
+                st.session_state["active_quiz_id"] = None
+                st.session_state.pop("active_quiz_data", None)
+                st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
+                st.rerun()
+            return
+
+        # 4. KONDISI 10 POIN: PENALTI & KUNCI LAYAR (WAJIB IZIN GURU)
+        if quiz_status == "paused" or cheat_count >= 10:
+            st.error("🛑 **KUIS TERKUNCI — PENALTI KECURANGAN (10+ POIN)**")
             st.warning(
-                f"⚠️ Anda terdeteksi meninggalkan halaman kuis / berpindah tab/aplikasi di HP sebanyak **{status_data.get('cheat_count', 10)} kali**.\n\n"
-                "Sistem telah mengunci kuis Anda secara otomatis. Harap menemui **Guru Pengampu** untuk meminta izin melanjutkan pengerjaan."
+                f"⚠️ Akumulasi poin kecurangan Anda saat ini: **{cheat_count}/20 Poin**.\n\n"
+                "Sistem telah mengunci kuis Anda secara otomatis. Harap **minta izin ke Guru Pengampu** untuk membuka kunci ujian."
             )
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("🔄 Cek Status Izin Guru", type="primary", use_container_width=True):
+                if st.button("🔄 Cek Status Izin Guru (Refresh)", type="primary", use_container_width=True):
                     st.rerun()
             with col2:
-                if st.button("⬅️ Keluar dari Kuis", use_container_width=True):
+                if st.button("⬅️ Batal / Keluar", use_container_width=True):
                     st.session_state["active_quiz_id"] = None
                     st.session_state.pop("active_quiz_data", None)
                     st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
@@ -1027,9 +1066,16 @@ def render_siswa():
             st.rerun()
 
         st.markdown(f"### 📝 {tg.get('judul')}")
-        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab** | Terdeteksi Pindah: **{status_data.get('cheat_count', 0)}x**")
+        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Terjawab: **{terjawab_count}/{total_soal}** | Poin Kecurangan: **{cheat_count}/20 Poin**")
 
-        # 4. SCRIPT JAVASCRIPT DETEKSI KECURANGAN (FIXED CROSS-ORIGIN BYPASS)
+        # 5. KONDISI 5 POIN: BANNER PERINGATAN
+        if 5 <= cheat_count < 10:
+            st.warning(
+                f"⚠️ **PERINGATAN KECURANGAN ({cheat_count}/20 POIN)**: "
+                "Harap fokus pada layar kuis! Jika poin mencapai **10 Poin**, kuis akan terkunci secara otomatis."
+            )
+
+        # 6. SCRIPT JAVASCRIPT DETEKSI KECURANGAN (SIMPEL)
         cheat_script = f"""
         <script>
         (function() {{
@@ -1054,21 +1100,20 @@ def render_siswa():
                 }}
             }}
 
-            // Listener 1: Level Iframe lokal
+            // Detection Triggers: Pindah Tab/Layar & Copy-Paste Teks
             window.addEventListener("blur", reportViolation);
             document.addEventListener("visibilitychange", function() {{
                 if (document.hidden) reportViolation();
             }});
+            document.addEventListener("paste", reportViolation);
 
-            // Listener 2: Level Parent Window
             try {{
                 window.parent.addEventListener("blur", reportViolation);
                 window.parent.document.addEventListener("visibilitychange", function() {{
                     if (window.parent.document.hidden) reportViolation();
                 }});
-            }} catch(err) {{
-                // Mengabaikan jika browser memblokir akses direct parent
-            }}
+                window.parent.document.addEventListener("paste", reportViolation);
+            }} catch(err) {{}}
         }})();
         </script>
         """
