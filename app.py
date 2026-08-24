@@ -143,7 +143,6 @@ def is_materi_sesuai_kelas(materi_doc, kelas_siswa):
 def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submit=False, is_forced=False):
     tg_id = tg["id"]
     
-    # Validasi Tambahan: Cegah submit jika status siswa sedang 'paused'
     status_doc = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
     if status_doc.exists and status_doc.to_dict().get("status") == "paused" and not is_forced:
         st.error("🛑 Kuis dalam keadaan terkunci (Paused). Pengumpulan tidak dapat diproses!")
@@ -300,8 +299,10 @@ elif role == "guru" and user_info.get("kelas_ajar"):
     caption_text += f"\n\n🏫 Mengajar: **{k_str}**"
 st.sidebar.caption(caption_text)
 
+# PERBAIKAN LOGOUT: Bersihkan Session State & Storage Browser
 if st.sidebar.button("🚪 Keluar / Logout"):
-    st.session_state["user"] = None
+    st.session_state.clear()
+    components.html("<script>sessionStorage.clear(); localStorage.clear();</script>", height=0)
     st.rerun()
 
 st.sidebar.divider()
@@ -893,7 +894,7 @@ def render_guru():
                             st.caption(f"Status: **Di-pause** | Jumlah Kecurangan: **{p.get('cheat_count', 10)}x**")
                         with col2:
                             if st.button("🔓 Izinkan Lanjut", key=f"unp_{p_un}_{selected_tugas_id}"):
-                                # PERBAIKAN: Reset status dan cheat_count di Firestore agar counter di HP siswa kembali bersih
+                                # PERBAIKAN: Clear cheat count di Firestore
                                 db.collection("status_ujian").document(f"{p_un}_{selected_tugas_id}").update({
                                     "status": "active",
                                     "cheat_count": 0
@@ -902,7 +903,7 @@ def render_guru():
                                 st.rerun()
 
 # ==========================================
-# 8. PANEL SISWA (EXAM MODE WITH TOTAL LOCKDOWN)
+# 8. PANEL SISWA (EXAM MODE WITH LOCKDOWN)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
@@ -913,30 +914,35 @@ def render_siswa():
 
     active_quiz_id = st.session_state.get("active_quiz_id")
     if active_quiz_id:
-        doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
-        status_data = doc_status.to_dict() if doc_status.exists else {}
-
-        # PERBAIKAN 1: PENANGANAN DETEKSI EVENT KECURANGAN DARI QUERY PARAMS
-        if "cheat_event" in st.query_params:
-            cheat_ev = st.query_params.get("cheat_event")
+        
+        # PERBAIKAN PERTAMA: HANDLER INKREMEN KECURANGAN REAL-TIME
+        # Menggunakan query_params untuk menambah hitungan cheat langsung di Firestore per peristiwa switch
+        if "cheat_inc" in st.query_params:
             tg_ev = st.query_params.get("tg", active_quiz_id)
             st.query_params.clear()
-            
+
             doc_ref = db.collection("status_ujian").document(f"{username_s}_{tg_ev}")
-            
-            if cheat_ev == "10":
-                doc_ref.set({
-                    "username": username_s, "nama": nama_s, "id_tugas": tg_ev,
-                    "status": "paused", "cheat_count": 10, "updated_at": firestore.SERVER_TIMESTAMP
-                }, merge=True)
-                st.rerun()
-                
-            elif cheat_ev == "20":
-                doc_ref.set({
-                    "username": username_s, "nama": nama_s, "id_tugas": tg_ev,
-                    "status": "submitted_cheat", "cheat_count": 20, "updated_at": firestore.SERVER_TIMESTAMP
-                }, merge=True)
-                
+            doc_snap = doc_ref.get()
+
+            curr_count = doc_snap.to_dict().get("cheat_count", 0) if doc_snap.exists else 0
+            new_count = curr_count + 1
+
+            new_status = "active"
+            if new_count >= 20:
+                new_status = "submitted_cheat"
+            elif new_count >= 10:
+                new_status = "paused"
+
+            doc_ref.set({
+                "username": username_s,
+                "nama": nama_s,
+                "id_tugas": tg_ev,
+                "status": new_status,
+                "cheat_count": new_count,
+                "updated_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+
+            if new_status == "submitted_cheat":
                 all_t = get_all_tugas_cached()
                 tg_obj = next((t for t in all_t if t["id"] == tg_ev), None)
                 if tg_obj:
@@ -952,14 +958,18 @@ def render_siswa():
                 st.session_state.pop(f"quiz_page_{tg_ev}", None)
                 st.session_state.pop(f"quiz_soal_{tg_ev}", None)
                 st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena terdeteksi berpindah tab/aplikasi sebanyak 20 kali.")
-                st.rerun()
 
-        # PERBAIKAN 2: KUNCI MATI TOTAL (STRICT LOCKOUT)
-        # Jika status terdeteksi "paused", hentikan eksekusi script sebelum merender radio/soal/tombol submit!
+            st.rerun()
+
+        # AMBIL DATA STATUS TERBARU DARI FIRESTORE
+        doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
+        status_data = doc_status.to_dict() if doc_status.exists else {}
+
+        # PENANGANAN KUNCI MATI (LOCKOUT TOTAL)
         if status_data.get("status") == "paused":
             st.error("🛑 **KUIS DI-PAUSE SEMENTARA**")
             st.warning(
-                "⚠️ Anda terdeteksi meninggalkan halaman kuis / berpindah tab/aplikasi di HP sebanyak **10 kali**.\n\n"
+                f"⚠️ Anda terdeteksi meninggalkan halaman kuis / berpindah tab/aplikasi di HP sebanyak **{status_data.get('cheat_count', 10)} kali**.\n\n"
                 "Sistem telah mengunci kuis Anda secara otomatis. Harap menemui **Guru Pengampu** untuk meminta izin melanjutkan pengerjaan."
             )
             col1, col2 = st.columns(2)
@@ -972,7 +982,7 @@ def render_siswa():
                     st.session_state.pop("active_quiz_data", None)
                     st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
                     st.rerun()
-            return  # Mencegah render soal kuis di bawahnya!
+            return  # Stop render soal kuis
 
         if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
             all_t = get_all_tugas_cached()
@@ -1020,49 +1030,46 @@ def render_siswa():
             st.rerun()
 
         st.markdown(f"### 📝 {tg.get('judul')}")
-        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab**")
+        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab** | Terdeteksi Pindah: **{status_data.get('cheat_count', 0)}x**")
 
-        # PERBAIKAN 3: SCRIPT JAVASCRIPT TANPA BLOCKING ALERT
-        # Menggunakan lokasi pengalihan langsung agar tidak terblokir oleh mekanisme browser HP saat aplikasi berjalan di background
-        curr_cheat_count = status_data.get("cheat_count", 0)
-        
+        # PERBAIKAN SCRIPT JAVASCRIPT: DENGAN DEBOUNCE & TERISOLASI USER+QUIZ
         cheat_script = f"""
         <script>
-            const tgId = "{tg_id}";
-            // Ambil cheat count awal dari server (akan otomatis menjadi 0 jika di-unpause guru)
-            let cheatCount = {curr_cheat_count};
-            sessionStorage.setItem("cheatCount_" + tgId, cheatCount);
-            
-            let lastCheatTime = 0;
-            const targetWin = window.parent || window;
+            (function() {{
+                const userKey = "{username_s}_{tg_id}";
+                const tgId = "{tg_id}";
+                const targetWin = window.top || window.parent || window;
+                let isReporting = false;
 
-            function triggerCheat(reason) {{
-                const now = Date.now();
-                if (now - lastCheatTime < 1500) return; // Throttling 1.5 detik
-                lastCheatTime = now;
+                function reportViolation() {{
+                    if (isReporting) return;
+                    
+                    const now = Date.now();
+                    const lastReport = parseInt(sessionStorage.getItem("last_rep_" + userKey) || "0");
+                    
+                    // Throttle 2000ms untuk cegah trigger ganda akibat event beruntun di HP
+                    if (now - lastReport < 2000) return;
 
-                cheatCount++;
-                sessionStorage.setItem("cheatCount_" + tgId, cheatCount);
+                    isReporting = true;
+                    sessionStorage.setItem("last_rep_" + userKey, now.toString());
 
-                if (cheatCount >= 20) {{
-                    targetWin.location.href = targetWin.location.pathname + "?cheat_event=20&tg=" + tgId;
-                }} else if (cheatCount >= 10) {{
-                    targetWin.location.href = targetWin.location.pathname + "?cheat_event=10&tg=" + tgId;
+                    // Kirim sinyal inkremen ke backend
+                    targetWin.location.href = targetWin.location.pathname + "?cheat_inc=1&tg=" + tgId;
                 }}
-            }}
 
-            // Event listener untuk Laptop & HP (Mobile App Minimizing / Tab Switching)
-            targetWin.addEventListener("visibilitychange", function() {{
-                if (targetWin.document.hidden) triggerCheat("Pindah Tab/Layar");
-            }});
+                // Listener universal HP & Desktop
+                targetWin.addEventListener("visibilitychange", function() {{
+                    if (targetWin.document.hidden) reportViolation();
+                }});
 
-            targetWin.addEventListener("blur", function() {{
-                triggerCheat("Keluar Browser/Aplikasi");
-            }});
+                targetWin.addEventListener("blur", function() {{
+                    reportViolation();
+                }});
 
-            targetWin.addEventListener("pagehide", function() {{
-                triggerCheat("Meninggalkan Halaman");
-            }});
+                targetWin.addEventListener("pagehide", function() {{
+                    reportViolation();
+                }});
+            }})();
         </script>
         """
         components.html(cheat_script, height=0)
