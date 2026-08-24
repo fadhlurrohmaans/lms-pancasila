@@ -149,7 +149,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     total_soal = len(soal_list)
     
     if is_violation:
-        catatan = "⚠️ Submit Otomatis (Terdeteksi Pindah Tab/Aplikasi)"
+        catatan = "⚠️ Submit Otomatis (Mencapai Limit Maksimal Pelanggaran 15x)"
     elif is_forced:
         catatan = "Di-submit Paksa oleh Guru"
     else:
@@ -738,6 +738,10 @@ def render_guru():
         sub_list = [{"id": d.id, **d.to_dict()} for d in sub_docs]
         sub_map = {s.get("username_siswa"): s for s in sub_list}
 
+        # Status monitoring pelanggaran real-time
+        status_docs = db.collection("status_ujian").where("id_tugas", "==", selected_tugas_id).stream()
+        status_map = {d.to_dict().get("username"): d.to_dict() for d in status_docs}
+
         siswa_belum_submit = [s for s in siswa_list if s["username"] not in sub_map]
         
         st.divider()
@@ -761,9 +765,15 @@ def render_guru():
         for s in siswa_list:
             un = s["username"]
             sub = sub_map.get(un)
+            st_data = status_map.get(un, {})
+            v_count = st_data.get("violation_count", 0)
+            ijin = st_data.get("ijin_guru", False)
+            
             rekap_rows.append({
                 "Username": un, "Nama Siswa": s.get("nama", un),
                 "Status": "✅ Sudah" if sub else "❌ Belum",
+                "Jumlah Pelanggaran": f"⚠️ {v_count}x" if v_count > 0 else "0",
+                "Izin Guru": "✅ Diberikan" if ijin else ("🔒 Terkunci (10x+)" if v_count >= 10 else "-"),
                 "Nilai": sub.get("nilai") if sub and sub.get("nilai") is not None else ("Belum Dinilai" if sub else "-"),
                 "Catatan Guru": sub.get("catatan_guru", "-") if sub else "-"
             })
@@ -772,6 +782,28 @@ def render_guru():
 
         with t_rekap:
             st.dataframe(pd.DataFrame(rekap_rows), use_container_width=True)
+            
+            # Panel Kontrol Izin Guru
+            st.markdown("### 🔓 Kontrol Izin & Buka Kunci Siswa")
+            locked_students = [s for s in siswa_list if status_map.get(s["username"], {}).get("violation_count", 0) >= 10]
+            if not locked_students:
+                st.info("ℹ️ Tidak ada siswa yang terkunci (pelanggaran ≥ 10x).")
+            else:
+                for ls in locked_students:
+                    un_l = ls["username"]
+                    nm_l = ls.get("nama", un_l)
+                    st_l = status_map.get(un_l, {})
+                    v_c = st_l.get("violation_count", 0)
+                    is_granted = st_l.get("ijin_guru", False)
+                    
+                    c_info, c_act = st.columns([3, 1])
+                    c_info.write(f"👤 **{nm_l}** (@{un_l}) — Pelanggaran: **{v_c}x** | Status Izin: **{'✅ Diizinkan' if is_granted else '🔒 Terkunci'}**")
+                    if c_act.button("🔓 Beri Izin Mengerjakan", key=f"btn_grant_{un_l}"):
+                        db.collection("status_ujian").document(f"{un_l}_{selected_tugas_id}").set({
+                            "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
+                        }, merge=True)
+                        st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
+                        st.rerun()
 
         with t_koreksi:
             if not sub_list:
@@ -935,6 +967,41 @@ def render_siswa():
 
         tg_id = tg["id"]
 
+        # ---------------------------------------------------------
+        # LOAD / SYNC STATUS PELANGGARAN DARI FIRESTORE
+        # ---------------------------------------------------------
+        status_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
+        status_data = status_ref.to_dict() if status_ref.exists else {}
+        violation_count = status_data.get("violation_count", 0)
+        ijin_guru = status_data.get("ijin_guru", False)
+
+        # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Pindah Tab / Minimize / Blur App)
+        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
+            violation_count += 1
+            db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
+                "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
+                "status": "in_progress", "updated_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+            
+            # Jika mencapai 15x pelanggaran -> Submit Paksa Otomatis
+            if violation_count >= 15:
+                answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
+                tg_sub = dict(tg)
+                if f"quiz_soal_{tg_id}" in st.session_state:
+                    tg_sub["soal"] = st.session_state[f"quiz_soal_{tg_id}"]
+                submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers_curr, is_violation=True)
+                
+                st.session_state["active_quiz_id"] = None
+                st.session_state.pop("active_quiz_data", None)
+                st.session_state.pop(f"quiz_answers_{tg_id}", None)
+                st.session_state.pop(f"quiz_page_{tg_id}", None)
+                st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                st.error("🚨 Kuis telah di-submit otomatis karena Anda mencapai 15 kali pelanggaran!")
+                st.rerun()
+            else:
+                st.rerun()
+
+        # Inisialisasi Soal Kuis
         if f"quiz_soal_{tg_id}" not in st.session_state:
             raw_soal = list(tg.get("soal", []))
             shuffled_soal = []
@@ -964,20 +1031,21 @@ def render_siswa():
         terjawab_count = sum(1 for a in answers if a is not None)
 
         # ---------------------------------------------------------
-        # ANTI-CHEAT SCRIPT: DETEKSI PINDAH TAB / PINDAH APLIKASI
+        # ANTI-CHEAT JS: DETEKSI PINDAH TAB / PINDAH APLIKASI
         # ---------------------------------------------------------
         components.html("""
             <script>
             (function() {
                 const parentDoc = window.parent.document;
-                let isSubmitted = false;
+                let lastTrigger = 0;
 
-                function autoSubmitQuiz() {
-                    if (isSubmitted) return;
-                    isSubmitted = true;
-                    
+                function triggerViolation() {
+                    const now = Date.now();
+                    if (now - lastTrigger < 2000) return; // Debounce 2 detik
+                    lastTrigger = now;
+
                     const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                    const triggerBtn = buttons.find(b => b.innerText.includes('Kumpulkan Semua Jawaban') || b.innerText.includes('Auto Submit Trigger'));
+                    const triggerBtn = buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
                     if (triggerBtn) {
                         triggerBtn.click();
                     }
@@ -986,19 +1054,27 @@ def render_siswa():
                 // Deteksi Pindah Tab / Minimize Browser
                 parentDoc.addEventListener('visibilitychange', function() {
                     if (parentDoc.hidden) {
-                        autoSubmitQuiz();
+                        triggerViolation();
                     }
                 });
 
-                // Deteksi Pindah Aplikasi / Window Blur
+                // Deteksi Pindah Aplikasi / Focus Lost
                 window.parent.addEventListener('blur', function() {
-                    autoSubmitQuiz();
+                    triggerViolation();
                 });
             })();
             </script>
         """, height=0)
 
-        st.warning("⚠️ **Pengawasan Ujian Aktif**: Dilarang berpindah tab browser, membuka situs lain, atau membuka aplikasi lain! Pelanggaran akan menyebabkan kuis ter-submit otomatis.")
+        # ---------------------------------------------------------
+        # EVENT PELANGGARAN & LOGIKA PERINGATAN / KUNCI
+        # ---------------------------------------------------------
+        if violation_count >= 10 and not ijin_guru:
+            st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali** (pindah tab/aplikasi). Tombol submit disembunyikan. Harap hubungi guru untuk memberikan izin melanjutkan kuis.")
+        elif violation_count >= 10 and ijin_guru:
+            st.success(f"✅ **IZIN GURU DIBERIKAN**: Anda telah diberikan izin oleh guru untuk melanjutkan kuis (Total Pelanggaran: {violation_count}x).")
+        elif violation_count >= 5:
+            st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/15)**: Anda terdeteksi keluar dari kuis {violation_count} kali! Jika mencapai 10 kali, kuis akan terkunci. Jika mencapai 15 kali, kuis akan ter-submit otomatis.")
 
         if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary"):
             st.session_state["active_quiz_id"] = None
@@ -1007,7 +1083,7 @@ def render_siswa():
             st.rerun()
 
         st.markdown(f"### 📝 {tg.get('judul')}")
-        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Terjawab: **{terjawab_count}/{total_soal}**")
+        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Terjawab: **{terjawab_count}/{total_soal}** | Pelanggaran: **{violation_count}x**")
 
         st.progress((curr_page + 1) / total_soal)
         soal_item = soal_list[curr_page]
@@ -1062,28 +1138,33 @@ def render_siswa():
                 st.rerun()
 
         st.divider()
-        if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
-            tg_submit = dict(tg)
-            tg_submit["soal"] = soal_list
-            
-            with st.spinner("Memproses pengumpulan jawaban..."):
-                success = submit_jawaban_siswa(
-                    tg_submit, username_s, nama_s, kelas_s, answers, 
-                    is_forced=False
-                )
-            
-            if success:
-                st.balloons()
-                st.success("✅ Jawaban Anda berhasil dikumpulkan!")
 
-                st.session_state["active_quiz_id"] = None
-                st.session_state.pop("active_quiz_data", None)
-                st.session_state.pop(f"quiz_answers_{tg_id}", None)
-                st.session_state.pop(f"quiz_page_{tg_id}", None)
-                st.session_state.pop(f"quiz_soal_{tg_id}", None)
-                st.rerun()
-            else:
-                st.error("❌ Gagal mengumpulkan jawaban!")
+        # LOGIKA TOMBOL SUBMIT: HANYA TAMPIL JIKA PELANGGARAN < 10 ATAU SUDAH DI-IZINKAN GURU
+        if violation_count < 10 or ijin_guru:
+            if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
+                tg_submit = dict(tg)
+                tg_submit["soal"] = soal_list
+                
+                with st.spinner("Memproses pengumpulkan jawaban..."):
+                    success = submit_jawaban_siswa(
+                        tg_submit, username_s, nama_s, kelas_s, answers, 
+                        is_forced=False
+                    )
+                
+                if success:
+                    st.balloons()
+                    st.success("✅ Jawaban Anda berhasil dikumpulkan!")
+
+                    st.session_state["active_quiz_id"] = None
+                    st.session_state.pop("active_quiz_data", None)
+                    st.session_state.pop(f"quiz_answers_{tg_id}", None)
+                    st.session_state.pop(f"quiz_page_{tg_id}", None)
+                    st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                    st.rerun()
+                else:
+                    st.error("❌ Gagal mengumpulkan jawaban!")
+        else:
+            st.warning("🔒 **Tombol Submit Dinonaktifkan**: Anda telah melakukan 10 kali pelanggaran. Minta bantuan Guru untuk membuka kunci kuis ini.")
 
         return
 
