@@ -978,45 +978,6 @@ def render_siswa():
         # PENENTUAN STATUS KUNCI AKSE
         is_locked = (violation_count >= 10 and not ijin_guru)
 
-        # ---------------------------------------------------------
-        # CSS UNTUK MENYEMBUNYIKAN TOMBOL DARI SISWA
-        # ---------------------------------------------------------
-        st.markdown("""
-            <style>
-            div[data-testid="stButton"]:has(button[aria-label="⚠️ Catat Pelanggaran"]),
-            button[aria-label="⚠️ Catat Pelanggaran"] {
-                display: none !important;
-            }
-            </style>
-        """, unsafe_allow_html=True)
-
-        # Tombol Pemicu JS (Key dibuat unik dengan f"{tg_id}")
-        if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
-            violation_count += 1
-            db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
-                "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
-                "status": "in_progress", "updated_at": firestore.SERVER_TIMESTAMP
-            }, merge=True)
-            
-            # Jika mencapai 15x pelanggaran -> Submit Paksa Otomatis
-            if violation_count >= 15:
-                answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
-                tg_sub = dict(tg)
-                if f"quiz_soal_{tg_id}" in st.session_state:
-                    tg_sub["soal"] = st.session_state[f"quiz_soal_{tg_id}"]
-                submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers_curr, is_violation=True)
-                
-                st.session_state["active_quiz_id"] = None
-                st.session_state.pop("active_quiz_data", None)
-                st.session_state.pop(f"quiz_answers_{tg_id}", None)
-                st.session_state.pop(f"quiz_page_{tg_id}", None)
-                st.session_state.pop(f"quiz_soal_{tg_id}", None)
-                st.error("🚨 Kuis telah di-submit otomatis karena Anda mencapai 15 kali pelanggaran!")
-                st.rerun()
-            else:
-                st.rerun()
-
-              
         # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Pindah Tab / Minimize / Blur App)
         if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
             violation_count += 1
