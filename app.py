@@ -975,34 +975,36 @@ def render_siswa():
         violation_count = status_data.get("violation_count", 0)
         ijin_guru = status_data.get("ijin_guru", False)
 
-        # PENENTUAN STATUS KUNCI AKSE
+        # PENENTUAN STATUS KUNCI AKSES
         is_locked = (violation_count >= 10 and not ijin_guru)
 
         # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Pindah Tab / Minimize / Blur App)
         if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
-            violation_count += 1
-            db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
-                "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
-                "status": "in_progress", "updated_at": firestore.SERVER_TIMESTAMP
-            }, merge=True)
-            
-            # Jika mencapai 15x pelanggaran -> Submit Paksa Otomatis
-            if violation_count >= 15:
-                answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
-                tg_sub = dict(tg)
-                if f"quiz_soal_{tg_id}" in st.session_state:
-                    tg_sub["soal"] = st.session_state[f"quiz_soal_{tg_id}"]
-                submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers_curr, is_violation=True)
+            # HITUNGAN PELANGGARAN DIHENTIKAN JIKA AKSES SEDANG DIKUNCI
+            if not is_locked:
+                violation_count += 1
+                db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
+                    "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
+                    "status": "in_progress", "updated_at": firestore.SERVER_TIMESTAMP
+                }, merge=True)
                 
-                st.session_state["active_quiz_id"] = None
-                st.session_state.pop("active_quiz_data", None)
-                st.session_state.pop(f"quiz_answers_{tg_id}", None)
-                st.session_state.pop(f"quiz_page_{tg_id}", None)
-                st.session_state.pop(f"quiz_soal_{tg_id}", None)
-                st.error("🚨 Kuis telah di-submit otomatis karena Anda mencapai 15 kali pelanggaran!")
-                st.rerun()
-            else:
-                st.rerun()
+                # Jika mencapai 15x pelanggaran -> Submit Paksa Otomatis
+                if violation_count >= 15:
+                    answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
+                    tg_sub = dict(tg)
+                    if f"quiz_soal_{tg_id}" in st.session_state:
+                        tg_sub["soal"] = st.session_state[f"quiz_soal_{tg_id}"]
+                    submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers_curr, is_violation=True)
+                    
+                    st.session_state["active_quiz_id"] = None
+                    st.session_state.pop("active_quiz_data", None)
+                    st.session_state.pop(f"quiz_answers_{tg_id}", None)
+                    st.session_state.pop(f"quiz_page_{tg_id}", None)
+                    st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                    st.error("🚨 Kuis telah di-submit otomatis karena Anda mencapai 15 kali pelanggaran!")
+                    st.rerun()
+                else:
+                    st.rerun()
 
         # Inisialisasi Soal Kuis
         if f"quiz_soal_{tg_id}" not in st.session_state:
@@ -1073,7 +1075,7 @@ def render_siswa():
         # EVENT PELANGGARAN & LOGIKA PERINGATAN / KUNCI
         # ---------------------------------------------------------
         if is_locked:
-            st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali** (pindah tab/aplikasi). Navigasi dan pengumpulan soal telah dikunci. Harap hubungi guru untuk memberikan izin melanjutkan kuis.")
+            st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali** (pindah tab/aplikasi). Navigasi, pengisian, dan hitungan pelanggaran telah dihentikan. Harap hubungi guru untuk memberikan izin melanjutkan kuis.")
         elif violation_count >= 10 and ijin_guru:
             st.success(f"✅ **IZIN GURU DIBERIKAN**: Anda telah diberikan izin oleh guru untuk melanjutkan kuis (Total Pelanggaran: {violation_count}x).")
         elif violation_count >= 5:
