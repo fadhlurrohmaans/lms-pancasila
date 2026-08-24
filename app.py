@@ -1171,14 +1171,13 @@ def render_siswa():
                 "Harap fokus pada layar kuis! Jika poin mencapai **10 Poin**, kuis akan terkunci secara otomatis."
             )
 
-        # 6. SCRIPT JAVASCRIPT DETEKSI KECURANGAN (LANGSUNG CATAT SAAT PINDAH TAB / APPS)
+        # 6. SCRIPT JAVASCRIPT DETEKSI KECURANGAN (OPTIMIZED FOR ANDROID & MOBILE)
         cheat_script = f"""
         <script>
         (function() {{
             const userKey = "{username_s}_{tg_id}";
             const tgId = "{tg_id}";
             
-            // Inisialisasi Device ID
             let devId = localStorage.getItem("lms_device_id");
             if (!devId) {{
                 devId = "DEV-" + Math.random().toString(36).substring(2, 10).toUpperCase();
@@ -1189,39 +1188,71 @@ def render_siswa():
                 const now = Date.now();
                 const lastReport = parseInt(sessionStorage.getItem("last_rep_" + userKey) || "0");
                 
-                // Cooldown 3 detik untuk mencegah pemicu ganda sejenak
+                // Jeda 3 detik untuk mencegah pemicu ganda
                 if (now - lastReport < 3000) return;
                 sessionStorage.setItem("last_rep_" + userKey, now.toString());
 
-                const targetUrl = window.parent.location.pathname + "?cheat_inc=1&tg=" + tgId + "&device_id=" + devId + "&ts=" + now;
-
+                // Ambil URL jendela utama secara aman
+                let parentUrl = window.location.href;
                 try {{
-                    window.parent.location.href = targetUrl;
+                    parentUrl = window.top.location.href;
                 }} catch(e) {{
-                    window.location.href = targetUrl;
+                    try {{ parentUrl = window.parent.location.href; }} catch(err) {{}}
+                }}
+
+                const url = new URL(parentUrl);
+                url.searchParams.set("cheat_inc", "1");
+                url.searchParams.set("tg", tgId);
+                url.searchParams.set("device_id", devId);
+                url.searchParams.set("ts", now.toString());
+
+                // Eksekusi redirect saat browser aktif di foreground
+                try {{
+                    window.top.location.href = url.toString();
+                }} catch(e) {{
+                    try {{ window.parent.location.href = url.toString(); }} catch(err) {{
+                        window.location.href = url.toString();
+                    }}
                 }}
             }}
 
-            // Deteksi Otomatis Saat Berpindah Tab / Buka Aplikasi Lain / Buka Web Lain (document.hidden == true)
+            function markHidden() {{
+                sessionStorage.setItem("pending_violation_" + userKey, "1");
+            }}
+
+            function checkAndReport() {{
+                if (sessionStorage.getItem("pending_violation_" + userKey) === "1") {{
+                    sessionStorage.removeItem("pending_violation_" + userKey);
+                    reportViolation();
+                }}
+            }}
+
+            // 1. Catat bendera pelanggaran saat berpindah tab/aplikasi
             document.addEventListener("visibilitychange", function() {{
                 if (document.hidden) {{
-                    reportViolation();
+                    markHidden();
+                }} else {{
+                    checkAndReport();
                 }}
             }});
 
-            document.addEventListener("paste", reportViolation);
+            // 2. Tambahan listener blur/focus khusus browser Android Chrome
+            window.addEventListener("blur", markHidden);
+            window.addEventListener("focus", checkAndReport);
+            window.addEventListener("pageshow", checkAndReport);
 
-            try {{
-                window.parent.document.addEventListener("visibilitychange", function() {{
-                    if (window.parent.document.hidden) {{
-                        reportViolation();
-                    }}
-                }});
-                window.parent.document.addEventListener("paste", reportViolation);
-            }} catch(err) {{}}
+            // 3. Tangkap aksi Copy-Paste
+            document.addEventListener("paste", function() {{
+                markHidden();
+                checkAndReport();
+            }});
+
+            // 4. Periksa sisa status saat halaman kembali dimuat
+            checkAndReport();
         }})();
         </script>
         """
+        
         components.html(cheat_script, height=0)
 
         st.progress((curr_page + 1) / total_soal)
