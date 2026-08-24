@@ -299,7 +299,6 @@ elif role == "guru" and user_info.get("kelas_ajar"):
     caption_text += f"\n\n🏫 Mengajar: **{k_str}**"
 st.sidebar.caption(caption_text)
 
-# PERBAIKAN LOGOUT: Bersihkan Session State & Storage Browser
 if st.sidebar.button("🚪 Keluar / Logout"):
     st.session_state.clear()
     components.html("<script>sessionStorage.clear(); localStorage.clear();</script>", height=0)
@@ -894,7 +893,6 @@ def render_guru():
                             st.caption(f"Status: **Di-pause** | Jumlah Kecurangan: **{p.get('cheat_count', 10)}x**")
                         with col2:
                             if st.button("🔓 Izinkan Lanjut", key=f"unp_{p_un}_{selected_tugas_id}"):
-                                # PERBAIKAN: Clear cheat count di Firestore
                                 db.collection("status_ujian").document(f"{p_un}_{selected_tugas_id}").update({
                                     "status": "active",
                                     "cheat_count": 0
@@ -915,8 +913,7 @@ def render_siswa():
     active_quiz_id = st.session_state.get("active_quiz_id")
     if active_quiz_id:
         
-        # PERBAIKAN PERTAMA: HANDLER INKREMEN KECURANGAN REAL-TIME
-        # Menggunakan query_params untuk menambah hitungan cheat langsung di Firestore per peristiwa switch
+        # 1. HANDLER INKREMEN KECURANGAN REAL-TIME
         if "cheat_inc" in st.query_params:
             tg_ev = st.query_params.get("tg", active_quiz_id)
             st.query_params.clear()
@@ -961,11 +958,11 @@ def render_siswa():
 
             st.rerun()
 
-        # AMBIL DATA STATUS TERBARU DARI FIRESTORE
+        # 2. STATUS CHECK TERBARU DARI FIRESTORE
         doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
         status_data = doc_status.to_dict() if doc_status.exists else {}
 
-        # PENANGANAN KUNCI MATI (LOCKOUT TOTAL)
+        # 3. PENANGANAN KUNCI MATI (LOCKOUT TOTAL)
         if status_data.get("status") == "paused":
             st.error("🛑 **KUIS DI-PAUSE SEMENTARA**")
             st.warning(
@@ -982,7 +979,7 @@ def render_siswa():
                     st.session_state.pop("active_quiz_data", None)
                     st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
                     st.rerun()
-            return  # Stop render soal kuis
+            return
 
         if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
             all_t = get_all_tugas_cached()
@@ -1032,44 +1029,47 @@ def render_siswa():
         st.markdown(f"### 📝 {tg.get('judul')}")
         st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab** | Terdeteksi Pindah: **{status_data.get('cheat_count', 0)}x**")
 
-        # PERBAIKAN SCRIPT JAVASCRIPT: DENGAN DEBOUNCE & TERISOLASI USER+QUIZ
+        # 4. SCRIPT JAVASCRIPT DETEKSI KECURANGAN (FIXED CROSS-ORIGIN BYPASS)
         cheat_script = f"""
         <script>
-            (function() {{
-                const userKey = "{username_s}_{tg_id}";
-                const tgId = "{tg_id}";
-                const targetWin = window.top || window.parent || window;
-                let isReporting = false;
+        (function() {{
+            const userKey = "{username_s}_{tg_id}";
+            const tgId = "{tg_id}";
 
-                function reportViolation() {{
-                    if (isReporting) return;
-                    
-                    const now = Date.now();
-                    const lastReport = parseInt(sessionStorage.getItem("last_rep_" + userKey) || "0");
-                    
-                    // Throttle 2000ms untuk cegah trigger ganda akibat event beruntun di HP
-                    if (now - lastReport < 2000) return;
+            function reportViolation() {{
+                const now = Date.now();
+                const lastReport = parseInt(sessionStorage.getItem("last_rep_" + userKey) || "0");
+                
+                // Anti-bounce 2.5 detik
+                if (now - lastReport < 2500) return;
+                sessionStorage.setItem("last_rep_" + userKey, now.toString());
 
-                    isReporting = true;
-                    sessionStorage.setItem("last_rep_" + userKey, now.toString());
+                const targetUrl = window.parent.location.pathname + "?cheat_inc=1&tg=" + tgId + "&ts=" + now;
 
-                    // Kirim sinyal inkremen ke backend
-                    targetWin.location.href = targetWin.location.pathname + "?cheat_inc=1&tg=" + tgId;
+                // Paksa navigasi parent window Streamlit
+                try {{
+                    window.parent.location.replace(targetUrl);
+                }} catch(e) {{
+                    window.top.location.href = targetUrl;
                 }}
+            }}
 
-                // Listener universal HP & Desktop
-                targetWin.addEventListener("visibilitychange", function() {{
-                    if (targetWin.document.hidden) reportViolation();
-                }});
+            // Listener 1: Level Iframe lokal
+            window.addEventListener("blur", reportViolation);
+            document.addEventListener("visibilitychange", function() {{
+                if (document.hidden) reportViolation();
+            }});
 
-                targetWin.addEventListener("blur", function() {{
-                    reportViolation();
+            // Listener 2: Level Parent Window
+            try {{
+                window.parent.addEventListener("blur", reportViolation);
+                window.parent.document.addEventListener("visibilitychange", function() {{
+                    if (window.parent.document.hidden) reportViolation();
                 }});
-
-                targetWin.addEventListener("pagehide", function() {{
-                    reportViolation();
-                }});
-            }})();
+            }} catch(err) {{
+                // Mengabaikan jika browser memblokir akses direct parent
+            }}
+        }})();
         </script>
         """
         components.html(cheat_script, height=0)
