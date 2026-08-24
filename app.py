@@ -51,21 +51,9 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 20px; font-weight: 600; }
     .stTabs [aria-selected="true"] { background-color: #1e3c72 !important; color: white !important; }
     
-    /* ISOLASI TOTAL TOMBOL PELANGGARAN TERSEMBUNYI */
-    .violation-btn-hidden-wrapper {
-        position: fixed !important;
-        top: -9999px !important;
-        left: -9999px !important;
-        width: 0px !important;
-        height: 0px !important;
-        opacity: 0 !important;
-        pointer-events: none !important;
-        visibility: hidden !important;
-        z-index: -9999 !important;
-        overflow: hidden !important;
-    }
-    .violation-btn-hidden-wrapper * {
-        pointer-events: none !important;
+    /* CSS Khusus Menyembunyikan Tombol Pemicu Pelanggaran */
+    .hidden-violation-trigger {
+        display: none !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -995,35 +983,32 @@ def render_siswa():
         # PENENTUAN STATUS KUNCI AKSES
         is_locked = (violation_count >= 10 and not ijin_guru)
 
-        # ---------------------------------------------------------
-        # PEMICU TERSEMBUNYI (PEMINDAHAN TOTAL KE LUAR LAYAR & NO POINTER EVENTS)
-        # ---------------------------------------------------------
-        st.markdown('<div class="violation-btn-hidden-wrapper">', unsafe_allow_html=True)
-        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation"):
-            if not is_locked:
-                violation_count += 1
-                db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
-                    "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
-                    "status": "in_progress", "updated_at": firestore.SERVER_TIMESTAMP
-                }, merge=True)
+        # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Disembunyikan Visual lewat CSS)
+        st.markdown('<div class="hidden-violation-trigger">', unsafe_allow_html=True)
+        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
+            violation_count += 1
+            db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
+                "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
+                "status": "in_progress", "updated_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+            
+            # Jika mencapai 15x pelanggaran -> Submit Paksa Otomatis
+            if violation_count >= 15:
+                answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
+                tg_sub = dict(tg)
+                if f"quiz_soal_{tg_id}" in st.session_state:
+                    tg_sub["soal"] = st.session_state[f"quiz_soal_{tg_id}"]
+                submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers_curr, is_violation=True)
                 
-                # Jika mencapai 15x pelanggaran -> Submit Paksa Otomatis
-                if violation_count >= 15:
-                    answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
-                    tg_sub = dict(tg)
-                    if f"quiz_soal_{tg_id}" in st.session_state:
-                        tg_sub["soal"] = st.session_state[f"quiz_soal_{tg_id}"]
-                    submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers_curr, is_violation=True)
-                    
-                    st.session_state["active_quiz_id"] = None
-                    st.session_state.pop("active_quiz_data", None)
-                    st.session_state.pop(f"quiz_answers_{tg_id}", None)
-                    st.session_state.pop(f"quiz_page_{tg_id}", None)
-                    st.session_state.pop(f"quiz_soal_{tg_id}", None)
-                    st.error("🚨 Kuis telah di-submit otomatis karena Anda mencapai 15 kali pelanggaran!")
-                    st.rerun()
-                else:
-                    st.rerun()
+                st.session_state["active_quiz_id"] = None
+                st.session_state.pop("active_quiz_data", None)
+                st.session_state.pop(f"quiz_answers_{tg_id}", None)
+                st.session_state.pop(f"quiz_page_{tg_id}", None)
+                st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                st.error("🚨 Kuis telah di-submit otomatis karena Anda mencapai 15 kali pelanggaran!")
+                st.rerun()
+            else:
+                st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
         # Inisialisasi Soal Kuis
@@ -1056,7 +1041,7 @@ def render_siswa():
         terjawab_count = sum(1 for a in answers if a is not None)
 
         # ---------------------------------------------------------
-        # ANTI-CHEAT JS: DETEKSI PINDAH TAB / PINDAH APLIKASI
+        # ANTI-CHEAT JS: DETEKSI PINDAH TAB / MINIMIZE BROWSER
         # ---------------------------------------------------------
         components.html("""
             <script>
@@ -1069,10 +1054,10 @@ def render_siswa():
                     if (now - lastTrigger < 2000) return; // Debounce 2 detik
                     lastTrigger = now;
 
-                    const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                    const triggerBtn = buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
-                    if (triggerBtn) {
-                        triggerBtn.click();
+                    const container = parentDoc.querySelector('.hidden-violation-trigger');
+                    if (container) {
+                        const triggerBtn = container.querySelector('button');
+                        if (triggerBtn) triggerBtn.click();
                     }
                 }
 
@@ -1082,11 +1067,6 @@ def render_siswa():
                         triggerViolation();
                     }
                 });
-
-                // Deteksi Pindah Aplikasi / Focus Lost
-                window.parent.addEventListener('blur', function() {
-                    triggerViolation();
-                });
             })();
             </script>
         """, height=0)
@@ -1095,9 +1075,7 @@ def render_siswa():
         # EVENT PELANGGARAN & LOGIKA PERINGATAN / KUNCI
         # ---------------------------------------------------------
         if is_locked:
-            st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali** (pindah tab/aplikasi). Navigasi, pengisian, dan hitungan pelanggaran telah dihentikan. Harap hubungi guru untuk memberikan izin melanjutkan kuis.")
-            if st.button("🔄 Cek / Refresh Status Izin Guru", key="btn_refresh_permission", type="primary", use_container_width=True):
-                st.rerun()
+            st.error(f"🚫 **AKSES DIKUNCI**: Anda sudah melakukan pelanggaran **{violation_count} kali** (pindah tab/aplikasi). Navigasi dan pengumpulkan soal telah dikunci. Harap hubungi guru untuk memberikan izin melanjutkan kuis.")
         elif violation_count >= 10 and ijin_guru:
             st.success(f"✅ **IZIN GURU DIBERIKAN**: Anda telah diberikan izin oleh guru untuk melanjutkan kuis (Total Pelanggaran: {violation_count}x).")
         elif violation_count >= 5:
@@ -1201,8 +1179,6 @@ def render_siswa():
                     st.error("❌ Gagal mengumpulkan jawaban!")
         else:
             st.warning("🔒 **Fitur Navigasi & Submit Dinonaktifkan**: Anda telah melakukan 10 kali pelanggaran. Minta bantuan Guru untuk membuka kunci kuis ini.")
-            if st.button("🔄 Cek Izin Guru Sekarang", key="btn_refresh_permission_bottom", type="primary", use_container_width=True):
-                st.rerun()
 
         return
 
