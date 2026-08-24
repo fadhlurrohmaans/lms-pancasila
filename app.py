@@ -979,7 +979,7 @@ def render_siswa():
         is_locked = (violation_count >= 10 and not ijin_guru)
 
         # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Pindah Tab / Minimize / Blur App)
-        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
+        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary" display:none):
             # HITUNGAN PELANGGARAN DIHENTIKAN JIKA AKSES SEDANG DIKUNCI
             if not is_locked:
                 violation_count += 1
