@@ -66,10 +66,10 @@ with open(index_html_path, "w", encoding="utf-8") as f:
 <head>
   <meta charset="utf-8">
   <script>
-    function sendToStreamlit(data) {
+    function sendToStreamlit(violationType) {
       window.parent.postMessage({
         type: "streamlit:setComponentValue",
-        value: data
+        value: { type: violationType, ts: Date.now() }
       }, "*");
     }
 
@@ -78,46 +78,37 @@ with open(index_html_path, "w", encoding="utf-8") as f:
         type: "streamlit:setFrameHeight",
         height: 0
       }, "*");
-    });
 
-    function markViolation() {
-      sessionStorage.setItem("pending_cheat", "1");
-    }
+      try {
+        var targetWin = window.parent;
+        var targetDoc = window.parent.document;
 
-    function checkAndSend() {
-      if (sessionStorage.getItem("pending_cheat") === "1") {
-        sessionStorage.removeItem("pending_cheat");
-        var currentCount = parseInt(sessionStorage.getItem("cheat_total") || "0") + 1;
-        sessionStorage.setItem("cheat_total", currentCount.toString());
-        sendToStreamlit({ count: currentCount, ts: Date.now() });
+        // Deteksi pindah tab / minimize browser
+        targetDoc.addEventListener("visibilitychange", function() {
+          if (targetDoc.hidden) {
+            sendToStreamlit("VISIBILITY_HIDDEN");
+          }
+        });
+
+        // Deteksi berpindah ke aplikasi lain (Android/Desktop)
+        targetWin.addEventListener("blur", function() {
+          sendToStreamlit("BLUR");
+        });
+
+        // Deteksi aksi tempel teks (paste) pada area jawaban
+        targetDoc.addEventListener("paste", function() {
+          sendToStreamlit("PASTE");
+        });
+      } catch (e) {
+        console.error("Anti-cheat initialization error:", e);
       }
-    }
-
-    document.addEventListener("visibilitychange", function() {
-      if (document.hidden) {
-        markViolation();
-      } else {
-        checkAndSend();
-      }
     });
-
-    window.addEventListener("blur", markViolation);
-    window.addEventListener("focus", checkAndSend);
-    window.addEventListener("pageshow", checkAndSend);
-
-    document.addEventListener("paste", function() {
-      markViolation();
-      checkAndSend();
-    });
-
-    checkAndSend();
   </script>
 </head>
 <body style="margin: 0; padding: 0;"></body>
 </html>""")
 
 anti_cheat_detector = components.declare_component("anti_cheat_detector", path=COMPONENT_DIR)
-
 # ==========================================
 # 3. FIREBASE & CACHING
 # ==========================================
@@ -1099,15 +1090,17 @@ def render_siswa():
             last_processed_ts = st.session_state.get("last_processed_cheat_ts", 0)
             current_ts = cheat_data.get("ts", 0)
             
-            if current_ts > last_processed_ts:
+            # Filter debounce: Abaikan penambahan jika jeda antar-event < 1.5 detik
+            if current_ts - last_processed_ts > 1500:
                 st.session_state["last_processed_cheat_ts"] = current_ts
+                violation_type = cheat_data.get("type", "VISIBILITY_HIDDEN_OR_PASTE")
                 
                 doc_ref = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}")
                 doc_snap = doc_ref.get()
                 curr_count = doc_snap.to_dict().get("cheat_count", 0) if doc_snap.exists else 0
                 new_count = curr_count + 1
                 
-                record_violation(username_s, device_id, active_quiz_id, violation_type="VISIBILITY_HIDDEN_OR_PASTE")
+                record_violation(username_s, device_id, active_quiz_id, violation_type=violation_type)
                 
                 new_status = "active"
                 if new_count >= 20:
@@ -1144,7 +1137,7 @@ def render_siswa():
                     st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena mencapai 20 poin kecurangan (Diskualifikasi).")
 
                 st.rerun()
-
+                
         # 2. STATUS CHECK TERBARU DARI FIRESTORE
         doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
         status_data = doc_status.to_dict() if doc_status.exists else {}
