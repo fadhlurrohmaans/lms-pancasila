@@ -69,7 +69,7 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
-# --- CACHED READ FUNCTIONS (High Performance for 40+ users) ---
+# --- CACHED READ FUNCTIONS ---
 @st.cache_data(ttl=120)
 def get_all_kelas():
     docs = db.collection("kelas").stream()
@@ -139,6 +139,42 @@ def is_materi_sesuai_kelas(materi_doc, kelas_siswa):
     target = materi_doc.get("target_kelas", [])
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
+
+# Helper submit jawaban siswa (Digunakan manual maupun auto-submit kecurangan)
+def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submit=False):
+    tg_id = tg["id"]
+    soal_list = tg.get("soal", [])
+    total_soal = len(soal_list)
+    catatan = "Penilaian Otomatis Sistem (Submit Otomatis Kecurangan)" if is_auto_submit else "Penilaian Otomatis Sistem"
+    
+    if tg.get("tipe") == "pg":
+        correct_count = 0
+        formatted_ans = []
+        for idx_q, sq in enumerate(soal_list):
+            user_a = answers[idx_q] if idx_q < len(answers) else None
+            formatted_ans.append(user_a if user_a is not None else -1)
+            if user_a is not None and user_a == sq.get("kunci"):
+                correct_count += 1
+        score = round((correct_count / total_soal) * 100) if total_soal > 0 else 0
+
+        db.collection("jawaban_siswa").add({
+            "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
+            "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "pg", "jawaban": formatted_ans,
+            "nilai": score, "catatan_guru": catatan, "submitted_at": firestore.SERVER_TIMESTAMP
+        })
+    else:
+        formatted_ans = [a if a is not None else "" for a in (answers if answers else [])]
+        db.collection("jawaban_siswa").add({
+            "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
+            "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay", "soal": soal_list,
+            "jawaban": formatted_ans, "nilai": None, "catatan_guru": "Di-submit Otomatis Sistem" if is_auto_submit else "",
+            "submitted_at": firestore.SERVER_TIMESTAMP
+        })
+
+    db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
+        "username": username_s, "id_tugas": tg_id, "status": "submitted", "updated_at": firestore.SERVER_TIMESTAMP
+    }, merge=True)
+    clear_user_submissions_cache()
 
 # ==========================================
 # 3. AI EVALUATION HELPER
@@ -648,7 +684,7 @@ def render_guru():
                 "Catatan Guru": sub.get("catatan_guru", "-") if sub else "-"
             })
 
-        t_rekap, t_koreksi = st.tabs(["📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian"])
+        t_rekap, t_koreksi, t_unpause = st.tabs(["📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "🚨 Monitor & Unpause Kuis"])
 
         with t_rekap:
             st.dataframe(pd.DataFrame(rekap_rows), use_container_width=True)
@@ -673,7 +709,7 @@ def render_guru():
                             if sub.get("tipe") == "pg":
                                 opsi_list = q.get("opsi", [])
                                 ans_idx = a if isinstance(a, int) else 0
-                                ans_text = opsi_list[ans_idx] if ans_idx < len(opsi_list) else str(a)
+                                ans_text = opsi_list[ans_idx] if ans_idx < len(opsi_list) and ans_idx >= 0 else str(a)
                                 is_correct = (ans_idx == q.get("kunci", 0))
                                 st.write(f"Jawaban: **{ans_text}** ({'✅ Benar' if is_correct else '❌ Salah'})")
                             else:
@@ -697,6 +733,30 @@ def render_guru():
                                 st.success("✅ Tersimpan!")
                                 st.rerun()
 
+        with t_unpause:
+            st.subheader("🚨 Buka Kunci Siswa Ter-Pause (Kecurangan 10x)")
+            paused_docs = db.collection("status_ujian").where("id_tugas", "==", selected_tugas_id).where("status", "==", "paused").stream()
+            paused_list = [d.to_dict() for d in paused_docs]
+
+            if not paused_list:
+                st.success("✅ Tidak ada siswa yang sedang di-pause pada tugas ini.")
+            else:
+                for p in paused_list:
+                    p_un = p.get("username")
+                    p_nama = p.get("nama", p_un)
+                    with st.container(border=True):
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.write(f"👤 **{p_nama}** (@{p_un})")
+                            st.caption(f"Status: **Di-pause** | Jumlah Kecurangan: **{p.get('cheat_count', 10)}x**")
+                        with col2:
+                            if st.button("🔓 Izinkan Lanjut", key=f"unp_{p_un}_{selected_tugas_id}"):
+                                db.collection("status_ujian").document(f"{p_un}_{selected_tugas_id}").update({
+                                    "status": "active"
+                                })
+                                st.success(f"Akses {p_nama} berhasil dibuka kembali!")
+                                st.rerun()
+
 # ==========================================
 # 8. PANEL SISWA (ZERO-LATENCY EXAM MODE)
 # ==========================================
@@ -708,10 +768,61 @@ def render_siswa():
     # Get cached submissions
     my_subs = get_user_submissions_cached(username_s)
 
-    # ACTIVE QUIZ MODE (ZERO FIREBASE READS DURING TEST TAKING)
+    # ACTIVE QUIZ MODE
     active_quiz_id = st.session_state.get("active_quiz_id")
     if active_quiz_id:
-        # Load Quiz into session state memory if not loaded
+        # 1. TANGGAPI EVENT KECURANGAN DARI JAVASCRIPT URL PARAMETERS
+        if "cheat_event" in st.query_params:
+            cheat_ev = st.query_params.get("cheat_event")
+            tg_ev = st.query_params.get("tg", active_quiz_id)
+            st.query_params.clear() # bersihkan URL agar tidak terjadi loop
+            
+            doc_ref = db.collection("status_ujian").document(f"{username_s}_{tg_ev}")
+            
+            if cheat_ev == "10":
+                doc_ref.set({
+                    "username": username_s, "nama": nama_s, "id_tugas": tg_ev,
+                    "status": "paused", "cheat_count": 10, "updated_at": firestore.SERVER_TIMESTAMP
+                }, merge=True)
+                st.rerun()
+                
+            elif cheat_ev == "20":
+                doc_ref.set({
+                    "username": username_s, "nama": nama_s, "id_tugas": tg_ev,
+                    "status": "submitted_cheat", "cheat_count": 20, "updated_at": firestore.SERVER_TIMESTAMP
+                }, merge=True)
+                
+                # Load tugas data untuk auto submit
+                all_t = get_all_tugas_cached()
+                tg_obj = next((t for t in all_t if t["id"] == tg_ev), None)
+                if tg_obj:
+                    answers = st.session_state.get(f"quiz_answers_{tg_ev}", [])
+                    submit_jawaban_siswa(tg_obj, username_s, nama_s, kelas_s, answers, is_auto_submit=True)
+
+                # Reset state kuis
+                st.session_state["active_quiz_id"] = None
+                st.session_state.pop("active_quiz_data", None)
+                st.session_state.pop(f"quiz_answers_{tg_ev}", None)
+                st.session_state.pop(f"quiz_page_{tg_ev}", None)
+                st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena terdeteksi berpindah tab/aplikasi sebanyak 20 kali.")
+                st.rerun()
+
+        # 2. CEK STATUS UJIAN DI FIREBASE (PAUSED / ACTIVE)
+        doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
+        status_data = doc_status.to_dict() if doc_status.exists else {}
+
+        if status_data.get("status") == "paused":
+            st.error("🛑 **KUIS DI-PAUSE SEMENTARA**")
+            st.warning("⚠️ Anda terdeteksi meninggalkan halaman kuis / berpindah tab sebanyak **10 kali**.\n\nHarap hubungi **Guru Pengampu** untuk membuka jeda (unpause) agar Anda dapat melanjutkan kuis.")
+            if st.button("🔄 Cek Status Izin Guru", type="primary"):
+                st.rerun()
+            if st.button("⬅️ Keluar dari Kuis"):
+                st.session_state["active_quiz_id"] = None
+                st.session_state.pop("active_quiz_data", None)
+                st.rerun()
+            return
+
+        # Load Quiz into session state memory
         if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
             all_t = get_all_tugas_cached()
             st.session_state["active_quiz_data"] = next((t for t in all_t if t["id"] == active_quiz_id), None)
@@ -742,18 +853,31 @@ def render_siswa():
         st.markdown(f"### 📝 {tg.get('judul')}")
         st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab**")
 
-        # Anti-cheat script
-        components.html("""
+        # Dynamic Anti-cheat script dengan batas 10x (Pause) dan 20x (Auto-submit)
+        cheat_script = f"""
         <script>
-            let cheatCount = 0;
-            document.addEventListener("visibilitychange", function() {
-                if (document.hidden) {
+            const tgId = "{tg_id}";
+            let cheatCount = parseInt(sessionStorage.getItem("cheatCount_" + tgId) || "0");
+            
+            document.addEventListener("visibilitychange", function() {{
+                if (document.hidden) {{
                     cheatCount++;
-                    alert("⚠️ Dilarang berpindah tab/aplikasi! (Peringatan " + cheatCount + ")");
-                }
-            });
+                    sessionStorage.setItem("cheatCount_" + tgId, cheatCount);
+                    
+                    if (cheatCount === 10) {{
+                        alert("⚠️ KECURANGAN TERDETEKSI 10 KALI! Kuis di-pause sementara. Minta izin ke Guru Anda untuk melanjutkan.");
+                        window.parent.location.search = "?cheat_event=10&tg=" + tgId;
+                    }} else if (cheatCount >= 20) {{
+                        alert("⚠️ KECURANGAN TERDETEKSI 20 KALI! Kuis Anda akan otomatis dikumpulkan sekarang!");
+                        window.parent.location.search = "?cheat_event=20&tg=" + tgId;
+                    }} else {{
+                        alert("⚠️ Dilarang berpindah tab/aplikasi! (Peringatan ke-" + cheatCount + ")");
+                    }}
+                }}
+            }});
         </script>
-        """, height=0)
+        """
+        components.html(cheat_script, height=0)
 
         st.progress((curr_page + 1) / total_soal)
         soal_item = soal_list[curr_page]
@@ -810,33 +934,11 @@ def render_siswa():
 
         st.divider()
         if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
-            if tg.get("tipe") == "pg":
-                correct_count = 0
-                formatted_ans = []
-                for idx_q, sq in enumerate(soal_list):
-                    user_a = answers[idx_q]
-                    formatted_ans.append(user_a if user_a is not None else -1)
-                    if user_a is not None and user_a == sq.get("kunci"): correct_count += 1
-                score = round((correct_count / total_soal) * 100)
-
-                db.collection("jawaban_siswa").add({
-                    "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
-                    "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "pg", "jawaban": formatted_ans,
-                    "nilai": score, "catatan_guru": "Penilaian Otomatis Sistem", "submitted_at": firestore.SERVER_TIMESTAMP
-                })
-                st.balloons()
-                st.success(f"✅ Dikumpulkan! Nilai Anda: {score}")
-            else:
-                formatted_ans = [a if a is not None else "" for a in answers]
-                db.collection("jawaban_siswa").add({
-                    "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
-                    "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay", "soal": soal_list,
-                    "jawaban": formatted_ans, "nilai": None, "submitted_at": firestore.SERVER_TIMESTAMP
-                })
-                st.success("✅ Dikumpulkan! Menunggu koreksi guru.")
+            submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submit=False)
+            st.balloons()
+            st.success("✅ Jawaban Anda berhasil dikumpulkan!")
 
             # Clean session exam state
-            clear_user_submissions_cache()
             st.session_state["active_quiz_id"] = None
             st.session_state.pop("active_quiz_data", None)
             st.session_state.pop(f"quiz_answers_{tg_id}", None)
