@@ -621,7 +621,6 @@ def render_guru():
             st.subheader("📥 Import Soal Tugas (.csv / .xlsx)")
             st.info("💡 **Unduh Template Soal:** Gunakan tombol di bawah ini untuk mengunduh format CSV yang sesuai.")
             
-            # --- GENERAte TEMPLATE FILE ---
             df_tpl_pg = pd.DataFrame([
                 {
                     "pertanyaan": "Apa lambang sila ke-1 Pancasila?",
@@ -738,7 +737,7 @@ def render_guru():
                 "Catatan Guru": sub.get("catatan_guru", "-") if sub else "-"
             })
 
-        t_rekap, t_koreksi, t_unpause = st.tabs(["📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "🚨 Monitor & Unpause Kuis"])
+        t_rekap, t_koreksi, t_analisis, t_unpause = st.tabs(["📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "📈 Analisis Soal PG", "🚨 Monitor & Unpause Kuis"])
 
         with t_rekap:
             st.dataframe(pd.DataFrame(rekap_rows), use_container_width=True)
@@ -786,6 +785,63 @@ def render_guru():
                                 clear_user_submissions_cache()
                                 st.success("✅ Tersimpan!")
                                 st.rerun()
+
+        with t_analisis:
+            st.subheader("📈 Analisis Butir Soal Pilihan Ganda")
+            if selected_tugas.get("tipe") != "pg":
+                st.info("ℹ️ Analisis butir soal saat ini khusus untuk tugas bertipe **Pilihan Ganda**.")
+            elif not sub_list:
+                st.info("ℹ️ Belum ada siswa yang mengumpulkan tugas ini untuk dianalisis.")
+            else:
+                soal_master = selected_tugas.get("soal", [])
+                total_responden = len(sub_list)
+                scores = [s.get("nilai", 0) for s in sub_list if s.get("nilai") is not None]
+
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Total Responden", f"{total_responden} Siswa")
+                m2.metric("Rata-rata Kelas", f"{round(sum(scores)/len(scores), 1) if scores else 0}")
+                m3.metric("Nilai Tertinggi", f"{max(scores) if scores else 0}")
+                m4.metric("Nilai Terendah", f"{min(scores) if scores else 0}")
+
+                st.divider()
+                st.markdown("### 📋 Distribusi Pilihan Jawaban & Tingkat Kesukaran")
+
+                analisis_rows = []
+                for idx, q in enumerate(soal_master, 1):
+                    q_text = q.get("pertanyaan", "") if isinstance(q, dict) else str(q)
+                    kunci_idx = q.get("kunci", 0) if isinstance(q, dict) else 0
+                    kunci_str = ['A', 'B', 'C', 'D'][kunci_idx] if 0 <= kunci_idx <= 3 else "A"
+
+                    # Hitung statistik per butir soal
+                    counts = [0, 0, 0, 0] # Distribusi pemilih A, B, C, D
+                    for sub in sub_list:
+                        ans_list = sub.get("jawaban", [])
+                        if idx - 1 < len(ans_list):
+                            ans = ans_list[idx - 1]
+                            if isinstance(ans, int) and 0 <= ans <= 3:
+                                counts[ans] += 1
+
+                    jml_benar = counts[kunci_idx]
+                    pct_benar = round((jml_benar / total_responden) * 100, 1) if total_responden > 0 else 0
+
+                    if pct_benar >= 80:
+                        kategori = "🟢 Mudah"
+                    elif pct_benar >= 30:
+                        kategori = "🟡 Sedang"
+                    else:
+                        kategori = "🔴 Sukar"
+
+                    analisis_rows.append({
+                        "No": idx,
+                        "Soal": q_text[:60] + ("..." if len(q_text) > 60 else ""),
+                        "Kunci": kunci_str,
+                        "Benar": f"{jml_benar}/{total_responden}",
+                        "% Benar": f"{pct_benar}%",
+                        "Tingkat Kesukaran": kategori,
+                        "Distribusi Opsi (A | B | C | D)": f"A: {counts[0]} | B: {counts[1]} | C: {counts[2]} | D: {counts[3]}"
+                    })
+
+                st.dataframe(pd.DataFrame(analisis_rows), use_container_width=True)
 
         with t_unpause:
             st.subheader("🚨 Buka Kunci Siswa Ter-Pause (Kecurangan 10x)")
@@ -847,12 +903,16 @@ def render_siswa():
                 tg_obj = next((t for t in all_t if t["id"] == tg_ev), None)
                 if tg_obj:
                     answers = st.session_state.get(f"quiz_answers_{tg_ev}", [])
-                    submit_jawaban_siswa(tg_obj, username_s, nama_s, kelas_s, answers, is_auto_submit=True)
+                    soal_sess = st.session_state.get(f"quiz_soal_{tg_ev}", tg_obj.get("soal", []))
+                    tg_submit = dict(tg_obj)
+                    tg_submit["soal"] = soal_sess
+                    submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_auto_submit=True)
 
                 st.session_state["active_quiz_id"] = None
                 st.session_state.pop("active_quiz_data", None)
                 st.session_state.pop(f"quiz_answers_{tg_ev}", None)
                 st.session_state.pop(f"quiz_page_{tg_ev}", None)
+                st.session_state.pop(f"quiz_soal_{tg_ev}", None)
                 st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena terdeteksi berpindah tab/aplikasi sebanyak 20 kali.")
                 st.rerun()
 
@@ -867,6 +927,7 @@ def render_siswa():
             if st.button("⬅️ Keluar dari Kuis"):
                 st.session_state["active_quiz_id"] = None
                 st.session_state.pop("active_quiz_data", None)
+                st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
                 st.rerun()
             return
 
@@ -880,7 +941,25 @@ def render_siswa():
             st.rerun()
 
         tg_id = tg["id"]
-        soal_list = tg.get("soal", [])
+
+        # --- RANDOMISASI SOAL DAN OPSI JAWABAN PER SISWA ---
+        if f"quiz_soal_{tg_id}" not in st.session_state:
+            raw_soal = list(tg.get("soal", []))
+            shuffled_soal = []
+            for q in raw_soal:
+                q_copy = dict(q)
+                if tg.get("tipe") == "pg" and "opsi" in q_copy:
+                    opts = list(q_copy.get("opsi", []))
+                    orig_kunci = q_copy.get("kunci", 0)
+                    paired = list(enumerate(opts))
+                    random.shuffle(paired)
+                    q_copy["opsi"] = [p[1] for p in paired]
+                    q_copy["kunci"] = next(new_idx for new_idx, (orig_idx, _) in enumerate(paired) if orig_idx == orig_kunci)
+                shuffled_soal.append(q_copy)
+            random.shuffle(shuffled_soal)
+            st.session_state[f"quiz_soal_{tg_id}"] = shuffled_soal
+
+        soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
 
         if f"quiz_answers_{tg_id}" not in st.session_state:
@@ -895,10 +974,11 @@ def render_siswa():
         if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary"):
             st.session_state["active_quiz_id"] = None
             st.session_state.pop("active_quiz_data", None)
+            st.session_state.pop(f"quiz_soal_{tg_id}", None)
             st.rerun()
 
         st.markdown(f"### 📝 {tg.get('judul')}")
-        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab**")
+        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab** (Soal & Opsi Diacak Otomatis)")
 
         cheat_script = f"""
         <script>
@@ -979,7 +1059,9 @@ def render_siswa():
 
         st.divider()
         if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
-            submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submit=False)
+            tg_submit = dict(tg)
+            tg_submit["soal"] = soal_list
+            submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_auto_submit=False)
             st.balloons()
             st.success("✅ Jawaban Anda berhasil dikumpulkan!")
 
@@ -987,6 +1069,7 @@ def render_siswa():
             st.session_state.pop("active_quiz_data", None)
             st.session_state.pop(f"quiz_answers_{tg_id}", None)
             st.session_state.pop(f"quiz_page_{tg_id}", None)
+            st.session_state.pop(f"quiz_soal_{tg_id}", None)
             st.rerun()
 
         return
