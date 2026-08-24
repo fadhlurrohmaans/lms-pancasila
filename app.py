@@ -978,9 +978,9 @@ def render_siswa():
         # PENENTUAN STATUS KUNCI AKSES
         is_locked = (violation_count >= 10 and not ijin_guru)
 
-        # Tombol Pemicu JS Saat Terdeteksi Pelanggaran (Pindah Tab / Minimize / Blur App)
-        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary" display:"none"):
-            # HITUNGAN PELANGGARAN DIHENTIKAN JIKA AKSES SEDANG DIKUNCI
+        # Tombol Pemicu JS Disembunyikan (display: none) agar tidak terlihat oleh siswa
+        st.markdown('<div style="display: none;">', unsafe_allow_html=True)
+        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
             if not is_locked:
                 violation_count += 1
                 db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
@@ -1005,6 +1005,7 @@ def render_siswa():
                     st.rerun()
                 else:
                     st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
         # Inisialisasi Soal Kuis
         if f"quiz_soal_{tg_id}" not in st.session_state:
