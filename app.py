@@ -152,7 +152,7 @@ def force_unlock_device(device_id):
         "unlocked_at": firestore.SERVER_TIMESTAMP
     })
 
-def record_violation(username, device_id, id_tugas, violation_type="SCREEN_BLUR_OR_PASTE"):
+def record_violation(username, device_id, id_tugas, violation_type="VISIBILITY_HIDDEN_OR_PASTE"):
     db.collection("violation_logs").add({
         "username": username,
         "device_id": device_id or "UNKNOWN_DEVICE",
@@ -203,7 +203,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submi
     
     status_doc = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
     if status_doc.exists and status_doc.to_dict().get("status") == "paused" and not is_forced:
-        st.error("🛑 Kuis dalam keadaan terkunci (Penalti 10+ Poin). Pengumpulan tidak dapat diproses!")
+        st.error("🛑 Kuis dalam keadaan terkunci (Penalti 10+ Poin). Pengumpulkan tidak dapat diproses!")
         return False
 
     soal_list = tg.get("soal", [])
@@ -244,7 +244,6 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submi
         "username": username_s, "id_tugas": tg_id, "status": "submitted_cheat" if is_auto_submit else "submitted", "updated_at": firestore.SERVER_TIMESTAMP
     }, merge=True)
     
-    # Lepas Penguncian HP Perangkat
     if device_id:
         release_device_lock(device_id, username_s)
         
@@ -1040,7 +1039,7 @@ def render_siswa():
             new_count = curr_count + 1
 
             # PENCATATAN AUDIT LOG KE DATABASE
-            record_violation(username_s, dev_ev, tg_ev, violation_type="SCREEN_BLUR_OR_PASTE")
+            record_violation(username_s, dev_ev, tg_ev, violation_type="VISIBILITY_HIDDEN_OR_PASTE")
 
             new_status = "active"
             if new_count >= 20:
@@ -1172,14 +1171,14 @@ def render_siswa():
                 "Harap fokus pada layar kuis! Jika poin mencapai **10 Poin**, kuis akan terkunci secara otomatis."
             )
 
-        # 6. SCRIPT JAVASCRIPT DETEKSI KECURANGAN & DEVICE LOCK FINGERPRINT
+        # 6. SCRIPT JAVASCRIPT DETEKSI KECURANGAN (LANGSUNG CATAT SAAT PINDAH TAB / APPS)
         cheat_script = f"""
         <script>
         (function() {{
             const userKey = "{username_s}_{tg_id}";
             const tgId = "{tg_id}";
             
-            // Auto generate/retrieve device fingerprint ID
+            // Inisialisasi Device ID
             let devId = localStorage.getItem("lms_device_id");
             if (!devId) {{
                 devId = "DEV-" + Math.random().toString(36).substring(2, 10).toUpperCase();
@@ -1190,31 +1189,33 @@ def render_siswa():
                 const now = Date.now();
                 const lastReport = parseInt(sessionStorage.getItem("last_rep_" + userKey) || "0");
                 
-                // Anti-bounce 2.5 detik
-                if (now - lastReport < 2500) return;
+                // Cooldown 3 detik untuk mencegah pemicu ganda sejenak
+                if (now - lastReport < 3000) return;
                 sessionStorage.setItem("last_rep_" + userKey, now.toString());
 
                 const targetUrl = window.parent.location.pathname + "?cheat_inc=1&tg=" + tgId + "&device_id=" + devId + "&ts=" + now;
 
-                // Paksa navigasi parent window Streamlit
                 try {{
-                    window.parent.location.replace(targetUrl);
+                    window.parent.location.href = targetUrl;
                 }} catch(e) {{
-                    window.top.location.href = targetUrl;
+                    window.location.href = targetUrl;
                 }}
             }}
 
-            // Detection Triggers: Pindah Tab/Layar & Copy-Paste Teks
-            window.addEventListener("blur", reportViolation);
+            // Deteksi Otomatis Saat Berpindah Tab / Buka Aplikasi Lain / Buka Web Lain (document.hidden == true)
             document.addEventListener("visibilitychange", function() {{
-                if (document.hidden) reportViolation();
+                if (document.hidden) {{
+                    reportViolation();
+                }}
             }});
+
             document.addEventListener("paste", reportViolation);
 
             try {{
-                window.parent.addEventListener("blur", reportViolation);
                 window.parent.document.addEventListener("visibilitychange", function() {{
-                    if (window.parent.document.hidden) reportViolation();
+                    if (window.parent.document.hidden) {{
+                        reportViolation();
+                    }}
                 }});
                 window.parent.document.addEventListener("paste", reportViolation);
             }} catch(err) {{}}
@@ -1279,7 +1280,12 @@ def render_siswa():
         if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
             tg_submit = dict(tg)
             tg_submit["soal"] = soal_list
-            success = submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_auto_submit=False, device_id=device_id)
+            
+            with st.spinner("Memproses pengumpulkan jawaban..."):
+                success = submit_jawaban_siswa(
+                    tg_submit, username_s, nama_s, kelas_s, answers, 
+                    is_auto_submit=False, device_id=device_id
+                )
             
             if success:
                 st.balloons()
@@ -1291,6 +1297,8 @@ def render_siswa():
                 st.session_state.pop(f"quiz_page_{tg_id}", None)
                 st.session_state.pop(f"quiz_soal_{tg_id}", None)
                 st.rerun()
+            else:
+                st.error("❌ Gagal mengumpulkan jawaban! Ujian Anda sedang dalam status terkunci (Penalti) atau telah dikumpulkan sebelumnya.")
 
         return
 
@@ -1318,7 +1326,6 @@ def render_siswa():
                     st.markdown(f"### 📝 {tg.get('judul')}")
                     st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | {len(tg.get('soal', []))} Soal")
                     if st.button("🚀 Mulai Kerjakan", key=f"start_{tg['id']}", type="primary"):
-                        # Validasi Kunci Perangkat
                         lock_ok, lock_msg = try_lock_device(device_id, username_s)
                         if not lock_ok:
                             st.error(f"🛑 {lock_msg}")
