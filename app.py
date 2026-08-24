@@ -50,6 +50,23 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 6px; overflow-x: auto; white-space: nowrap; border-bottom: 2px solid #eaeaea; padding-bottom: 4px; }
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 20px; font-weight: 600; }
     .stTabs [aria-selected="true"] { background-color: #1e3c72 !important; color: white !important; }
+    
+    /* ISOLASI TOTAL TOMBOL PELANGGARAN TERSEMBUNYI */
+    .violation-btn-hidden-wrapper {
+        position: fixed !important;
+        top: -9999px !important;
+        left: -9999px !important;
+        width: 0px !important;
+        height: 0px !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        visibility: hidden !important;
+        z-index: -9999 !important;
+        overflow: hidden !important;
+    }
+    .violation-btn-hidden-wrapper * {
+        pointer-events: none !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -978,9 +995,11 @@ def render_siswa():
         # PENENTUAN STATUS KUNCI AKSES
         is_locked = (violation_count >= 10 and not ijin_guru)
 
-        # Tombol Pemicu JS Disembunyikan & Dikunci Total dari Klik Siswa (CSS & Pointer-Events)
-        st.markdown('<div style="display: none !important; pointer-events: none !important; visibility: hidden !important;" aria-hidden="true">', unsafe_allow_html=True)
-        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
+        # ---------------------------------------------------------
+        # PEMICU TERSEMBUNYI (PEMINDAHAN TOTAL KE LUAR LAYAR & NO POINTER EVENTS)
+        # ---------------------------------------------------------
+        st.markdown('<div class="violation-btn-hidden-wrapper">', unsafe_allow_html=True)
+        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation"):
             if not is_locked:
                 violation_count += 1
                 db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
