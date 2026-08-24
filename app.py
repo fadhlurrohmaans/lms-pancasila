@@ -140,17 +140,23 @@ def is_materi_sesuai_kelas(materi_doc, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
-def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submit=False):
+def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submit=False, is_forced=False):
     tg_id = tg["id"]
     soal_list = tg.get("soal", [])
     total_soal = len(soal_list)
-    catatan = "Penilaian Otomatis Sistem (Submit Otomatis Kecurangan)" if is_auto_submit else "Penilaian Otomatis Sistem"
+    
+    if is_forced:
+        catatan = "Di-submit Paksa oleh Guru"
+    elif is_auto_submit:
+        catatan = "Penilaian Otomatis Sistem (Submit Otomatis Kecurangan)"
+    else:
+        catatan = "Penilaian Otomatis Sistem"
     
     if tg.get("tipe") == "pg":
         correct_count = 0
         formatted_ans = []
         for idx_q, sq in enumerate(soal_list):
-            user_a = answers[idx_q] if idx_q < len(answers) else None
+            user_a = answers[idx_q] if answers and idx_q < len(answers) else None
             formatted_ans.append(user_a if user_a is not None else -1)
             if user_a is not None and user_a == sq.get("kunci"):
                 correct_count += 1
@@ -166,7 +172,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submi
         db.collection("jawaban_siswa").add({
             "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
             "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay", "soal": soal_list,
-            "jawaban": formatted_ans, "nilai": None, "catatan_guru": "Di-submit Otomatis Sistem" if is_auto_submit else "",
+            "jawaban": formatted_ans, "nilai": None, "catatan_guru": catatan,
             "submitted_at": firestore.SERVER_TIMESTAMP
         })
 
@@ -726,6 +732,26 @@ def render_guru():
         sub_list = [{"id": d.id, **d.to_dict()} for d in sub_docs]
         sub_map = {s.get("username_siswa"): s for s in sub_list}
 
+        # FITUR BARU: TOMBOL SUBMIT ALL / SUBMIT PAKSA SEMUA SISWA
+        siswa_belum_submit = [s for s in siswa_list if s["username"] not in sub_map]
+        
+        st.divider()
+        col_sub_info, col_sub_btn = st.columns([2, 1])
+        with col_sub_info:
+            st.write(f"👥 Total Siswa: **{len(siswa_list)}** | Sudah: **{len(sub_list)}** | Belum: **{len(siswa_belum_submit)}**")
+        with col_sub_btn:
+            if siswa_belum_submit:
+                if st.button("⚡ Submit Paksa Semua Siswa Belum", type="primary", use_container_width=True):
+                    for s_unsub in siswa_belum_submit:
+                        s_un = s_unsub["username"]
+                        s_nm = s_unsub.get("nama", s_un)
+                        submit_jawaban_siswa(
+                            selected_tugas, s_un, s_nm, selected_kelas, 
+                            answers=[], is_auto_submit=False, is_forced=True
+                        )
+                    st.success(f"✅ Berhasil melakukan Submit Paksa untuk {len(siswa_belum_submit)} siswa!")
+                    st.rerun()
+
         rekap_rows = []
         for s in siswa_list:
             un = s["username"]
@@ -812,8 +838,7 @@ def render_guru():
                     kunci_idx = q.get("kunci", 0) if isinstance(q, dict) else 0
                     kunci_str = ['A', 'B', 'C', 'D'][kunci_idx] if 0 <= kunci_idx <= 3 else "A"
 
-                    # Hitung statistik per butir soal
-                    counts = [0, 0, 0, 0] # Distribusi pemilih A, B, C, D
+                    counts = [0, 0, 0, 0]
                     for sub in sub_list:
                         ans_list = sub.get("jawaban", [])
                         if idx - 1 < len(ans_list):
@@ -844,7 +869,7 @@ def render_guru():
                 st.dataframe(pd.DataFrame(analisis_rows), use_container_width=True)
 
         with t_unpause:
-            st.subheader("🚨 Buka Kunci Siswa Ter-Pause (Kecurangan 10x)")
+            st.subheader("🚨 Buka Kunci Siswa Ter-Pause & Akses Khusus")
             paused_docs = db.collection("status_ujian").where("id_tugas", "==", selected_tugas_id).where("status", "==", "paused").stream()
             paused_list = [d.to_dict() for d in paused_docs]
 
@@ -879,6 +904,10 @@ def render_siswa():
 
     active_quiz_id = st.session_state.get("active_quiz_id")
     if active_quiz_id:
+        doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
+        status_data = doc_status.to_dict() if doc_status.exists else {}
+
+        # FITUR PERBAIKAN: DETEKSI EVENT DARI QUERY PARAMS
         if "cheat_event" in st.query_params:
             cheat_ev = st.query_params.get("cheat_event")
             tg_ev = st.query_params.get("tg", active_quiz_id)
@@ -916,20 +945,21 @@ def render_siswa():
                 st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena terdeteksi berpindah tab/aplikasi sebanyak 20 kali.")
                 st.rerun()
 
-        doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
-        status_data = doc_status.to_dict() if doc_status.exists else {}
-
+        # FITUR PERBAIKAN: KUNCI TOTAL TAMPILAN JIKA PAUSED (TIDAK BISA DIKERJAKAN SAMA SEKALI)
         if status_data.get("status") == "paused":
             st.error("🛑 **KUIS DI-PAUSE SEMENTARA**")
-            st.warning("⚠️ Anda terdeteksi meninggalkan halaman kuis / berpindah tab sebanyak **10 kali**.\n\nHarap hubungi **Guru Pengampu** untuk membuka jeda (unpause) agar Anda dapat melanjutkan kuis.")
-            if st.button("🔄 Cek Status Izin Guru", type="primary"):
-                st.rerun()
-            if st.button("⬅️ Keluar dari Kuis"):
-                st.session_state["active_quiz_id"] = None
-                st.session_state.pop("active_quiz_data", None)
-                st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
-                st.rerun()
-            return
+            st.warning("⚠️ Anda terdeteksi meninggalkan halaman kuis / berpindah tab/aplikasi di HP sebanyak **10 kali**.\n\nHarap hubungi **Guru Pengampu** untuk membuka kunci (unpause) agar Anda dapat melanjutkan kuis.")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔄 Cek Status Izin Guru", type="primary", use_container_width=True):
+                    st.rerun()
+            with col2:
+                if st.button("⬅️ Keluar dari Kuis", use_container_width=True):
+                    st.session_state["active_quiz_id"] = None
+                    st.session_state.pop("active_quiz_data", None)
+                    st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
+                    st.rerun()
+            return  # Kunci mati, menghentikan render soal kuis di bawahnya!
 
         if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
             all_t = get_all_tugas_cached()
@@ -942,7 +972,6 @@ def render_siswa():
 
         tg_id = tg["id"]
 
-        # --- RANDOMISASI SOAL DAN OPSI JAWABAN PER SISWA ---
         if f"quiz_soal_{tg_id}" not in st.session_state:
             raw_soal = list(tg.get("soal", []))
             shuffled_soal = []
@@ -978,28 +1007,46 @@ def render_siswa():
             st.rerun()
 
         st.markdown(f"### 📝 {tg.get('judul')}")
-        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab** (Soal & Opsi Diacak Otomatis)")
+        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Status: **{terjawab_count}/{total_soal} Dijawab**")
 
+        # FITUR PERBAIKAN: MULTI-EVENT LISTENER KHUSUS MOBILE BROWSER (visibilitychange, blur, pagehide)
         cheat_script = f"""
         <script>
             const tgId = "{tg_id}";
             let cheatCount = parseInt(sessionStorage.getItem("cheatCount_" + tgId) || "0");
-            
-            document.addEventListener("visibilitychange", function() {{
-                if (document.hidden) {{
-                    cheatCount++;
-                    sessionStorage.setItem("cheatCount_" + tgId, cheatCount);
-                    
-                    if (cheatCount === 10) {{
-                        alert("⚠️ KECURANGAN TERDETEKSI 10 KALI! Kuis di-pause sementara. Minta izin ke Guru Anda untuk melanjutkan.");
-                        window.parent.location.search = "?cheat_event=10&tg=" + tgId;
-                    }} else if (cheatCount >= 20) {{
-                        alert("⚠️ KECURANGAN TERDETEKSI 20 KALI! Kuis Anda akan otomatis dikumpulkan sekarang!");
-                        window.parent.location.search = "?cheat_event=20&tg=" + tgId;
-                    }} else {{
-                        alert("⚠️ Dilarang berpindah tab/aplikasi! (Peringatan ke-" + cheatCount + ")");
-                    }}
+            let lastCheatTime = 0;
+            const targetWin = window.parent || window;
+
+            function triggerCheat(reason) {{
+                const now = Date.now();
+                if (now - lastCheatTime < 1500) return; // Mencegah double counting dalam rentang 1.5 detik
+                lastCheatTime = now;
+
+                cheatCount++;
+                sessionStorage.setItem("cheatCount_" + tgId, cheatCount);
+
+                if (cheatCount === 10) {{
+                    alert("⚠️ KECURANGAN TERDETEKSI 10 KALI! Kuis di-pause sementara. Minta izin ke Guru Anda untuk melanjutkan.");
+                    targetWin.location.search = "?cheat_event=10&tg=" + tgId;
+                }} else if (cheatCount >= 20) {{
+                    alert("⚠️ KECURANGAN TERDETEKSI 20 KALI! Kuis Anda akan otomatis dikumpulkan sekarang!");
+                    targetWin.location.search = "?cheat_event=20&tg=" + tgId;
+                }} else {{
+                    alert("⚠️ Dilarang berpindah tab/aplikasi (" + reason + ")! Peringatan ke-" + cheatCount);
                 }}
+            }}
+
+            // Detection untuk Laptop & HP (Mobile Browser Tab Switching/App Minimizing)
+            targetWin.addEventListener("visibilitychange", function() {{
+                if (targetWin.document.hidden) triggerCheat("Pindah Tab/Layar");
+            }});
+
+            targetWin.addEventListener("blur", function() {{
+                triggerCheat("Keluar Browser/Aplikasi");
+            }});
+
+            targetWin.addEventListener("pagehide", function() {{
+                triggerCheat("Meninggalkan Halaman");
             }});
         </script>
         """
@@ -1075,8 +1122,6 @@ def render_siswa():
         return
 
     all_tugas = [t for t in get_all_tugas_cached() if is_tugas_sesuai_kelas(t, kelas_s)]
-    total_tugas = len(all_tugas)
-    tugas_selesai = len(my_subs)
 
     st.markdown(f"""
         <div class="student-header">
