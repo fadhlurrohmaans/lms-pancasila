@@ -981,8 +981,8 @@ def render_siswa():
         # ---------------------------------------------------------
         # TOMBOL PEMICU JS (SEMBUNYI DARI UI SISWA)
         # ---------------------------------------------------------
-        st.markdown('<div style="display: none;">', unsafe_allow_html=True)
-        if st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary"):
+        st.markdown(
+        if '<div style="display: none;">', unsafe_allow_html=True)' st.button("⚠️ Catat Pelanggaran", key="btn_record_violation", type="secondary")'</div>', unsafe_allow_html=True)':
             violation_count += 1
             db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
                 "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
