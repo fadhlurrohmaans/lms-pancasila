@@ -763,7 +763,7 @@ def render_guru():
                 "Catatan Guru": sub.get("catatan_guru", "-") if sub else "-"
             })
 
-        t_rekap, t_koreksi, t_analisis = st.tabs(["📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "📈 Analisis Soal PG"])
+        t_rekap, t_koreksi, t_analisis = st.tabs(["📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "📈 Analisis & Validitas PG"])
 
         with t_rekap:
             st.dataframe(pd.DataFrame(rekap_rows), use_container_width=True)
@@ -813,9 +813,9 @@ def render_guru():
                                 st.rerun()
 
         with t_analisis:
-            st.subheader("📈 Analisis Butir Soal Pilihan Ganda")
+            st.subheader("📈 Analisis Butir Soal & Uji Validitas (PG)")
             if selected_tugas.get("tipe") != "pg":
-                st.info("ℹ️ Analisis butir soal saat ini khusus untuk tugas bertipe **Pilihan Ganda**.")
+                st.info("ℹ️ Analisis dan uji validitas saat ini khusus untuk tugas bertipe **Pilihan Ganda**.")
             elif not sub_list:
                 st.info("ℹ️ Belum ada siswa yang mengumpulkan tugas ini untuk dianalisis.")
             else:
@@ -830,7 +830,24 @@ def render_guru():
                 m4.metric("Nilai Terendah", f"{min(scores) if scores else 0}")
 
                 st.divider()
-                st.markdown("### 📋 Distribusi Pilihan Jawaban & Tingkat Kesukaran")
+                st.markdown("### 📋 Tingkat Kesukaran, Validitas & Distribusi Jawaban")
+
+                # Matriks Skor Siswa untuk Perhitungan Pearson (Item vs Total Skor)
+                matrix_data = []
+                for sub in sub_list:
+                    ans_list = sub.get("jawaban", [])
+                    row_scores = {}
+                    total_b = 0
+                    for idx, q in enumerate(soal_master):
+                        kunci_idx = q.get("kunci", 0) if isinstance(q, dict) else 0
+                        ans = ans_list[idx] if idx < len(ans_list) else None
+                        is_correct = 1 if (isinstance(ans, int) and ans == kunci_idx) else 0
+                        row_scores[f"Q_{idx}"] = is_correct
+                        total_b += is_correct
+                    row_scores["Total_Benar"] = total_b
+                    matrix_data.append(row_scores)
+
+                df_matrix = pd.DataFrame(matrix_data)
 
                 analisis_rows = []
                 for idx, q in enumerate(soal_master, 1):
@@ -849,20 +866,45 @@ def render_guru():
                     jml_benar = counts[kunci_idx]
                     pct_benar = round((jml_benar / total_responden) * 100, 1) if total_responden > 0 else 0
 
+                    # 1. Tingkat Kesukaran
                     if pct_benar >= 80:
-                        kategori = "🟢 Mudah"
+                        kategori_kesukaran = "🟢 Mudah"
                     elif pct_benar >= 30:
-                        kategori = "🟡 Sedang"
+                        kategori_kesukaran = "🟡 Sedang"
                     else:
-                        kategori = "🔴 Sukar"
+                        kategori_kesukaran = "🔴 Sukar"
+
+                    # 2. Uji Validitas Butir (Korelasi Pearson r_xy)
+                    q_col = f"Q_{idx-1}"
+                    validity_status = "⚪ N/A"
+                    
+                    if total_responden >= 3 and q_col in df_matrix.columns:
+                        std_q = df_matrix[q_col].std()
+                        std_tot = df_matrix["Total_Benar"].std()
+                        
+                        if std_q > 0 and std_tot > 0:
+                            r_val = df_matrix[q_col].corr(df_matrix["Total_Benar"])
+                            r_val = round(r_val, 3) if not pd.isna(r_val) else 0.0
+                            
+                            if r_val >= 0.30:
+                                validity_status = f"🟢 Valid ({r_val})"
+                            elif r_val >= 0.20:
+                                validity_status = f"🟡 Cukup ({r_val})"
+                            else:
+                                validity_status = f"🔴 Tidak Valid ({r_val})"
+                        else:
+                            validity_status = "⚪ Varian 0"
+                    else:
+                        validity_status = "⚪ Min. 3 Responden"
 
                     analisis_rows.append({
                         "No": idx,
-                        "Soal": q_text[:60] + ("..." if len(q_text) > 60 else ""),
+                        "Soal": q_text[:50] + ("..." if len(q_text) > 50 else ""),
                         "Kunci": kunci_str,
                         "Benar": f"{jml_benar}/{total_responden}",
                         "% Benar": f"{pct_benar}%",
-                        "Tingkat Kesukaran": kategori,
+                        "Kesukaran": kategori_kesukaran,
+                        "Status Validitas (r)": validity_status,
                         "Distribusi Opsi (A | B | C | D)": f"A: {counts[0]} | B: {counts[1]} | C: {counts[2]} | D: {counts[3]}"
                     })
 
