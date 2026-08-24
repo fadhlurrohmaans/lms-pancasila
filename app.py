@@ -1,15 +1,17 @@
+import os
+import json
+import io
+import re
+import random
+import string
+import hashlib
+from datetime import datetime
+
 import streamlit as st
 import streamlit.components.v1 as components
 import firebase_admin
 from firebase_admin import credentials, firestore
 import pandas as pd
-import hashlib
-import re
-import random
-import string
-import json
-import io
-from datetime import datetime
 import google.generativeai as genai
 
 # ==========================================
@@ -52,7 +54,72 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. FIREBASE & HIGH-PERFORMANCE CACHING
+# 2. ANTI-CHEAT CUSTOM COMPONENT FOR ANDROID
+# ==========================================
+COMPONENT_DIR = os.path.join(os.path.dirname(__file__), "anti_cheat_component") if "__file__" in globals() else "anti_cheat_component"
+os.makedirs(COMPONENT_DIR, exist_ok=True)
+
+index_html_path = os.path.join(COMPONENT_DIR, "index.html")
+with open(index_html_path, "w", encoding="utf-8") as f:
+    f.write("""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script>
+    function sendToStreamlit(data) {
+      window.parent.postMessage({
+        type: "streamlit:setComponentValue",
+        value: data
+      }, "*");
+    }
+
+    window.addEventListener("load", function() {
+      window.parent.postMessage({
+        type: "streamlit:setFrameHeight",
+        height: 0
+      }, "*");
+    });
+
+    function markViolation() {
+      sessionStorage.setItem("pending_cheat", "1");
+    }
+
+    function checkAndSend() {
+      if (sessionStorage.getItem("pending_cheat") === "1") {
+        sessionStorage.removeItem("pending_cheat");
+        var currentCount = parseInt(sessionStorage.getItem("cheat_total") || "0") + 1;
+        sessionStorage.setItem("cheat_total", currentCount.toString());
+        sendToStreamlit({ count: currentCount, ts: Date.now() });
+      }
+    }
+
+    document.addEventListener("visibilitychange", function() {
+      if (document.hidden) {
+        markViolation();
+      } else {
+        checkAndSend();
+      }
+    });
+
+    window.addEventListener("blur", markViolation);
+    window.addEventListener("focus", checkAndSend);
+    window.addEventListener("pageshow", checkAndSend);
+
+    document.addEventListener("paste", function() {
+      markViolation();
+      checkAndSend();
+    });
+
+    checkAndSend();
+  </script>
+</head>
+<body style="margin: 0; padding: 0;"></body>
+</html>""")
+
+anti_cheat_detector = components.declare_component("anti_cheat_detector", path=COMPONENT_DIR)
+
+# ==========================================
+# 3. FIREBASE & CACHING
 # ==========================================
 @st.cache_resource
 def init_firebase():
@@ -251,7 +318,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_auto_submi
     return True
 
 # ==========================================
-# 3. AI EVALUATION HELPER
+# 4. AI EVALUATION HELPER
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -314,7 +381,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         return None, f"Gagal mengeksekusi AI: {str(e)}"
 
 # ==========================================
-# 4. AUTHENTICATION
+# 5. AUTHENTICATION
 # ==========================================
 if "user" not in st.session_state:
     st.session_state["user"] = None
@@ -347,7 +414,7 @@ if st.session_state["user"] is None:
     st.stop()
 
 # ==========================================
-# 5. SIDEBAR
+# 6. SIDEBAR
 # ==========================================
 user_info = st.session_state["user"]
 role = user_info["role"]
@@ -369,7 +436,7 @@ if st.sidebar.button("🚪 Keluar / Logout"):
 st.sidebar.divider()
 
 # ==========================================
-# 6. PANEL SUPER ADMIN
+# 7. PANEL SUPER ADMIN
 # ==========================================
 def render_superadmin():
     st.title("⚙️ Panel Super Admin")
@@ -515,7 +582,7 @@ def render_superadmin():
                 st.rerun()
 
 # ==========================================
-# 7. PANEL GURU
+# 8. PANEL GURU
 # ==========================================
 def render_guru():
     st.title("🇮🇩 Panel Guru")
@@ -1011,14 +1078,13 @@ def render_guru():
                                 st.rerun()
 
 # ==========================================
-# 8. PANEL SISWA (EXAM MODE WITH LOCKDOWN)
+# 9. PANEL SISWA (EXAM MODE WITH LOCKDOWN)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
 
-    # Ambil Parameter Device ID jika dikirim oleh client browser
     device_id = st.query_params.get("device_id") or st.session_state.get("device_id", "BROWSER_CLIENT")
 
     my_subs = get_user_submissions_cached(username_s)
@@ -1026,56 +1092,58 @@ def render_siswa():
 
     if active_quiz_id:
         
-        # 1. HANDLER INKREMEN KECURANGAN REAL-TIME & AUDIT LOGGING
-        if "cheat_inc" in st.query_params:
-            tg_ev = st.query_params.get("tg", active_quiz_id)
-            dev_ev = st.query_params.get("device_id", device_id)
-            st.query_params.clear()
+        # 1. DETEKSI KECURANGAN VIA NATIVE POSTMESSAGE (ANDROID COMPATIBLE)
+        cheat_data = anti_cheat_detector(key=f"cheat_det_{username_s}_{active_quiz_id}")
 
-            doc_ref = db.collection("status_ujian").document(f"{username_s}_{tg_ev}")
-            doc_snap = doc_ref.get()
+        if cheat_data and isinstance(cheat_data, dict):
+            last_processed_ts = st.session_state.get("last_processed_cheat_ts", 0)
+            current_ts = cheat_data.get("ts", 0)
+            
+            if current_ts > last_processed_ts:
+                st.session_state["last_processed_cheat_ts"] = current_ts
+                
+                doc_ref = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}")
+                doc_snap = doc_ref.get()
+                curr_count = doc_snap.to_dict().get("cheat_count", 0) if doc_snap.exists else 0
+                new_count = curr_count + 1
+                
+                record_violation(username_s, device_id, active_quiz_id, violation_type="VISIBILITY_HIDDEN_OR_PASTE")
+                
+                new_status = "active"
+                if new_count >= 20:
+                    new_status = "submitted_cheat"
+                elif new_count >= 10:
+                    new_status = "paused"
+                elif new_count >= 5:
+                    new_status = "warning"
 
-            curr_count = doc_snap.to_dict().get("cheat_count", 0) if doc_snap.exists else 0
-            new_count = curr_count + 1
+                doc_ref.set({
+                    "username": username_s,
+                    "nama": nama_s,
+                    "id_tugas": active_quiz_id,
+                    "status": new_status,
+                    "cheat_count": new_count,
+                    "updated_at": firestore.SERVER_TIMESTAMP
+                }, merge=True)
 
-            # PENCATATAN AUDIT LOG KE DATABASE
-            record_violation(username_s, dev_ev, tg_ev, violation_type="VISIBILITY_HIDDEN_OR_PASTE")
+                if new_status == "submitted_cheat":
+                    all_t = get_all_tugas_cached()
+                    tg_obj = next((t for t in all_t if t["id"] == active_quiz_id), None)
+                    if tg_obj:
+                        answers = st.session_state.get(f"quiz_answers_{active_quiz_id}", [])
+                        soal_sess = st.session_state.get(f"quiz_soal_{active_quiz_id}", tg_obj.get("soal", []))
+                        tg_submit = dict(tg_obj)
+                        tg_submit["soal"] = soal_sess
+                        submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_auto_submit=True, device_id=device_id)
 
-            new_status = "active"
-            if new_count >= 20:
-                new_status = "submitted_cheat"
-            elif new_count >= 10:
-                new_status = "paused"
-            elif new_count >= 5:
-                new_status = "warning"
+                    st.session_state["active_quiz_id"] = None
+                    st.session_state.pop("active_quiz_data", None)
+                    st.session_state.pop(f"quiz_answers_{active_quiz_id}", None)
+                    st.session_state.pop(f"quiz_page_{active_quiz_id}", None)
+                    st.session_state.pop(f"quiz_soal_{active_quiz_id}", None)
+                    st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena mencapai 20 poin kecurangan (Diskualifikasi).")
 
-            doc_ref.set({
-                "username": username_s,
-                "nama": nama_s,
-                "id_tugas": tg_ev,
-                "status": new_status,
-                "cheat_count": new_count,
-                "updated_at": firestore.SERVER_TIMESTAMP
-            }, merge=True)
-
-            if new_status == "submitted_cheat":
-                all_t = get_all_tugas_cached()
-                tg_obj = next((t for t in all_t if t["id"] == tg_ev), None)
-                if tg_obj:
-                    answers = st.session_state.get(f"quiz_answers_{tg_ev}", [])
-                    soal_sess = st.session_state.get(f"quiz_soal_{tg_ev}", tg_obj.get("soal", []))
-                    tg_submit = dict(tg_obj)
-                    tg_submit["soal"] = soal_sess
-                    submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_auto_submit=True, device_id=dev_ev)
-
-                st.session_state["active_quiz_id"] = None
-                st.session_state.pop("active_quiz_data", None)
-                st.session_state.pop(f"quiz_answers_{tg_ev}", None)
-                st.session_state.pop(f"quiz_page_{tg_ev}", None)
-                st.session_state.pop(f"quiz_soal_{tg_ev}", None)
-                st.warning("⚠️ Kuis telah di-submit otomatis oleh sistem karena mencapai 20 poin kecurangan (Diskualifikasi).")
-
-            st.rerun()
+                st.rerun()
 
         # 2. STATUS CHECK TERBARU DARI FIRESTORE
         doc_status = db.collection("status_ujian").document(f"{username_s}_{active_quiz_id}").get()
@@ -1095,7 +1163,7 @@ def render_siswa():
                 st.rerun()
             return
 
-        # 4. KONDISI 10 POIN: PENALTI & KUNCI LAYAR (WAJIB IZIN GURU)
+        # 4. KONDISI 10 POIN: PENALTI & KUNCI LAYAR
         if quiz_status == "paused" or cheat_count >= 10:
             st.error("🛑 **KUIS TERKUNCI — PENALTI KECURANGAN (10+ POIN)**")
             st.warning(
@@ -1170,90 +1238,6 @@ def render_siswa():
                 f"⚠️ **PERINGATAN KECURANGAN ({cheat_count}/20 POIN)**: "
                 "Harap fokus pada layar kuis! Jika poin mencapai **10 Poin**, kuis akan terkunci secara otomatis."
             )
-
-        # 6. SCRIPT JAVASCRIPT DETEKSI KECURANGAN (OPTIMIZED FOR ANDROID & MOBILE)
-        cheat_script = f"""
-        <script>
-        (function() {{
-            const userKey = "{username_s}_{tg_id}";
-            const tgId = "{tg_id}";
-            
-            let devId = localStorage.getItem("lms_device_id");
-            if (!devId) {{
-                devId = "DEV-" + Math.random().toString(36).substring(2, 10).toUpperCase();
-                localStorage.setItem("lms_device_id", devId);
-            }}
-
-            function reportViolation() {{
-                const now = Date.now();
-                const lastReport = parseInt(sessionStorage.getItem("last_rep_" + userKey) || "0");
-                
-                // Jeda 3 detik untuk mencegah pemicu ganda
-                if (now - lastReport < 3000) return;
-                sessionStorage.setItem("last_rep_" + userKey, now.toString());
-
-                // Ambil URL jendela utama secara aman
-                let parentUrl = window.location.href;
-                try {{
-                    parentUrl = window.top.location.href;
-                }} catch(e) {{
-                    try {{ parentUrl = window.parent.location.href; }} catch(err) {{}}
-                }}
-
-                const url = new URL(parentUrl);
-                url.searchParams.set("cheat_inc", "1");
-                url.searchParams.set("tg", tgId);
-                url.searchParams.set("device_id", devId);
-                url.searchParams.set("ts", now.toString());
-
-                // Eksekusi redirect saat browser aktif di foreground
-                try {{
-                    window.top.location.href = url.toString();
-                }} catch(e) {{
-                    try {{ window.parent.location.href = url.toString(); }} catch(err) {{
-                        window.location.href = url.toString();
-                    }}
-                }}
-            }}
-
-            function markHidden() {{
-                sessionStorage.setItem("pending_violation_" + userKey, "1");
-            }}
-
-            function checkAndReport() {{
-                if (sessionStorage.getItem("pending_violation_" + userKey) === "1") {{
-                    sessionStorage.removeItem("pending_violation_" + userKey);
-                    reportViolation();
-                }}
-            }}
-
-            // 1. Catat bendera pelanggaran saat berpindah tab/aplikasi
-            document.addEventListener("visibilitychange", function() {{
-                if (document.hidden) {{
-                    markHidden();
-                }} else {{
-                    checkAndReport();
-                }}
-            }});
-
-            // 2. Tambahan listener blur/focus khusus browser Android Chrome
-            window.addEventListener("blur", markHidden);
-            window.addEventListener("focus", checkAndReport);
-            window.addEventListener("pageshow", checkAndReport);
-
-            // 3. Tangkap aksi Copy-Paste
-            document.addEventListener("paste", function() {{
-                markHidden();
-                checkAndReport();
-            }});
-
-            // 4. Periksa sisa status saat halaman kembali dimuat
-            checkAndReport();
-        }})();
-        </script>
-        """
-        
-        components.html(cheat_script, height=0)
 
         st.progress((curr_page + 1) / total_soal)
         soal_item = soal_list[curr_page]
@@ -1392,7 +1376,7 @@ def render_siswa():
                 st.write(f"- **{sub_info.get('judul_tugas')}**: Nilai **{sub_info.get('nilai', 'Menunggu')}**")
 
 # ==========================================
-# 9. MAIN ROUTER
+# 10. MAIN ROUTER
 # ==========================================
 if role == "superadmin":
     render_superadmin()
