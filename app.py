@@ -379,14 +379,12 @@ def render_superadmin():
         st.markdown("### 📄 Unduh Template Import")
         st.caption("Gunakan template di bawah ini agar format data sesuai saat melakukan upload.")
         
-        # DataFrame Template Siswa
         df_tpl_siswa = pd.DataFrame([
             {"nama": "Ahmad Santoso", "kelas": "X-1"},
             {"nama": "Siti Nurhaliza", "kelas": "X-2"}
         ])
         csv_tpl_siswa = df_tpl_siswa.to_csv(index=False).encode('utf-8-sig')
 
-        # DataFrame Template Guru
         df_tpl_guru = pd.DataFrame([
             {"nama": "Budi Gunawan, S.Pd.", "kelas": "X-1, X-2"},
             {"nama": "Dewi Sartika, M.Pd.", "kelas": "XI-1, XI-2"}
@@ -478,34 +476,52 @@ def render_superadmin():
             if data_siswa:
                 df_exp = pd.DataFrame(data_siswa)
                 st.download_button("💾 Unduh CSV Data Siswa Eksisting", df_exp.to_csv(index=False).encode('utf-8'), "data_siswa_eksisting.csv", "text/csv", use_container_width=True)
+
     with t_edit:
-        st.subheader("✏️ Atur Kelas User")
-        docs = db.collection("users").stream()
-        users_map = {d.id: f"{d.to_dict().get('nama')} (@{d.id}) - [{d.to_dict().get('role', '').upper()}]" for d in docs if d.to_dict().get("role") in ["siswa", "guru"]}
+        st.subheader("✏️ Atur Kelas User (Siswa & Guru)")
+        docs = list(db.collection("users").stream())
+        users_map = {
+            d.id: f"{d.to_dict().get('nama')} (@{d.id}) - [{d.to_dict().get('role', '').upper()}]" 
+            for d in docs if d.to_dict().get("role") in ["siswa", "guru"]
+        }
         daftar_k = get_all_kelas()
         
-        if users_map and daftar_k:
-            target_uid = st.selectbox("Pilih Pengguna", list(users_map.keys()), format_func=lambda x: users_map[x])
+        if not users_map:
+            st.info("Belum ada akun Guru atau Siswa terdaftar.")
+        elif not daftar_k:
+            st.warning("⚠️ Master Kelas belum diisi. Tambahkan kelas di tab 'Master Kelas' terlebih dahulu.")
+        else:
+            target_uid = st.selectbox("Pilih Pengguna yang Akan Diatur", list(users_map.keys()), format_func=lambda x: users_map[x])
             u_data = db.collection("users").document(target_uid).get().to_dict()
+            u_role = u_data.get("role", "")
             
-            with st.form("form_edit_user_k"):
-                if u_data.get("role") == "siswa":
+            with st.form(key=f"form_edit_user_k_{target_uid}"):
+                if u_role == "siswa":
                     curr_k = u_data.get("kelas", "")
                     idx_k = daftar_k.index(curr_k) if curr_k in daftar_k else 0
-                    new_k = st.selectbox("Kelas Baru", options=daftar_k, index=idx_k)
-                    if st.form_submit_button("Simpan Perubahan Kelas"):
+                    new_k = st.selectbox("Pilih Kelas Baru Siswa", options=daftar_k, index=idx_k, key=f"sb_siswa_{target_uid}")
+                    
+                    if st.form_submit_button("💾 Simpan Perubahan Kelas Siswa", type="primary"):
                         db.collection("users").document(target_uid).update({"kelas": new_k})
-                        st.success("✅ Kelas Siswa berhasil diupdate!")
+                        st.success(f"✅ Kelas untuk siswa '{u_data.get('nama')}' berhasil diubah ke {new_k}!")
                         st.rerun()
                 else:
                     curr_ka = u_data.get("kelas_ajar", [])
-                    if isinstance(curr_ka, str): curr_ka = [curr_ka]
+                    if isinstance(curr_ka, str): 
+                        curr_ka = [curr_ka]
                     valid_defaults = [k for k in curr_ka if k in daftar_k]
                     
-                    new_ka = st.multiselect("Kelas Ajar Baru Guru", options=daftar_k, default=valid_defaults)
-                    if st.form_submit_button("Simpan Perubahan Kelas Ajar"):
+                    st.write(f"👤 **Pengaturan Kelas Ajar untuk Guru:** {u_data.get('nama')}")
+                    new_ka = st.multiselect(
+                        "Tentukan Kelas Ajar Guru (Bisa Pilih Lebih dari Satu):", 
+                        options=daftar_k, 
+                        default=valid_defaults,
+                        key=f"ms_guru_{target_uid}"
+                    )
+                    
+                    if st.form_submit_button("💾 Simpan Perubahan Kelas Ajar Guru", type="primary"):
                         db.collection("users").document(target_uid).update({"kelas_ajar": new_ka})
-                        st.success("✅ Kelas Ajar Guru berhasil diupdate!")
+                        st.success(f"✅ Berhasil memperbarui kelas ajar untuk Guru '{u_data.get('nama')}'!")
                         st.rerun()
 
     with t_del:
@@ -517,6 +533,7 @@ def render_superadmin():
                 db.collection("users").document(target_del).delete()
                 st.success("✅ Akun berhasil dihapus!")
                 st.rerun()
+
 # ==========================================
 # 7. PANEL GURU
 # ==========================================
