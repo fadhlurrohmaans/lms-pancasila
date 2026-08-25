@@ -116,13 +116,18 @@ def hash_pass(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def generate_username(nama):
-    base_username = re.sub(r'[^a-z0-9]', '', nama.lower()) or "siswa"
+    # Ambil kata pertama saja
+    first_name = nama.strip().split()[0] if nama.strip() else "siswa"
+    
+    # Bersihkan karakter non-alphanumeric dan batasi maksimal 10 karakter
+    base_username = re.sub(r'[^a-z0-9]', '', first_name.lower())[:5] or "siswa"
+    
     username, counter = base_username, 1
     while db.collection("users").document(username).get().exists:
         username = f"{base_username}{counter}"
         counter += 1
     return username
-
+    
 def generate_password(length=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
