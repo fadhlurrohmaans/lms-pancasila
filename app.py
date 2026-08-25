@@ -374,13 +374,53 @@ def render_superadmin():
 
     with t_imp:
         st.subheader("📥 Import User & 📤 Export Data")
+        
+        # --- TOMBOL DOWNLOAD TEMPLATE ---
+        st.markdown("### 📄 Unduh Template Import")
+        st.caption("Gunakan template di bawah ini agar format data sesuai saat melakukan upload.")
+        
+        # DataFrame Template Siswa
+        df_tpl_siswa = pd.DataFrame([
+            {"nama": "Ahmad Santoso", "kelas": "X-1"},
+            {"nama": "Siti Nurhaliza", "kelas": "X-2"}
+        ])
+        csv_tpl_siswa = df_tpl_siswa.to_csv(index=False).encode('utf-8-sig')
+
+        # DataFrame Template Guru
+        df_tpl_guru = pd.DataFrame([
+            {"nama": "Budi Gunawan, S.Pd.", "kelas": "X-1, X-2"},
+            {"nama": "Dewi Sartika, M.Pd.", "kelas": "XI-1, XI-2"}
+        ])
+        csv_tpl_guru = df_tpl_guru.to_csv(index=False).encode('utf-8-sig')
+
+        c_tpl_s, c_tpl_g = st.columns(2)
+        with c_tpl_s:
+            st.download_button(
+                label="📄 Unduh Template Siswa (.csv)",
+                data=csv_tpl_siswa,
+                file_name="template_import_siswa.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        with c_tpl_g:
+            st.download_button(
+                label="📄 Unduh Template Guru (.csv)",
+                data=csv_tpl_guru,
+                file_name="template_import_guru.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+        st.divider()
+
+        # --- FORM IMPORT & EXPORT ---
         target_role_imp = st.radio("Pilih Peran User yang Akan Di-import:", ["Siswa", "Guru"], horizontal=True)
         st.info("💡 **Format File Import (.csv / .xlsx)**: Wajib memiliki 2 kolom utama: **`nama`** dan **`kelas`**.\n\n*Catatan untuk Guru:* Jika mengajar lebih dari 1 kelas, pisahkan nama kelas dengan koma (contoh: `X-1, X-2`).")
         
         col_imp, col_exp = st.columns(2)
         with col_imp:
             up_file = st.file_uploader(f"Unggah File Data {target_role_imp} (.csv / .xlsx)", type=["csv", "xlsx"])
-            if up_file and st.button(f"🚀 Import {target_role_imp}", type="primary"):
+            if up_file and st.button(f"🚀 Import {target_role_imp}", type="primary", use_container_width=True):
                 df = safe_read_uploaded_file(up_file)
                 df.columns = [str(c).strip().lower() for c in df.columns]
                 
@@ -400,7 +440,6 @@ def render_superadmin():
                         n_key = n_str.lower()
                         
                         if role_str == "guru":
-                            # Memecah string kelas yang dipisahkan koma menjadi list
                             list_kelas = [k.strip() for k in k_str.split(",") if k.strip()]
                             if n_key in exist_map:
                                 db.collection("users").document(exist_map[n_key]).update({"kelas_ajar": list_kelas})
@@ -438,8 +477,7 @@ def render_superadmin():
             ]
             if data_siswa:
                 df_exp = pd.DataFrame(data_siswa)
-                st.download_button("💾 Unduh CSV Data Siswa", df_exp.to_csv(index=False).encode('utf-8'), "data_siswa.csv", "text/csv")
-
+                st.download_button("💾 Unduh CSV Data Siswa Eksisting", df_exp.to_csv(index=False).encode('utf-8'), "data_siswa_eksisting.csv", "text/csv", use_container_width=True)
     with t_edit:
         st.subheader("✏️ Atur Kelas User")
         docs = db.collection("users").stream()
