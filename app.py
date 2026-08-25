@@ -688,16 +688,17 @@ def render_guru():
                 sel_id = st.selectbox("Pilih Tugas yang Akan Diedit", list(tg_map.keys()), format_func=lambda x: tg_map[x])
                 target_tg = next(t for t in tugas_list if t["id"] == sel_id)
 
-                with st.form("form_update_tg"):
-                    e_judul = st.text_input("Judul Tugas", value=target_tg.get("judul", ""))
-                    e_instruksi = st.text_area("Instruksi Tugas", value=target_tg.get("instruksi", ""))
-                    e_target = st.multiselect("Target Kelas", options=pilihan_kelas, default=target_tg.get("target_kelas", pilihan_kelas))
+                with st.form(key=f"form_update_tg_{sel_id}"):
+                    e_judul = st.text_input("Judul Tugas", value=target_tg.get("judul", ""), key=f"e_judul_{sel_id}")
+                    e_instruksi = st.text_area("Instruksi Tugas", value=target_tg.get("instruksi", ""), key=f"e_instruksi_{sel_id}")
+                    e_target = st.multiselect("Target Kelas", options=pilihan_kelas, default=target_tg.get("target_kelas", pilihan_kelas), key=f"e_target_{sel_id}")
                     e_status = st.radio(
                         "Status Publikasi", 
                         ["terbit", "draft"], 
                         index=0 if target_tg.get("status", "terbit") == "terbit" else 1, 
                         format_func=lambda x: "🟢 Terbit (Tampil ke Siswa)" if x == "terbit" else "🔴 Draft (Sembunyikan)", 
-                        horizontal=True
+                        horizontal=True,
+                        key=f"e_status_{sel_id}"
                     )
                     
                     tipe_tugas = target_tg.get("tipe", "pg")
@@ -708,21 +709,22 @@ def render_guru():
                         for i, s in enumerate(existing_soal):
                             st.markdown(f"**Soal #{i+1}**")
                             q_val = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
-                            e_q = st.text_area(f"Pertanyaan #{i+1}", value=q_val, key=f"e_q_{i}")
+                            # Menambahkan sel_id pada key widget agar tidak bentrok antar kuis
+                            e_q = st.text_area(f"Pertanyaan #{i+1}", value=q_val, key=f"e_q_{sel_id}_{i}")
                             opsi = s.get("opsi", ["", "", "", ""]) if isinstance(s, dict) else ["", "", "", ""]
                             c1, c2 = st.columns(2)
-                            e_o0 = c1.text_input(f"A #{i+1}", value=opsi[0] if len(opsi)>0 else "", key=f"e_a_{i}")
-                            e_o1 = c1.text_input(f"B #{i+1}", value=opsi[1] if len(opsi)>1 else "", key=f"e_b_{i}")
-                            e_o2 = c2.text_input(f"C #{i+1}", value=opsi[2] if len(opsi)>2 else "", key=f"e_c_{i}")
-                            e_o3 = c2.text_input(f"D #{i+1}", value=opsi[3] if len(opsi)>3 else "", key=f"e_d_{i}")
+                            e_o0 = c1.text_input(f"A #{i+1}", value=opsi[0] if len(opsi)>0 else "", key=f"e_a_{sel_id}_{i}")
+                            e_o1 = c1.text_input(f"B #{i+1}", value=opsi[1] if len(opsi)>1 else "", key=f"e_b_{sel_id}_{i}")
+                            e_o2 = c2.text_input(f"C #{i+1}", value=opsi[2] if len(opsi)>2 else "", key=f"e_c_{sel_id}_{i}")
+                            e_o3 = c2.text_input(f"D #{i+1}", value=opsi[3] if len(opsi)>3 else "", key=f"e_d_{sel_id}_{i}")
                             curr_k = s.get("kunci", 0) if isinstance(s, dict) else 0
                             curr_idx = int(curr_k) if isinstance(curr_k, int) and 0 <= int(curr_k) <= 3 else 0
-                            e_k = st.selectbox(f"Kunci Jawaban #{i+1}", [0, 1, 2, 3], index=curr_idx, format_func=lambda x: ['A','B','C','D'][x], key=f"e_k_{i}")
+                            e_k = st.selectbox(f"Kunci Jawaban #{i+1}", [0, 1, 2, 3], index=curr_idx, format_func=lambda x: ['A','B','C','D'][x], key=f"e_k_{sel_id}_{i}")
                             updated_soal.append({"pertanyaan": e_q, "opsi": [e_o0, e_o1, e_o2, e_o3], "kunci": e_k})
                     else:
                         for i, s in enumerate(existing_soal):
                             q_val = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
-                            e_q = st.text_area(f"Soal Essay #{i+1}", value=q_val, key=f"e_qe_{i}")
+                            e_q = st.text_area(f"Soal Essay #{i+1}", value=q_val, key=f"e_qe_{sel_id}_{i}")
                             updated_soal.append({"pertanyaan": e_q})
 
                     if st.form_submit_button("💾 Perbarui Tugas & Soal"):
@@ -733,7 +735,6 @@ def render_guru():
                         clear_tugas_cache()
                         st.success("✅ Berhasil! Informasi tugas dan soal telah diperbarui.")
                         st.rerun()
-
         with t_imp:
             st.subheader("📥 Import Soal Tugas (.csv / .xlsx)")
             st.info("💡 **Unduh Template Soal:** Gunakan tombol di bawah ini untuk mengunduh format CSV yang sesuai.")
