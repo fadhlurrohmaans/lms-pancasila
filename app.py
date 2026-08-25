@@ -116,10 +116,7 @@ def hash_pass(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def generate_username(nama):
-    # Ambil kata pertama saja
     first_name = nama.strip().split()[0] if nama.strip() else "siswa"
-    
-    # Bersihkan karakter non-alphanumeric dan batasi maksimal 10 karakter
     base_username = re.sub(r'[^a-z0-9]', '', first_name.lower())[:5] or "siswa"
     
     username, counter = base_username, 1
@@ -375,7 +372,6 @@ def render_superadmin():
     with t_imp:
         st.subheader("📥 Import User & 📤 Export Data")
         
-        # --- TOMBOL DOWNLOAD TEMPLATE ---
         st.markdown("### 📄 Unduh Template Import")
         st.caption("Gunakan template di bawah ini agar format data sesuai saat melakukan upload.")
         
@@ -411,7 +407,6 @@ def render_superadmin():
 
         st.divider()
 
-        # --- FORM IMPORT & EXPORT ---
         target_role_imp = st.radio("Pilih Peran User yang Akan Di-import:", ["Siswa", "Guru"], horizontal=True)
         st.info("💡 **Format File Import (.csv / .xlsx)**: Wajib memiliki 2 kolom utama: **`nama`** dan **`kelas`**.\n\n*Catatan untuk Guru:* Jika mengajar lebih dari 1 kelas, pisahkan nama kelas dengan koma (contoh: `X-1, X-2`).")
         
@@ -533,7 +528,7 @@ def render_superadmin():
                 db.collection("users").document(target_del).delete()
                 st.success("✅ Akun berhasil dihapus!")
                 st.rerun()
-                
+
 # ==========================================
 # 7. PANEL GURU
 # ==========================================
@@ -614,21 +609,40 @@ def render_guru():
         t_list, t_buat, t_edit, t_imp = st.tabs(["📋 Daftar", "➕ Buat Tugas", "✏️ Edit Tugas", "📥 Import Soal"])
 
         with t_list:
-            for tg in get_all_tugas_cached():
-                target_str = ", ".join(tg.get("target_kelas", [])) if tg.get("target_kelas") else "Semua"
-                with st.expander(f"[{'PG' if tg.get('tipe')=='pg' else 'Essay'}] {tg.get('judul')} (Kelas: {target_str})"):
-                    st.write(f"**Instruksi:** {tg.get('instruksi')}")
-                    st.write(f"**Jumlah Soal:** {len(tg.get('soal', []))}")
-                    if st.button(f"🗑️ Hapus Tugas", key=f"del_{tg['id']}", type="primary"):
-                        db.collection("tugas_pancasila").document(tg["id"]).delete()
-                        clear_tugas_cache()
-                        st.success("✅ Berhasil! Tugas telah dihapus.")
-                        st.rerun()
+            tugas_cached = get_all_tugas_cached()
+            if not tugas_cached:
+                st.info("Belum ada tugas/kuis yang dibuat.")
+            else:
+                for tg in tugas_cached:
+                    target_str = ", ".join(tg.get("target_kelas", [])) if tg.get("target_kelas") else "Semua"
+                    is_published = tg.get("status", "terbit") == "terbit"
+                    status_label = "🟢 Terbit" if is_published else "🔴 Draft (Tidak Terbit)"
+                    
+                    with st.expander(f"[{'PG' if tg.get('tipe')=='pg' else 'Essay'}] {tg.get('judul')} ({status_label} | Kelas: {target_str})"):
+                        st.write(f"**Instruksi:** {tg.get('instruksi')}")
+                        st.write(f"**Jumlah Soal:** {len(tg.get('soal', []))}")
+                        st.write(f"**Status Publikasi:** {status_label}")
+                        
+                        col_t1, col_t2 = st.columns(2)
+                        with col_t1:
+                            new_st = "draft" if is_published else "terbit"
+                            btn_st_label = "🔴 Ubah ke Draft" if is_published else "🟢 Terbitkan Tugas"
+                            if st.button(btn_st_label, key=f"toggle_st_{tg['id']}"):
+                                db.collection("tugas_pancasila").document(tg["id"]).update({"status": new_st})
+                                clear_tugas_cache()
+                                st.rerun()
+                        with col_t2:
+                            if st.button(f"🗑️ Hapus Tugas", key=f"del_{tg['id']}", type="primary"):
+                                db.collection("tugas_pancasila").document(tg["id"]).delete()
+                                clear_tugas_cache()
+                                st.success("✅ Berhasil! Tugas telah dihapus.")
+                                st.rerun()
 
         with t_buat:
             judul = st.text_input("Judul Tugas")
             instruksi = st.text_area("Instruksi")
             target_k = st.multiselect("Target Kelas", options=pilihan_kelas, default=pilihan_kelas)
+            status_t = st.radio("Status Publikasi", ["terbit", "draft"], format_func=lambda x: "🟢 Terbit (Langsung Tampil ke Siswa)" if x == "terbit" else "🔴 Draft (Tidak Terbit)", horizontal=True)
             tipe_t = st.radio("Tipe Soal", ["Pilihan Ganda", "Essay"])
 
             if tipe_t == "Pilihan Ganda":
@@ -647,10 +661,10 @@ def render_guru():
                         if judul and target_k:
                             db.collection("tugas_pancasila").add({
                                 "judul": judul, "instruksi": instruksi, "tipe": "pg", "target_kelas": target_k,
-                                "soal": soal_list, "created_at": firestore.SERVER_TIMESTAMP
+                                "status": status_t, "soal": soal_list, "created_at": firestore.SERVER_TIMESTAMP
                             })
                             clear_tugas_cache()
-                            st.success("✅ Berhasil! Tugas Pilihan Ganda berhasil diterbitkan.")
+                            st.success("✅ Berhasil! Tugas Pilihan Ganda berhasil disimpan.")
                             st.rerun()
             else:
                 n_essay = st.number_input("Jumlah Soal Essay", 1, 10, 2)
@@ -660,17 +674,17 @@ def render_guru():
                         if judul and target_k:
                             db.collection("tugas_pancasila").add({
                                 "judul": judul, "instruksi": instruksi, "tipe": "essay", "target_kelas": target_k,
-                                "soal": soal_list, "created_at": firestore.SERVER_TIMESTAMP
+                                "status": status_t, "soal": soal_list, "created_at": firestore.SERVER_TIMESTAMP
                             })
                             clear_tugas_cache()
-                            st.success("✅ Berhasil! Tugas Essay berhasil diterbitkan.")
+                            st.success("✅ Berhasil! Tugas Essay berhasil disimpan.")
                             st.rerun()
 
         with t_edit:
             st.subheader("✏️ Edit Tugas & Soal")
             tugas_list = get_all_tugas_cached()
             if tugas_list:
-                tg_map = {t["id"]: f"[{t.get('tipe', '').upper()}] {t.get('judul')}" for t in tugas_list}
+                tg_map = {t["id"]: f"[{'🟢 Terbit' if t.get('status', 'terbit') == 'terbit' else '🔴 Draft'}] {t.get('judul')}" for t in tugas_list}
                 sel_id = st.selectbox("Pilih Tugas yang Akan Diedit", list(tg_map.keys()), format_func=lambda x: tg_map[x])
                 target_tg = next(t for t in tugas_list if t["id"] == sel_id)
 
@@ -678,6 +692,13 @@ def render_guru():
                     e_judul = st.text_input("Judul Tugas", value=target_tg.get("judul", ""))
                     e_instruksi = st.text_area("Instruksi Tugas", value=target_tg.get("instruksi", ""))
                     e_target = st.multiselect("Target Kelas", options=pilihan_kelas, default=target_tg.get("target_kelas", pilihan_kelas))
+                    e_status = st.radio(
+                        "Status Publikasi", 
+                        ["terbit", "draft"], 
+                        index=0 if target_tg.get("status", "terbit") == "terbit" else 1, 
+                        format_func=lambda x: "🟢 Terbit (Tampil ke Siswa)" if x == "terbit" else "🔴 Draft (Sembunyikan)", 
+                        horizontal=True
+                    )
                     
                     tipe_tugas = target_tg.get("tipe", "pg")
                     existing_soal = target_tg.get("soal", [])
@@ -707,7 +728,7 @@ def render_guru():
                     if st.form_submit_button("💾 Perbarui Tugas & Soal"):
                         db.collection("tugas_pancasila").document(sel_id).update({
                             "judul": e_judul, "instruksi": e_instruksi, "target_kelas": e_target,
-                            "soal": updated_soal, "updated_at": firestore.SERVER_TIMESTAMP
+                            "status": e_status, "soal": updated_soal, "updated_at": firestore.SERVER_TIMESTAMP
                         })
                         clear_tugas_cache()
                         st.success("✅ Berhasil! Informasi tugas dan soal telah diperbarui.")
@@ -749,6 +770,7 @@ def render_guru():
             imp_judul = st.text_input("Judul Tugas Baru")
             imp_instruksi = st.text_area("Instruksi (Opsional)")
             imp_target = st.multiselect("Target Kelas Import", options=pilihan_kelas, default=pilihan_kelas)
+            imp_status = st.radio("Status Publikasi Import", ["terbit", "draft"], format_func=lambda x: "🟢 Terbit" if x == "terbit" else "🔴 Draft", horizontal=True)
             imp_tipe = st.selectbox("Tipe Soal Import", ["pg", "essay"])
 
             if up_soal and imp_judul and imp_target and st.button("🚀 Import Soal Sekarang", type="primary"):
@@ -790,7 +812,7 @@ def render_guru():
 
                 db.collection("tugas_pancasila").add({
                     "judul": imp_judul, "instruksi": imp_instruksi, "tipe": imp_tipe, "target_kelas": imp_target,
-                    "soal": parsed_s, "created_at": firestore.SERVER_TIMESTAMP
+                    "status": imp_status, "soal": parsed_s, "created_at": firestore.SERVER_TIMESTAMP
                 })
                 clear_tugas_cache()
                 st.success(f"✅ Berhasil! {len(parsed_s)} soal berhasil diimpor.")
@@ -807,7 +829,7 @@ def render_guru():
         if not tugas_kelas: st.info(f"Belum ada tugas untuk Kelas **{selected_kelas}**."); st.stop()
 
         with col_t:
-            tg_options = {t["id"]: f"[{t.get('tipe', '').upper()}] {t.get('judul')}" for t in tugas_kelas}
+            tg_options = {t["id"]: f"[{'🟢 Terbit' if t.get('status', 'terbit') == 'terbit' else '🔴 Draft'}] [{t.get('tipe', '').upper()}] {t.get('judul')}" for t in tugas_kelas}
             selected_tugas_id = st.selectbox("📝 Pilih Tugas", list(tg_options.keys()), format_func=lambda x: tg_options[x])
             selected_tugas = next(t for t in tugas_kelas if t["id"] == selected_tugas_id)
 
@@ -1246,7 +1268,11 @@ def render_siswa():
 
         return
 
-    all_tugas = [t for t in get_all_tugas_cached() if is_target_sesuai_kelas(t, kelas_s)]
+    # Filter tugas agar siswa HANYA melihat tugas yang diterbitkan
+    all_tugas = [
+        t for t in get_all_tugas_cached() 
+        if is_target_sesuai_kelas(t, kelas_s) and t.get("status", "terbit") == "terbit"
+    ]
 
     st.markdown(f"""
         <div class="student-header">
