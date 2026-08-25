@@ -342,7 +342,7 @@ def render_superadmin():
                 "Username": d.id,
                 "Nama": (u := d.to_dict()).get("nama"),
                 "Role": u.get("role", "").upper(),
-                "Kelas": u.get("kelas", "-") if u.get("role") == "siswa" else ", ".join(u.get("kelas_ajar", []))
+                "Kelas": u.get("kelas", "-") if u.get("role") == "siswa" else ", ".join(u.get("kelas_ajar", []) if isinstance(u.get("kelas_ajar"), list) else [u.get("kelas_ajar", "")])
             } for d in all_user_docs
         ]
         if users: st.dataframe(pd.DataFrame(users), use_container_width=True)
@@ -373,34 +373,63 @@ def render_superadmin():
                         st.rerun()
 
     with t_imp:
-        st.subheader("📥 Import & 📤 Export Siswa")
+        st.subheader("📥 Import User & 📤 Export Data")
+        target_role_imp = st.radio("Pilih Peran User yang Akan Di-import:", ["Siswa", "Guru"], horizontal=True)
+        st.info("💡 **Format File Import (.csv / .xlsx)**: Wajib memiliki 2 kolom utama: **`nama`** dan **`kelas`**.\n\n*Catatan untuk Guru:* Jika mengajar lebih dari 1 kelas, pisahkan nama kelas dengan koma (contoh: `X-1, X-2`).")
+        
         col_imp, col_exp = st.columns(2)
         with col_imp:
-            up_file = st.file_uploader("Unggah File Siswa (.csv / .xlsx)", type=["csv", "xlsx"])
-            if up_file and st.button("🚀 Import Siswa", type="primary"):
+            up_file = st.file_uploader(f"Unggah File Data {target_role_imp} (.csv / .xlsx)", type=["csv", "xlsx"])
+            if up_file and st.button(f"🚀 Import {target_role_imp}", type="primary"):
                 df = safe_read_uploaded_file(up_file)
                 df.columns = [str(c).strip().lower() for c in df.columns]
+                
                 if "nama" in df.columns and "kelas" in df.columns:
-                    exist_map = {d.to_dict().get("nama", "").strip().lower(): d.id for d in db.collection("users").where("role", "==", "siswa").stream()}
+                    role_str = target_role_imp.lower()
+                    exist_map = {
+                        d.to_dict().get("nama", "").strip().lower(): d.id 
+                        for d in db.collection("users").where("role", "==", role_str).stream()
+                    }
                     c_new, c_up = 0, 0
+                    
                     for _, r in df.iterrows():
-                        n_str, k_str = str(r["nama"]).strip(), str(r["kelas"]).strip()
+                        n_str = str(r["nama"]).strip()
+                        k_str = str(r["kelas"]).strip()
                         if not n_str or pd.isna(r["nama"]): continue
                         
                         n_key = n_str.lower()
-                        if n_key in exist_map:
-                            db.collection("users").document(exist_map[n_key]).update({"kelas": k_str})
-                            c_up += 1
+                        
+                        if role_str == "guru":
+                            # Memecah string kelas yang dipisahkan koma menjadi list
+                            list_kelas = [k.strip() for k in k_str.split(",") if k.strip()]
+                            if n_key in exist_map:
+                                db.collection("users").document(exist_map[n_key]).update({"kelas_ajar": list_kelas})
+                                c_up += 1
+                            else:
+                                un = generate_username(n_str)
+                                pw = generate_password()
+                                db.collection("users").document(un).set({
+                                    "nama": n_str, "password": hash_pass(pw), "password_plain": pw,
+                                    "role": "guru", "kelas_ajar": list_kelas, "created_at": firestore.SERVER_TIMESTAMP
+                                })
+                                c_new += 1
                         else:
-                            un = generate_username(n_str)
-                            pw = generate_password()
-                            db.collection("users").document(un).set({
-                                "nama": n_str, "password": hash_pass(pw), "password_plain": pw,
-                                "role": "siswa", "kelas": k_str, "created_at": firestore.SERVER_TIMESTAMP
-                            })
-                            c_new += 1
-                    st.success(f"✅ Selesai: {c_new} baru, {c_up} diperbarui.")
+                            if n_key in exist_map:
+                                db.collection("users").document(exist_map[n_key]).update({"kelas": k_str})
+                                c_up += 1
+                            else:
+                                un = generate_username(n_str)
+                                pw = generate_password()
+                                db.collection("users").document(un).set({
+                                    "nama": n_str, "password": hash_pass(pw), "password_plain": pw,
+                                    "role": "siswa", "kelas": k_str, "created_at": firestore.SERVER_TIMESTAMP
+                                })
+                                c_new += 1
+                    
+                    st.success(f"✅ Selesai: {c_new} akun baru dibuat, {c_up} akun diperbarui.")
                     st.rerun()
+                else:
+                    st.error("❌ Format kolom file tidak sesuai! Pastikan terdapat kolom **nama** dan **kelas**.")
 
         with col_exp:
             data_siswa = [
@@ -414,36 +443,42 @@ def render_superadmin():
     with t_edit:
         st.subheader("✏️ Atur Kelas User")
         docs = db.collection("users").stream()
-        users_map = {d.id: f"{d.to_dict().get('nama')} (@{d.id})" for d in docs if d.to_dict().get("role") in ["siswa", "guru"]}
+        users_map = {d.id: f"{d.to_dict().get('nama')} (@{d.id}) - [{d.to_dict().get('role', '').upper()}]" for d in docs if d.to_dict().get("role") in ["siswa", "guru"]}
         daftar_k = get_all_kelas()
+        
         if users_map and daftar_k:
             target_uid = st.selectbox("Pilih Pengguna", list(users_map.keys()), format_func=lambda x: users_map[x])
             u_data = db.collection("users").document(target_uid).get().to_dict()
             
             with st.form("form_edit_user_k"):
                 if u_data.get("role") == "siswa":
-                    new_k = st.selectbox("Kelas Baru", options=daftar_k)
-                    if st.form_submit_button("Simpan"):
+                    curr_k = u_data.get("kelas", "")
+                    idx_k = daftar_k.index(curr_k) if curr_k in daftar_k else 0
+                    new_k = st.selectbox("Kelas Baru", options=daftar_k, index=idx_k)
+                    if st.form_submit_button("Simpan Perubahan Kelas"):
                         db.collection("users").document(target_uid).update({"kelas": new_k})
-                        st.success("✅ Berhasil diupdate!")
+                        st.success("✅ Kelas Siswa berhasil diupdate!")
                         st.rerun()
                 else:
-                    new_ka = st.multiselect("Kelas Ajar Baru", options=daftar_k)
-                    if st.form_submit_button("Simpan"):
+                    curr_ka = u_data.get("kelas_ajar", [])
+                    if isinstance(curr_ka, str): curr_ka = [curr_ka]
+                    valid_defaults = [k for k in curr_ka if k in daftar_k]
+                    
+                    new_ka = st.multiselect("Kelas Ajar Baru Guru", options=daftar_k, default=valid_defaults)
+                    if st.form_submit_button("Simpan Perubahan Kelas Ajar"):
                         db.collection("users").document(target_uid).update({"kelas_ajar": new_ka})
-                        st.success("✅ Berhasil diupdate!")
+                        st.success("✅ Kelas Ajar Guru berhasil diupdate!")
                         st.rerun()
 
     with t_del:
         st.subheader("🗑️ Hapus Akun")
         all_u = {d.id: f"{d.to_dict().get('nama')} (@{d.id})" for d in db.collection("users").stream() if d.id != user_info["username"]}
         if all_u:
-            target_del = st.selectbox("Pilih Akun", list(all_u.keys()), format_func=lambda x: all_u[x])
+            target_del = st.selectbox("Pilih Akun Dihapus", list(all_u.keys()), format_func=lambda x: all_u[x])
             if st.button("Hapus Akun", type="primary"):
                 db.collection("users").document(target_del).delete()
                 st.success("✅ Akun berhasil dihapus!")
                 st.rerun()
-
 # ==========================================
 # 7. PANEL GURU
 # ==========================================
