@@ -56,6 +56,8 @@ st.markdown("""
 # ==========================================
 # 2. FIREBASE & CACHING
 # ==========================================
+SALT = st.secrets.get("PASSWORD_SALT", "pancasila_secure_salt_2026")
+
 @st.cache_resource
 def init_firebase():
     if not firebase_admin._apps:
@@ -88,6 +90,11 @@ def get_all_materi_cached():
     docs = db.collection("materi_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
+@st.cache_data(ttl=60)
+def get_all_users_cached():
+    docs = db.collection("users").stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
 @st.cache_data(ttl=15)
 def get_user_submissions_cached(username):
     docs = db.collection("jawaban_siswa").where("username_siswa", "==", username).stream()
@@ -97,6 +104,7 @@ def get_user_submissions_cached(username):
 def clear_kelas_cache(): get_all_kelas.clear()
 def clear_tugas_cache(): get_all_tugas_cached.clear()
 def clear_materi_cache(): get_all_materi_cached.clear()
+def clear_users_cache(): get_all_users_cached.clear()
 def clear_user_submissions_cache(): get_user_submissions_cached.clear()
 
 # --- UTILITY HELPERS ---
@@ -112,8 +120,9 @@ def safe_read_uploaded_file(uploaded_file):
         return pd.read_csv(uploaded_file, encoding='utf-8', errors='replace')
     return pd.read_excel(uploaded_file)
 
-def hash_pass(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+def hash_pass(password: str) -> str:
+    payload = f"{password}{SALT}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 def generate_username(nama):
     first_name = nama.strip().split()[0] if nama.strip() else "siswa"
@@ -185,17 +194,25 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     clear_user_submissions_cache()
     return True
 
-def delete_tugas_and_submissions(tugas_id):
-    db.collection("tugas_pancasila").document(tugas_id).delete()
+def delete_tugas_and_submissions(tugas_id: str):
+    """Batched deletion untuk efisiensi request dan transaksi atomik."""
+    batch = db.batch()
     
+    # 1. Hapus tugas
+    tugas_ref = db.collection("tugas_pancasila").document(tugas_id)
+    batch.delete(tugas_ref)
+    
+    # 2. Hapus jawaban siswa
     j_docs = db.collection("jawaban_siswa").where("id_tugas", "==", tugas_id).stream()
     for doc in j_docs:
-        db.collection("jawaban_siswa").document(doc.id).delete()
+        batch.delete(doc.reference)
         
+    # 3. Hapus status ujian
     s_docs = db.collection("status_ujian").where("id_tugas", "==", tugas_id).stream()
     for doc in s_docs:
-        db.collection("status_ujian").document(doc.id).delete()
+        batch.delete(doc.reference)
         
+    batch.commit()
     clear_tugas_cache()
     clear_user_submissions_cache()
 
@@ -218,8 +235,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
             "required": ["nilai", "feedback"]
         }
         generation_config = {"response_mime_type": "application/json", "response_schema": strict_schema}
-        candidate_models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
-
+        
         total_soal = len(soal_list)
         prompt_items = []
         for i in range(total_soal):
@@ -240,21 +256,11 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
             "4. Gunakan Bahasa Indonesia yang hangat, ramah, dan edukatif."
         )
 
-        response, last_error = None, None
-        for model_name in candidate_models:
-            try:
-                model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
-                try:
-                    response = model.generate_content(prompt, generation_config=generation_config)
-                except Exception:
-                    response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-                if response and hasattr(response, 'text') and response.text.strip(): break
-            except Exception as err:
-                last_error = err
-                continue
+        model = genai.GenerativeModel("gemini-1.5-flash", system_instruction=system_instruction)
+        response = model.generate_content(prompt, generation_config=generation_config)
 
         if not response or not hasattr(response, 'text') or not response.text.strip():
-            return None, f"AI tidak mengembalikan respon. Error terakhir: {str(last_error)}"
+            return None, "AI tidak mengembalikan respon."
 
         result_json = json.loads(response.text.strip())
         return int(result_json.get("nilai", 0)), str(result_json.get("feedback", "")).strip() or "Terima kasih telah mengerjakan!"
@@ -356,13 +362,13 @@ def render_superadmin():
 
     with t_list:
         st.subheader("👥 Daftar Akun")
-        all_user_docs = list(db.collection("users").stream())
+        all_user_docs = get_all_users_cached()
         users = [
             {
-                "Username": d.id,
-                "Nama": (u := d.to_dict()).get("nama"),
-                "Role": u.get("role", "").upper(),
-                "Kelas": u.get("kelas", "-") if u.get("role") == "siswa" else ", ".join(u.get("kelas_ajar", []) if isinstance(u.get("kelas_ajar"), list) else [u.get("kelas_ajar", "")])
+                "Username": d["id"],
+                "Nama": d.get("nama"),
+                "Role": d.get("role", "").upper(),
+                "Kelas": d.get("kelas", "-") if d.get("role") == "siswa" else ", ".join(d.get("kelas_ajar", []) if isinstance(d.get("kelas_ajar"), list) else [d.get("kelas_ajar", "")])
             } for d in all_user_docs
         ]
         if users: st.dataframe(pd.DataFrame(users), use_container_width=True)
@@ -385,10 +391,11 @@ def render_superadmin():
                     if db.collection("users").document(uname).get().exists:
                         st.error("Username sudah ada!")
                     else:
-                        payload = {"nama": nama, "password": hash_pass(pwd), "password_plain": pwd, "role": new_role.lower(), "created_at": firestore.SERVER_TIMESTAMP}
+                        payload = {"nama": nama, "password": hash_pass(pwd), "role": new_role.lower(), "created_at": firestore.SERVER_TIMESTAMP}
                         if new_role == "Siswa": payload["kelas"] = k_siswa
                         elif new_role == "Guru": payload["kelas_ajar"] = k_guru
                         db.collection("users").document(uname).set(payload)
+                        clear_users_cache()
                         st.success(f"✅ Akun '{uname}' berhasil dibuat!")
                         st.rerun()
 
@@ -443,8 +450,8 @@ def render_superadmin():
                 if "nama" in df.columns and "kelas" in df.columns:
                     role_str = target_role_imp.lower()
                     exist_map = {
-                        d.to_dict().get("nama", "").strip().lower(): d.id 
-                        for d in db.collection("users").where("role", "==", role_str).stream()
+                        d.get("nama", "").strip().lower(): d["id"] 
+                        for d in get_all_users_cached() if d.get("role") == role_str
                     }
                     c_new, c_up = 0, 0
                     
@@ -464,7 +471,7 @@ def render_superadmin():
                                 un = generate_username(n_str)
                                 pw = generate_password()
                                 db.collection("users").document(un).set({
-                                    "nama": n_str, "password": hash_pass(pw), "password_plain": pw,
+                                    "nama": n_str, "password": hash_pass(pw),
                                     "role": "guru", "kelas_ajar": list_kelas, "created_at": firestore.SERVER_TIMESTAMP
                                 })
                                 c_new += 1
@@ -476,11 +483,12 @@ def render_superadmin():
                                 un = generate_username(n_str)
                                 pw = generate_password()
                                 db.collection("users").document(un).set({
-                                    "nama": n_str, "password": hash_pass(pw), "password_plain": pw,
+                                    "nama": n_str, "password": hash_pass(pw),
                                     "role": "siswa", "kelas": k_str, "created_at": firestore.SERVER_TIMESTAMP
                                 })
                                 c_new += 1
                     
+                    clear_users_cache()
                     st.success(f"✅ Selesai: {c_new} akun baru dibuat, {c_up} akun diperbarui.")
                     st.rerun()
                 else:
@@ -488,8 +496,8 @@ def render_superadmin():
 
         with col_exp:
             data_siswa = [
-                {"Nama": (u := d.to_dict()).get("nama"), "Username": d.id, "Password": u.get("password_plain", "*****"), "Kelas": u.get("kelas", "")}
-                for d in db.collection("users").where("role", "==", "siswa").stream()
+                {"Nama": u.get("nama"), "Username": u["id"], "Kelas": u.get("kelas", "")}
+                for u in get_all_users_cached() if u.get("role") == "siswa"
             ]
             if data_siswa:
                 df_exp = pd.DataFrame(data_siswa)
@@ -497,10 +505,10 @@ def render_superadmin():
 
     with t_edit:
         st.subheader("✏️ Atur Kelas User (Siswa & Guru)")
-        docs = list(db.collection("users").stream())
+        docs = get_all_users_cached()
         users_map = {
-            d.id: f"{d.to_dict().get('nama')} (@{d.id}) - [{d.to_dict().get('role', '').upper()}]" 
-            for d in docs if d.to_dict().get("role") in ["siswa", "guru"]
+            d["id"]: f"{d.get('nama')} (@{d['id']}) - [{d.get('role', '').upper()}]" 
+            for d in docs if d.get("role") in ["siswa", "guru"]
         }
         daftar_k = get_all_kelas()
         
@@ -510,7 +518,7 @@ def render_superadmin():
             st.warning("⚠️ Master Kelas belum diisi. Tambahkan kelas di tab 'Master Kelas' terlebih dahulu.")
         else:
             target_uid = st.selectbox("Pilih Pengguna yang Akan Diatur", list(users_map.keys()), format_func=lambda x: users_map[x])
-            u_data = db.collection("users").document(target_uid).get().to_dict()
+            u_data = next(d for d in docs if d["id"] == target_uid)
             u_role = u_data.get("role", "")
             
             with st.form(key=f"form_edit_user_k_{target_uid}"):
@@ -521,6 +529,7 @@ def render_superadmin():
                     
                     if st.form_submit_button("💾 Simpan Perubahan Kelas Siswa", type="primary"):
                         db.collection("users").document(target_uid).update({"kelas": new_k})
+                        clear_users_cache()
                         st.success(f"✅ Kelas untuk siswa '{u_data.get('nama')}' berhasil diubah ke {new_k}!")
                         st.rerun()
                 else:
@@ -539,16 +548,18 @@ def render_superadmin():
                     
                     if st.form_submit_button("💾 Simpan Perubahan Kelas Ajar Guru", type="primary"):
                         db.collection("users").document(target_uid).update({"kelas_ajar": new_ka})
+                        clear_users_cache()
                         st.success(f"✅ Berhasil memperbarui kelas ajar untuk Guru '{u_data.get('nama')}'!")
                         st.rerun()
 
     with t_del:
         st.subheader("🗑️ Hapus Akun")
-        all_u = {d.id: f"{d.to_dict().get('nama')} (@{d.id})" for d in db.collection("users").stream() if d.id != user_info["username"]}
+        all_u = {d["id"]: f"{d.get('nama')} (@{d['id']})" for d in get_all_users_cached() if d["id"] != user_info["username"]}
         if all_u:
             target_del = st.selectbox("Pilih Akun Dihapus", list(all_u.keys()), format_func=lambda x: all_u[x])
             if st.button("Hapus Akun", type="primary"):
                 db.collection("users").document(target_del).delete()
+                clear_users_cache()
                 st.success("✅ Akun berhasil dihapus!")
                 st.rerun()
 
@@ -875,8 +886,10 @@ def render_guru():
             selected_tugas_id = st.selectbox("📝 Pilih Tugas", list(tg_options.keys()), format_func=lambda x: tg_options[x])
             selected_tugas = next(t for t in tugas_kelas if t["id"] == selected_tugas_id)
 
-        siswa_docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", selected_kelas).stream()
-        siswa_list = [{"username": d.id, **d.to_dict()} for d in siswa_docs]
+        siswa_list = [
+            {"username": d["id"], **d} for d in get_all_users_cached() 
+            if d.get("role") == "siswa" and d.get("kelas") == selected_kelas
+        ]
 
         sub_docs = db.collection("jawaban_siswa").where("id_tugas", "==", selected_tugas_id).where("kelas_siswa", "==", selected_kelas).stream()
         sub_list = [{"id": d.id, **d.to_dict()} for d in sub_docs]
@@ -1095,8 +1108,10 @@ def render_guru():
         tugas_kelas = [d for d in get_all_tugas_cached() if is_target_sesuai_kelas(d, selected_kelas)]
         valid_tugas_ids = {tg["id"] for tg in tugas_kelas}
         
-        siswa_docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", selected_kelas).stream()
-        siswa_list = sorted([{"username": d.id, **d.to_dict()} for d in siswa_docs], key=lambda x: str(x.get("nama", "")).lower())
+        siswa_list = sorted([
+            {"username": d["id"], **d} for d in get_all_users_cached() 
+            if d.get("role") == "siswa" and d.get("kelas") == selected_kelas
+        ], key=lambda x: str(x.get("nama", "")).lower())
 
         if not siswa_list:
             st.info(f"Belum ada siswa terdaftar di Kelas **{selected_kelas}**.")
@@ -1432,6 +1447,10 @@ def render_siswa():
         if not tugas_belum_list:
             st.success("✨ Semua tugas telah dikumpulkan!")
         else:
+            # OPTIMASI: Fetch seluruh status_ujian milik siswa dalam 1 query (Menghindari N+1 Query)
+            status_docs = db.collection("status_ujian").where("username", "==", username_s).stream()
+            status_dict = {d.to_dict().get("id_tugas"): d.to_dict() for d in status_docs}
+
             for tg in tugas_belum_list:
                 with st.container(border=True):
                     jenis_t = tg.get("jenis_tugas", "Ulangan Harian")
@@ -1440,8 +1459,8 @@ def render_siswa():
                     st.markdown(f"### 📝 {tg.get('judul')} [{tag_color}]")
                     st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | {len(tg.get('soal', []))} Soal")
                     
-                    st_doc = db.collection("status_ujian").document(f"{username_s}_{tg['id']}").get()
-                    has_draft = st_doc.exists and st_doc.to_dict().get("draft_answers")
+                    st_data = status_dict.get(tg['id'], {})
+                    has_draft = bool(st_data.get("draft_answers"))
                     
                     btn_label = "▶️ Lanjutkan Pengerjaan" if has_draft else "🚀 Mulai Kerjakan"
                     if st.button(btn_label, key=f"start_{tg['id']}", type="primary"):
