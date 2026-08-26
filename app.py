@@ -1224,45 +1224,9 @@ def render_siswa():
                 st.rerun()
 
         st.progress((curr_page + 1) / total_soal)
-
-        c_top_prev, c_top_next, c_top_submit = st.columns([1, 1, 1.5])
-        with c_top_prev:
-            if curr_page > 0 and st.button("⬅️ Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
-                save_draft_to_firebase(username_s, tg_id, answers)
-                st.session_state[f"quiz_page_{tg_id}"] -= 1
-                st.rerun()
-        with c_top_next:
-            if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", key=f"top_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
-                save_draft_to_firebase(username_s, tg_id, answers)
-                st.session_state[f"quiz_page_{tg_id}"] += 1
-                st.rerun()
-        with c_top_submit:
-            if not is_locked:
-                if st.button("🚀 Kumpulkan Semua Jawaban", key=f"top_submit_{tg_id}", type="primary", use_container_width=True):
-                    tg_submit = dict(tg)
-                    tg_submit["soal"] = soal_list
-                    
-                    with st.spinner("Memproses pengumpulkan jawaban..."):
-                        success = submit_jawaban_siswa(
-                            tg_submit, username_s, nama_s, kelas_s, answers, 
-                            is_forced=False
-                        )
-                    
-                    if success:
-                        st.balloons()
-                        st.success("✅ Jawaban Anda berhasil dikumpulkan!")
-
-                        st.session_state["active_quiz_id"] = None
-                        st.session_state.pop("active_quiz_data", None)
-                        st.session_state.pop(f"quiz_answers_{tg_id}", None)
-                        st.session_state.pop(f"quiz_page_{tg_id}", None)
-                        st.session_state.pop(f"quiz_soal_{tg_id}", None)
-                        st.rerun()
-                    else:
-                        st.error("❌ Gagal mengumpulkan jawaban!")
-
         st.divider()
 
+        # SOAL CONTAINER
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
@@ -1293,6 +1257,7 @@ def render_siswa():
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
+        # GRID NAVIGASI NOMOR SOAL
         cols_per_row = 5
         for row_start in range(0, total_soal, cols_per_row):
             nav_cols = st.columns(cols_per_row)
@@ -1306,6 +1271,45 @@ def render_siswa():
                         save_draft_to_firebase(username_s, tg_id, answers)
                         st.session_state[f"quiz_page_{tg_id}"] = q_idx
                         st.rerun()
+
+        st.divider()
+
+        # NAVIGASI PERPINDAHAN & TOMBOL SUBMIT (PINDAH KE BAWAH)
+        c_bot_prev, c_bot_next, c_bot_submit = st.columns([1, 1, 1.5])
+        with c_bot_prev:
+            if curr_page > 0 and st.button("⬅️ Sebelumnya", key=f"bot_prev_{tg_id}", use_container_width=True, disabled=is_locked):
+                save_draft_to_firebase(username_s, tg_id, answers)
+                st.session_state[f"quiz_page_{tg_id}"] -= 1
+                st.rerun()
+        with c_bot_next:
+            if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", key=f"bot_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
+                save_draft_to_firebase(username_s, tg_id, answers)
+                st.session_state[f"quiz_page_{tg_id}"] += 1
+                st.rerun()
+        with c_bot_submit:
+            if not is_locked:
+                if st.button("🚀 Kumpulkan Semua Jawaban", key=f"bot_submit_{tg_id}", type="primary", use_container_width=True):
+                    tg_submit = dict(tg)
+                    tg_submit["soal"] = soal_list
+                    
+                    with st.spinner("Memproses pengumpulan jawaban..."):
+                        success = submit_jawaban_siswa(
+                            tg_submit, username_s, nama_s, kelas_s, answers, 
+                            is_forced=False
+                        )
+                    
+                    if success:
+                        st.balloons()
+                        st.success("✅ Jawaban Anda berhasil dikumpulkan!")
+
+                        st.session_state["active_quiz_id"] = None
+                        st.session_state.pop("active_quiz_data", None)
+                        st.session_state.pop(f"quiz_answers_{tg_id}", None)
+                        st.session_state.pop(f"quiz_page_{tg_id}", None)
+                        st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                        st.rerun()
+                    else:
+                        st.error("❌ Gagal mengumpulkan jawaban!")
 
         return
 
