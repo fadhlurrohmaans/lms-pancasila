@@ -1038,7 +1038,7 @@ def render_guru():
 
                 st.dataframe(pd.DataFrame(analisis_rows), use_container_width=True)
 # ==========================================
-# 8. PANEL SISWA
+# 8. PANEL SISWA (OPTIMIZED & PERSISTENT)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
@@ -1065,31 +1065,34 @@ def render_siswa():
         soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
 
-        # INISIALISASI HALAMAN
-        if f"quiz_page_{tg_id}" not in st.session_state:
-            st.session_state[f"quiz_page_{tg_id}"] = 0
-
-        # MUAT DRAFT JAWABAN
-        if f"quiz_answers_{tg_id}" not in st.session_state:
+        # --------------------------------------------------------------------------
+        # OPTIMASI READ FIRESTORE: Hanya dibaca 1x saat pertama buka / di-refresh
+        # --------------------------------------------------------------------------
+        if f"quiz_loaded_{tg_id}" not in st.session_state:
             status_doc = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
-            draft_ans = status_doc.to_dict().get("draft_answers") if status_doc.exists else None
+            status_data = status_doc.to_dict() if status_doc.exists else {}
             
+            # Restorasi Draft Jawaban dari Firebase jika ada (Kunci agar tidak mengulang dari awal)
+            draft_ans = status_data.get("draft_answers")
             if draft_ans and isinstance(draft_ans, list) and len(draft_ans) == total_soal:
                 st.session_state[f"quiz_answers_{tg_id}"] = draft_ans
             else:
                 st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
+                
+            st.session_state[f"violation_count_{tg_id}"] = status_data.get("violation_count", 0)
+            st.session_state[f"ijin_guru_{tg_id}"] = status_data.get("ijin_guru", False)
+            st.session_state[f"quiz_page_{tg_id}"] = 0
+            st.session_state[f"quiz_loaded_{tg_id}"] = True
 
         answers = st.session_state[f"quiz_answers_{tg_id}"]
         curr_page = st.session_state[f"quiz_page_{tg_id}"]
+        violation_count = st.session_state.get(f"violation_count_{tg_id}", 0)
+        ijin_guru = st.session_state.get(f"ijin_guru_{tg_id}", False)
+        
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
-
-        status_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
-        status_data = status_ref.to_dict() if status_ref.exists else {}
-        violation_count = status_data.get("violation_count", 0)
-        ijin_guru = status_data.get("ijin_guru", False)
         is_locked = (violation_count >= 10 and not ijin_guru)
 
-        # ATOMIC INCREMENT & SERVER-SIDE VALIDATED AUTO-SUBMIT
+        # ATOMIC PELANGGARAN TANPA DOUBLE FETCH READ
         if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
             if not is_locked:
                 doc_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}")
@@ -1101,26 +1104,25 @@ def render_siswa():
                     "updated_at": firestore.SERVER_TIMESTAMP
                 }, merge=True)
                 
-                updated_doc = doc_ref.get()
-                real_violation_count = updated_doc.to_dict().get("violation_count", 0) if updated_doc.exists else 0
-                
-                if real_violation_count >= 15:
-                    answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
+                # Increment lokal langsung (tanpa fetch get ulang)
+                st.session_state[f"violation_count_{tg_id}"] += 1
+                new_v = st.session_state[f"violation_count_{tg_id}"]
+
+                if new_v >= 15:
                     tg_sub = dict(tg)
-                    if f"quiz_soal_{tg_id}" in st.session_state:
-                        tg_sub["soal"] = st.session_state[f"quiz_soal_{tg_id}"]
-                    submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers_curr, is_violation=True)
+                    tg_sub["soal"] = soal_list
+                    submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers, is_violation=True)
                     
+                    # Cleanup State
                     st.session_state["active_quiz_id"] = None
-                    st.session_state.pop("active_quiz_data", None)
-                    st.session_state.pop(f"quiz_answers_{tg_id}", None)
-                    st.session_state.pop(f"quiz_page_{tg_id}", None)
-                    st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                    for k in [f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}"]:
+                        st.session_state.pop(k, None)
                     st.error("🚨 Kuis di-submit otomatis karena mencapai 15 kali pelanggaran!")
                     st.rerun()
                 else:
                     st.rerun()
 
+        # ANTI-CHEAT SCRIPT (DIOPTIMASI INTERVAL DARI 100ms -> 500ms)
         if not is_locked:
             components.html("""
                 <script>
@@ -1135,7 +1137,7 @@ def render_siswa():
 
                     function hideViolationButton() {
                         const btn = getViolationButton();
-                        if (btn) {
+                        if (btn && btn.parentElement) {
                             const container = btn.closest('[data-testid="stElementContainer"]') || btn.parentElement;
                             if (container && container.style.display !== 'none') {
                                 container.style.display = 'none';
@@ -1143,11 +1145,11 @@ def render_siswa():
                         }
                     }
 
-                    setInterval(hideViolationButton, 100);
+                    setInterval(hideViolationButton, 500);
 
                     function triggerViolation() {
                         const now = Date.now();
-                        if (now - lastTrigger < 2000) return;
+                        if (now - lastTrigger < 3000) return;
                         lastTrigger = now;
 
                         const triggerBtn = getViolationButton();
@@ -1157,9 +1159,7 @@ def render_siswa():
                     }
 
                     parentDoc.addEventListener('visibilitychange', function() {
-                        if (parentDoc.hidden) {
-                            triggerViolation();
-                        }
+                        if (parentDoc.hidden) triggerViolation();
                     });
 
                     window.parent.addEventListener('blur', function() {
@@ -1169,59 +1169,36 @@ def render_siswa():
                 </script>
             """, height=0)
 
+        # LOGIKA TAMPILAN LOCK & PERMISSION
         if is_locked:
-            st.error(f"🚫 **AKSES DIKUNCI**: Anda telah melakukan pelanggaran **{violation_count} kali**. Layar dikunci dan pengerjaan dihentikan. Minta izin kepada guru untuk membuka kunci.")
-            st.info("⏳ *Sistem sedang mengecek izin dari guru secara otomatis...*")
-
-            components.html("""
-                <script>
-                setTimeout(function() {
-                    const parentDoc = window.parent.document;
-                    const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                    const checkBtn = buttons.find(b => b.innerText.includes('Cek Status Izin Guru'));
-                    if (checkBtn) {
-                        checkBtn.click();
-                    }
-                }, 3000);
-                </script>
-            """, height=0)
-
+            st.error(f"🚫 **AKSES DIKUNCI**: Anda telah melakukan pelanggaran **{violation_count} kali**. Layar dikunci. Minta izin kepada guru.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}"):
+                status_doc = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
+                if status_doc.exists:
+                    st.session_state[f"ijin_guru_{tg_id}"] = status_doc.to_dict().get("ijin_guru", False)
                 st.rerun()
 
         elif violation_count >= 10 and ijin_guru:
-            if not st.session_state.get(f"refreshed_after_unlock_{tg_id}", False):
-                st.success("🎉 **IZIN GURU DIBERIKAN**: Guru telah membuka kunci kuis Anda. Klik tombol di bawah ini untuk memuat ulang soal dan melanjutkan pengerjaan.")
-                if st.button("🔄 Refresh Soal & Lanjutkan Ujian", key=f"btn_refresh_quiz_{tg_id}", type="primary", use_container_width=True):
-                    st.session_state[f"refreshed_after_unlock_{tg_id}"] = True
-                    all_t = get_all_tugas_cached()
-                    st.session_state["active_quiz_data"] = next((t for t in all_t if t["id"] == tg_id), None)
-                    if st.session_state["active_quiz_data"]:
-                        st.session_state[f"quiz_soal_{tg_id}"] = st.session_state["active_quiz_data"].get("soal", [])
-                    st.rerun()
-            else:
-                st.warning(f"⚠️ **IZIN GURU DIBERIKAN**: Anda diperbolehkan melanjutkan kuis (Pelanggaran saat ini: **{violation_count}/15**). Harap bersikap jujur!")
+            st.warning(f"⚠️ **IZIN GURU DIBERIKAN**: Anda dapat melanjutkan kuis (Pelanggaran saat ini: **{violation_count}/15**).")
         elif violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/15)**: Terdeteksi keluar dari layar kuis!")
 
-        # HEADER SOAL
+        # HEADER SOAL & AKSI
         col_head1, col_head2 = st.columns([3, 1])
         with col_head1:
             st.markdown(f"### 📝 {tg.get('judul')}")
             st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Terjawab: **{terjawab_count}/{total_soal}** | Pelanggaran: **{violation_count}x**")
         with col_head2:
-            if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary", use_container_width=True):
+            if st.button("⬅️ Keluar Sementara", key="btn_exit_quiz", type="secondary", use_container_width=True):
                 save_draft_to_firebase(username_s, tg_id, answers)
                 st.session_state["active_quiz_id"] = None
                 st.session_state.pop("active_quiz_data", None)
-                st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                st.session_state.pop(f"quiz_loaded_{tg_id}", None)
                 st.rerun()
 
         st.progress((curr_page + 1) / total_soal)
 
-        # --------------------------------------------------------------------------
-        # 1. TOMBOL PREVIOUS & NEXT (DI ATAS)
-        # --------------------------------------------------------------------------
+        # NAVIGASI ATAS (PREV & NEXT)
         c_top_prev, c_top_next = st.columns(2)
         with c_top_prev:
             if curr_page > 0 and st.button("⬅️ Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
@@ -1257,6 +1234,8 @@ def render_siswa():
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
+                    # Simpan otomatis ke Firebase saat opsi dipilih
+                    save_draft_to_firebase(username_s, tg_id, answers)
             else:
                 saved_text = answers[curr_page] or ""
                 essay_text = st.text_area(
@@ -1266,6 +1245,7 @@ def render_siswa():
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
+                    save_draft_to_firebase(username_s, tg_id, answers)
 
         # GRID NAVIGASI NOMOR SOAL
         cols_per_row = 5
@@ -1284,32 +1264,23 @@ def render_siswa():
 
         st.divider()
 
-        # --------------------------------------------------------------------------
-        # 2. TOMBOL SUBMIT (DI BAWAH)
-        # --------------------------------------------------------------------------
+        # TOMBOL SUBMIT (DI BAWAH)
         if not is_locked:
             if st.button("🚀 Kumpulkan Semua Jawaban", key=f"bot_submit_{tg_id}", type="primary", use_container_width=True):
                 tg_submit = dict(tg)
                 tg_submit["soal"] = soal_list
                 
                 with st.spinner("Memproses pengumpulan jawaban..."):
-                    success = submit_jawaban_siswa(
-                        tg_submit, username_s, nama_s, kelas_s, answers, 
-                        is_forced=False
-                    )
+                    success = submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_forced=False)
                 
                 if success:
                     st.balloons()
                     st.success("✅ Jawaban Anda berhasil dikumpulkan!")
 
                     st.session_state["active_quiz_id"] = None
-                    st.session_state.pop("active_quiz_data", None)
-                    st.session_state.pop(f"quiz_answers_{tg_id}", None)
-                    st.session_state.pop(f"quiz_page_{tg_id}", None)
-                    st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                    for k in [f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}"]:
+                        st.session_state.pop(k, None)
                     st.rerun()
-                else:
-                    st.error("❌ Gagal mengumpulkan jawaban!")
 
         return
 
@@ -1375,7 +1346,6 @@ def render_siswa():
         else:
             for sub_id, sub_info in my_subs.items():
                 st.write(f"- **{sub_info.get('judul_tugas')}**: Nilai **{sub_info.get('nilai', 'Menunggu')}**")
-
 # ==========================================
 # 9. MAIN ROUTER
 # ==========================================
