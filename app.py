@@ -133,6 +133,16 @@ def is_target_sesuai_kelas(doc_data, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
+def save_draft_to_firebase(username_s, tg_id, answers):
+    """Fungsi pembantu untuk menyimpan draft hanya saat navigasi tombol"""
+    try:
+        db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
+            "username": username_s, "id_tugas": tg_id, "status": "in_progress",
+            "draft_answers": answers, "updated_at": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+    except Exception:
+        pass
+
 def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=False, is_violation=False):
     tg_id = tg["id"]
     soal_list = tg.get("soal", [])
@@ -646,7 +656,7 @@ def render_guru():
             tipe_t = st.radio("Tipe Soal", ["Pilihan Ganda", "Essay"])
 
             if tipe_t == "Pilihan Ganda":
-                n_soal = st.number_input("Jumlah Soal", 1, 20, 2)
+                n_soal = st.number_input("Jumlah Soal", 1, 50, 5)
                 with st.form("form_pg"):
                     soal_list = []
                     for i in range(n_soal):
@@ -709,7 +719,6 @@ def render_guru():
                         for i, s in enumerate(existing_soal):
                             st.markdown(f"**Soal #{i+1}**")
                             q_val = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
-                            # Menambahkan sel_id pada key widget agar tidak bentrok antar kuis
                             e_q = st.text_area(f"Pertanyaan #{i+1}", value=q_val, key=f"e_q_{sel_id}_{i}")
                             opsi = s.get("opsi", ["", "", "", ""]) if isinstance(s, dict) else ["", "", "", ""]
                             c1, c2 = st.columns(2)
@@ -735,6 +744,7 @@ def render_guru():
                         clear_tugas_cache()
                         st.success("✅ Berhasil! Informasi tugas dan soal telah diperbarui.")
                         st.rerun()
+
         with t_imp:
             st.subheader("📥 Import Soal Tugas (.csv / .xlsx)")
             st.info("💡 **Unduh Template Soal:** Gunakan tombol di bawah ini untuk mengunduh format CSV yang sesuai.")
@@ -1056,8 +1066,16 @@ def render_siswa():
         soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
 
+        # FITUR PERSISTENCE: Muat draft jawaban yang pernah disimpan jika ada saat refresh/keluar
         if f"quiz_answers_{tg_id}" not in st.session_state:
-            st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
+            status_doc = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
+            draft_ans = status_doc.to_dict().get("draft_answers") if status_doc.exists else None
+            
+            if draft_ans and isinstance(draft_ans, list) and len(draft_ans) == total_soal:
+                st.session_state[f"quiz_answers_{tg_id}"] = draft_ans
+            else:
+                st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
+
         answers = st.session_state[f"quiz_answers_{tg_id}"]
 
         curr_page = st.session_state.get(f"quiz_page_{tg_id}", 0)
@@ -1176,16 +1194,67 @@ def render_siswa():
                 st.warning(f"⚠️ **IZIN GURU DIBERIKAN**: Anda diperbolehkan melanjutkan kuis (Pelanggaran saat ini: **{violation_count}/15**). Harap bersikap jujur!")
         elif violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/15)**: Terdeteksi keluar dari layar kuis!")
-            
-        if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary"):
-            st.session_state["active_quiz_id"] = None
-            st.session_state.pop("active_quiz_data", None)
-            st.session_state.pop(f"quiz_soal_{tg_id}", None)
-            st.rerun()
 
-        st.markdown(f"### 📝 {tg.get('judul')}")
-        st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Terjawab: **{terjawab_count}/{total_soal}** | Pelanggaran: **{violation_count}x**")
+        col_head1, col_head2 = st.columns([3, 1])
+        with col_head1:
+            st.markdown(f"### 📝 {tg.get('judul')}")
+            st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Terjawab: **{terjawab_count}/{total_soal}** | Pelanggaran: **{violation_count}x**")
+        with col_head2:
+            if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary", use_container_width=True):
+                # Simpan draft saat keluar
+                save_draft_to_firebase(username_s, tg_id, answers)
+                st.session_state["active_quiz_id"] = None
+                st.session_state.pop("active_quiz_data", None)
+                st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                st.rerun()
+
         st.progress((curr_page + 1) / total_soal)
+
+        # ==========================================
+        # TOMBOL NAVIGASI & SUBMIT DITAROH DI ATAS
+        # AUTO-SAVE FIRESTORE DIEKSEKUSI DI SINI
+        # ==========================================
+        c_top_prev, c_top_next, c_top_submit = st.columns([1, 1, 1.5])
+        with c_top_prev:
+            if curr_page > 0 and st.button("⬅️ Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
+                save_draft_to_firebase(username_s, tg_id, answers)
+                st.session_state[f"quiz_page_{tg_id}"] -= 1
+                st.rerun()
+        with c_top_next:
+            if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", key=f"top_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
+                save_draft_to_firebase(username_s, tg_id, answers)
+                st.session_state[f"quiz_page_{tg_id}"] += 1
+                st.rerun()
+        with c_top_submit:
+            if not is_locked:
+                if st.button("🚀 Kumpulkan Semua Jawaban", key=f"top_submit_{tg_id}", type="primary", use_container_width=True):
+                    tg_submit = dict(tg)
+                    tg_submit["soal"] = soal_list
+                    
+                    with st.spinner("Memproses pengumpulan jawaban..."):
+                        success = submit_jawaban_siswa(
+                            tg_submit, username_s, nama_s, kelas_s, answers, 
+                            is_forced=False
+                        )
+                    
+                    if success:
+                        st.balloons()
+                        st.success("✅ Jawaban Anda berhasil dikumpulkan!")
+
+                        st.session_state["active_quiz_id"] = None
+                        st.session_state.pop("active_quiz_data", None)
+                        st.session_state.pop(f"quiz_answers_{tg_id}", None)
+                        st.session_state.pop(f"quiz_page_{tg_id}", None)
+                        st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                        st.rerun()
+                    else:
+                        st.error("❌ Gagal mengumpulkan jawaban!")
+
+        st.divider()
+
+        # ==========================================
+        # KONTAINER SOAL & JAWABAN (LOKAL MEMORY ONLY)
+        # ==========================================
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
@@ -1203,6 +1272,7 @@ def render_siswa():
                     key=f"radio_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
+                # DRAFT HANYA DISIMPAN DI st.session_state (MEMORI LOKAL LAPANAN)
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
@@ -1212,10 +1282,12 @@ def render_siswa():
                     "Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
+                # DRAFT HANYA DISIMPAN DI st.session_state (MEMORI LOKAL LAPANAN)
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
+        # Navigasi Cepat Nomor Soal (Mengirim Draft saat berpindah via Nomor)
         cols_per_row = 5
         for row_start in range(0, total_soal, cols_per_row):
             nav_cols = st.columns(cols_per_row)
@@ -1226,46 +1298,9 @@ def render_siswa():
                     lbl = f"{'🟢' if is_ans else '⚪'} {q_idx + 1}"
                     btn_t = "primary" if q_idx == curr_page else "secondary"
                     if nav_cols[idx].button(lbl, key=f"nav_p_{q_idx}", type=btn_t, use_container_width=True, disabled=is_locked):
+                        save_draft_to_firebase(username_s, tg_id, answers)
                         st.session_state[f"quiz_page_{tg_id}"] = q_idx
                         st.rerun()
-
-        c_prev, c_next = st.columns(2)
-        with c_prev:
-            if curr_page > 0 and st.button("⬅️ Sebelumnya", use_container_width=True, disabled=is_locked):
-                st.session_state[f"quiz_page_{tg_id}"] -= 1
-                st.rerun()
-        with c_next:
-            if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", type="primary", use_container_width=True, disabled=is_locked):
-                st.session_state[f"quiz_page_{tg_id}"] += 1
-                st.rerun()
-
-        st.divider()
-
-        if not is_locked:
-            if st.button("🚀 Kumpulkan Semua Jawaban", type="primary", use_container_width=True):
-                tg_submit = dict(tg)
-                tg_submit["soal"] = soal_list
-                
-                with st.spinner("Memproses pengumpulan jawaban..."):
-                    success = submit_jawaban_siswa(
-                        tg_submit, username_s, nama_s, kelas_s, answers, 
-                        is_forced=False
-                    )
-                
-                if success:
-                    st.balloons()
-                    st.success("✅ Jawaban Anda berhasil dikumpulkan!")
-
-                    st.session_state["active_quiz_id"] = None
-                    st.session_state.pop("active_quiz_data", None)
-                    st.session_state.pop(f"quiz_answers_{tg_id}", None)
-                    st.session_state.pop(f"quiz_page_{tg_id}", None)
-                    st.session_state.pop(f"quiz_soal_{tg_id}", None)
-                    st.rerun()
-                else:
-                    st.error("❌ Gagal mengumpulkan jawaban!")
-        else:
-            st.warning("🔒 **Fitur Pengerjaan Dinonaktifkan**: Anda telah melakukan 10 kali pelanggaran. Minta bantuan Guru untuk membuka kunci kuis ini.")
 
         return
 
@@ -1296,7 +1331,13 @@ def render_siswa():
                 with st.container(border=True):
                     st.markdown(f"### 📝 {tg.get('judul')}")
                     st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | {len(tg.get('soal', []))} Soal")
-                    if st.button("🚀 Mulai Kerjakan", key=f"start_{tg['id']}", type="primary"):
+                    
+                    # Cek apakah ada pengerjaan yang menggantung (in-progress)
+                    st_doc = db.collection("status_ujian").document(f"{username_s}_{tg['id']}").get()
+                    has_draft = st_doc.exists and st_doc.to_dict().get("draft_answers")
+                    
+                    btn_label = "▶️ Lanjutkan Pengerjaan" if has_draft else "🚀 Mulai Kerjakan"
+                    if st.button(btn_label, key=f"start_{tg['id']}", type="primary"):
                         st.session_state["active_quiz_id"] = tg["id"]
                         st.rerun()
 
