@@ -1041,9 +1041,6 @@ def render_guru():
 # ==========================================
 # 8. PANEL SISWA
 # ==========================================
-# ==========================================
-# 8. PANEL SISWA (PERBAIKAN KEYERROR)
-# ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
     nama_s = user_info.get("nama", "Siswa")
@@ -1069,7 +1066,7 @@ def render_siswa():
         soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
 
-        # INISIALISASI HALAMAN (Mencegah KeyError)
+        # INISIALISASI HALAMAN
         if f"quiz_page_{tg_id}" not in st.session_state:
             st.session_state[f"quiz_page_{tg_id}"] = 0
 
@@ -1093,15 +1090,28 @@ def render_siswa():
         ijin_guru = status_data.get("ijin_guru", False)
         is_locked = (violation_count >= 10 and not ijin_guru)
 
+        # --------------------------------------------------------------------------
+        # PERBAIKAN LOGIKA: ATOMIC INCREMENT & SERVER-SIDE VALIDATED AUTO-SUBMIT
+        # --------------------------------------------------------------------------
         if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
             if not is_locked:
-                violation_count += 1
-                db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
-                    "username": username_s, "id_tugas": tg_id, "violation_count": violation_count,
-                    "status": "in_progress", "updated_at": firestore.SERVER_TIMESTAMP
+                doc_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}")
+                
+                # 1. Atomic increment langsung di database Firestore
+                doc_ref.set({
+                    "username": username_s, 
+                    "id_tugas": tg_id, 
+                    "violation_count": firestore.Increment(1),
+                    "status": "in_progress", 
+                    "updated_at": firestore.SERVER_TIMESTAMP
                 }, merge=True)
                 
-                if violation_count >= 15:
+                # 2. Ambil nilai valid yang telah terkonfirmasi masuk ke database
+                updated_doc = doc_ref.get()
+                real_violation_count = updated_doc.to_dict().get("violation_count", 0) if updated_doc.exists else 0
+                
+                # 3. Pemicu auto-submit berdasarkan data server yang tervalidasi
+                if real_violation_count >= 15:
                     answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
                     tg_sub = dict(tg)
                     if f"quiz_soal_{tg_id}" in st.session_state:
@@ -1215,7 +1225,6 @@ def render_siswa():
 
         st.progress((curr_page + 1) / total_soal)
 
-        # NAVIGASI DENGAN PEMERIKSAAN AMAN
         c_top_prev, c_top_next, c_top_submit = st.columns([1, 1, 1.5])
         with c_top_prev:
             if curr_page > 0 and st.button("⬅️ Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
@@ -1361,6 +1370,7 @@ def render_siswa():
         else:
             for sub_id, sub_info in my_subs.items():
                 st.write(f"- **{sub_info.get('judul_tugas')}**: Nilai **{sub_info.get('nilai', 'Menunggu')}**")
+
 # ==========================================
 # 9. MAIN ROUTER
 # ==========================================
