@@ -1041,6 +1041,9 @@ def render_guru():
 # ==========================================
 # 8. PANEL SISWA
 # ==========================================
+# ==========================================
+# 8. PANEL SISWA (PERBAIKAN KEYERROR)
+# ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
     nama_s = user_info.get("nama", "Siswa")
@@ -1066,7 +1069,11 @@ def render_siswa():
         soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
 
-        # FITUR PERSISTENCE: Muat draft jawaban yang pernah disimpan jika ada saat refresh/keluar
+        # INISIALISASI HALAMAN (Mencegah KeyError)
+        if f"quiz_page_{tg_id}" not in st.session_state:
+            st.session_state[f"quiz_page_{tg_id}"] = 0
+
+        # MUAT DRAFT JAWABAN
         if f"quiz_answers_{tg_id}" not in st.session_state:
             status_doc = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
             draft_ans = status_doc.to_dict().get("draft_answers") if status_doc.exists else None
@@ -1077,8 +1084,7 @@ def render_siswa():
                 st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
 
         answers = st.session_state[f"quiz_answers_{tg_id}"]
-
-        curr_page = st.session_state.get(f"quiz_page_{tg_id}", 0)
+        curr_page = st.session_state[f"quiz_page_{tg_id}"]
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
 
         status_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}").get()
@@ -1201,7 +1207,6 @@ def render_siswa():
             st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Terjawab: **{terjawab_count}/{total_soal}** | Pelanggaran: **{violation_count}x**")
         with col_head2:
             if st.button("⬅️ Batal / Keluar", key="btn_exit_quiz", type="secondary", use_container_width=True):
-                # Simpan draft saat keluar
                 save_draft_to_firebase(username_s, tg_id, answers)
                 st.session_state["active_quiz_id"] = None
                 st.session_state.pop("active_quiz_data", None)
@@ -1210,10 +1215,7 @@ def render_siswa():
 
         st.progress((curr_page + 1) / total_soal)
 
-        # ==========================================
-        # TOMBOL NAVIGASI & SUBMIT DITAROH DI ATAS
-        # AUTO-SAVE FIRESTORE DIEKSEKUSI DI SINI
-        # ==========================================
+        # NAVIGASI DENGAN PEMERIKSAAN AMAN
         c_top_prev, c_top_next, c_top_submit = st.columns([1, 1, 1.5])
         with c_top_prev:
             if curr_page > 0 and st.button("⬅️ Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
@@ -1231,7 +1233,7 @@ def render_siswa():
                     tg_submit = dict(tg)
                     tg_submit["soal"] = soal_list
                     
-                    with st.spinner("Memproses pengumpulan jawaban..."):
+                    with st.spinner("Memproses pengumpulkan jawaban..."):
                         success = submit_jawaban_siswa(
                             tg_submit, username_s, nama_s, kelas_s, answers, 
                             is_forced=False
@@ -1252,9 +1254,6 @@ def render_siswa():
 
         st.divider()
 
-        # ==========================================
-        # KONTAINER SOAL & JAWABAN (LOKAL MEMORY ONLY)
-        # ==========================================
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
@@ -1272,7 +1271,6 @@ def render_siswa():
                     key=f"radio_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
-                # DRAFT HANYA DISIMPAN DI st.session_state (MEMORI LOKAL LAPANAN)
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
@@ -1282,12 +1280,10 @@ def render_siswa():
                     "Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
-                # DRAFT HANYA DISIMPAN DI st.session_state (MEMORI LOKAL LAPANAN)
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
-        # Navigasi Cepat Nomor Soal (Mengirim Draft saat berpindah via Nomor)
         cols_per_row = 5
         for row_start in range(0, total_soal, cols_per_row):
             nav_cols = st.columns(cols_per_row)
@@ -1304,7 +1300,6 @@ def render_siswa():
 
         return
 
-    # Filter tugas agar siswa HANYA melihat tugas yang diterbitkan
     all_tugas = [
         t for t in get_all_tugas_cached() 
         if is_target_sesuai_kelas(t, kelas_s) and t.get("status", "terbit") == "terbit"
@@ -1332,7 +1327,6 @@ def render_siswa():
                     st.markdown(f"### 📝 {tg.get('judul')}")
                     st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | {len(tg.get('soal', []))} Soal")
                     
-                    # Cek apakah ada pengerjaan yang menggantung (in-progress)
                     st_doc = db.collection("status_ujian").document(f"{username_s}_{tg['id']}").get()
                     has_draft = st_doc.exists and st_doc.to_dict().get("draft_answers")
                     
@@ -1367,7 +1361,6 @@ def render_siswa():
         else:
             for sub_id, sub_info in my_subs.items():
                 st.write(f"- **{sub_info.get('judul_tugas')}**: Nilai **{sub_info.get('nilai', 'Menunggu')}**")
-
 # ==========================================
 # 9. MAIN ROUTER
 # ==========================================
