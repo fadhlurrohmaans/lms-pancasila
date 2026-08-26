@@ -1037,7 +1037,6 @@ def render_guru():
                     })
 
                 st.dataframe(pd.DataFrame(analisis_rows), use_container_width=True)
-
 # ==========================================
 # 8. PANEL SISWA
 # ==========================================
@@ -1090,14 +1089,10 @@ def render_siswa():
         ijin_guru = status_data.get("ijin_guru", False)
         is_locked = (violation_count >= 10 and not ijin_guru)
 
-        # --------------------------------------------------------------------------
-        # PERBAIKAN LOGIKA: ATOMIC INCREMENT & SERVER-SIDE VALIDATED AUTO-SUBMIT
-        # --------------------------------------------------------------------------
+        # ATOMIC INCREMENT & SERVER-SIDE VALIDATED AUTO-SUBMIT
         if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
             if not is_locked:
                 doc_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}")
-                
-                # 1. Atomic increment langsung di database Firestore
                 doc_ref.set({
                     "username": username_s, 
                     "id_tugas": tg_id, 
@@ -1106,11 +1101,9 @@ def render_siswa():
                     "updated_at": firestore.SERVER_TIMESTAMP
                 }, merge=True)
                 
-                # 2. Ambil nilai valid yang telah terkonfirmasi masuk ke database
                 updated_doc = doc_ref.get()
                 real_violation_count = updated_doc.to_dict().get("violation_count", 0) if updated_doc.exists else 0
                 
-                # 3. Pemicu auto-submit berdasarkan data server yang tervalidasi
                 if real_violation_count >= 15:
                     answers_curr = st.session_state.get(f"quiz_answers_{tg_id}", [])
                     tg_sub = dict(tg)
@@ -1211,6 +1204,7 @@ def render_siswa():
         elif violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/15)**: Terdeteksi keluar dari layar kuis!")
 
+        # HEADER SOAL
         col_head1, col_head2 = st.columns([3, 1])
         with col_head1:
             st.markdown(f"### 📝 {tg.get('judul')}")
@@ -1224,6 +1218,22 @@ def render_siswa():
                 st.rerun()
 
         st.progress((curr_page + 1) / total_soal)
+
+        # --------------------------------------------------------------------------
+        # 1. TOMBOL PREVIOUS & NEXT (DI ATAS)
+        # --------------------------------------------------------------------------
+        c_top_prev, c_top_next = st.columns(2)
+        with c_top_prev:
+            if curr_page > 0 and st.button("⬅️ Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
+                save_draft_to_firebase(username_s, tg_id, answers)
+                st.session_state[f"quiz_page_{tg_id}"] -= 1
+                st.rerun()
+        with c_top_next:
+            if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", key=f"top_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
+                save_draft_to_firebase(username_s, tg_id, answers)
+                st.session_state[f"quiz_page_{tg_id}"] += 1
+                st.rerun()
+
         st.divider()
 
         # SOAL CONTAINER
@@ -1274,45 +1284,36 @@ def render_siswa():
 
         st.divider()
 
-        # NAVIGASI PERPINDAHAN & TOMBOL SUBMIT (PINDAH KE BAWAH)
-        c_bot_prev, c_bot_next, c_bot_submit = st.columns([1, 1, 1.5])
-        with c_bot_prev:
-            if curr_page > 0 and st.button("⬅️ Sebelumnya", key=f"bot_prev_{tg_id}", use_container_width=True, disabled=is_locked):
-                save_draft_to_firebase(username_s, tg_id, answers)
-                st.session_state[f"quiz_page_{tg_id}"] -= 1
-                st.rerun()
-        with c_bot_next:
-            if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", key=f"bot_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
-                save_draft_to_firebase(username_s, tg_id, answers)
-                st.session_state[f"quiz_page_{tg_id}"] += 1
-                st.rerun()
-        with c_bot_submit:
-            if not is_locked:
-                if st.button("🚀 Kumpulkan Semua Jawaban", key=f"bot_submit_{tg_id}", type="primary", use_container_width=True):
-                    tg_submit = dict(tg)
-                    tg_submit["soal"] = soal_list
-                    
-                    with st.spinner("Memproses pengumpulan jawaban..."):
-                        success = submit_jawaban_siswa(
-                            tg_submit, username_s, nama_s, kelas_s, answers, 
-                            is_forced=False
-                        )
-                    
-                    if success:
-                        st.balloons()
-                        st.success("✅ Jawaban Anda berhasil dikumpulkan!")
+        # --------------------------------------------------------------------------
+        # 2. TOMBOL SUBMIT (DI BAWAH)
+        # --------------------------------------------------------------------------
+        if not is_locked:
+            if st.button("🚀 Kumpulkan Semua Jawaban", key=f"bot_submit_{tg_id}", type="primary", use_container_width=True):
+                tg_submit = dict(tg)
+                tg_submit["soal"] = soal_list
+                
+                with st.spinner("Memproses pengumpulan jawaban..."):
+                    success = submit_jawaban_siswa(
+                        tg_submit, username_s, nama_s, kelas_s, answers, 
+                        is_forced=False
+                    )
+                
+                if success:
+                    st.balloons()
+                    st.success("✅ Jawaban Anda berhasil dikumpulkan!")
 
-                        st.session_state["active_quiz_id"] = None
-                        st.session_state.pop("active_quiz_data", None)
-                        st.session_state.pop(f"quiz_answers_{tg_id}", None)
-                        st.session_state.pop(f"quiz_page_{tg_id}", None)
-                        st.session_state.pop(f"quiz_soal_{tg_id}", None)
-                        st.rerun()
-                    else:
-                        st.error("❌ Gagal mengumpulkan jawaban!")
+                    st.session_state["active_quiz_id"] = None
+                    st.session_state.pop("active_quiz_data", None)
+                    st.session_state.pop(f"quiz_answers_{tg_id}", None)
+                    st.session_state.pop(f"quiz_page_{tg_id}", None)
+                    st.session_state.pop(f"quiz_soal_{tg_id}", None)
+                    st.rerun()
+                else:
+                    st.error("❌ Gagal mengumpulkan jawaban!")
 
         return
 
+    # DASBOR SISWA (TAMPILAN UTAMA SISWA)
     all_tugas = [
         t for t in get_all_tugas_cached() 
         if is_target_sesuai_kelas(t, kelas_s) and t.get("status", "terbit") == "terbit"
