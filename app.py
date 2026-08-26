@@ -543,7 +543,7 @@ def render_superadmin():
 # ==========================================
 def render_guru():
     st.title("🇮🇩 Panel Guru")
-    menu = st.sidebar.radio("📌 Menu Guru", ["📖 Kelola Materi", "📝 Buat & Kelola Tugas", "📊 Rekap & Penilaian"])
+    menu = st.sidebar.radio("📌 Menu Guru", ["📖 Kelola Materi", "📝 Buat & Kelola Tugas", "📊 Rekap & Penilaian", "📜 Daftar Nilai"])
     pilihan_kelas = user_info.get("kelas_ajar") or get_all_kelas()
     if isinstance(pilihan_kelas, str): pilihan_kelas = [pilihan_kelas]
 
@@ -1062,6 +1062,75 @@ def render_guru():
                     })
 
                 st.dataframe(pd.DataFrame(analisis_rows), use_container_width=True)
+
+    elif menu == "📜 Daftar Nilai":
+        st.header("📜 Transkrip & Daftar Nilai Siswa")
+        if not pilihan_kelas:
+            st.warning("⚠️ Anda belum ditugaskan mengajar kelas manapun.")
+            st.stop()
+
+        selected_kelas = st.selectbox("🏫 Pilih Kelas Ajar", options=pilihan_kelas, key="sb_dn_kelas")
+        
+        # Ambil daftar tugas untuk kelas ini
+        tugas_kelas = [d for d in get_all_tugas_cached() if is_target_sesuai_kelas(d, selected_kelas)]
+        
+        # Ambil daftar siswa di kelas ini
+        siswa_docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", selected_kelas).stream()
+        siswa_list = sorted([{"username": d.id, **d.to_dict()} for d in siswa_docs], key=lambda x: str(x.get("nama", "")).lower())
+
+        if not siswa_list:
+            st.info(f"Belum ada siswa terdaftar di Kelas **{selected_kelas}**.")
+        elif not tugas_kelas:
+            st.info(f"Belum ada tugas/kuis untuk Kelas **{selected_kelas}**.")
+        else:
+            # Ambil seluruh submissions jawaban untuk kelas ini
+            sub_docs = db.collection("jawaban_siswa").where("kelas_siswa", "==", selected_kelas).stream()
+            sub_list = [{"id": d.id, **d.to_dict()} for d in sub_docs]
+            
+            # Mapping (username_siswa, id_tugas) -> submission
+            sub_map = {(s.get("username_siswa"), s.get("id_tugas")): s for s in sub_list}
+
+            table_rows = []
+            for s in siswa_list:
+                un = s["username"]
+                row_data = {
+                    "Username": un,
+                    "Nama Siswa": s.get("nama", un)
+                }
+
+                numeric_scores = []
+                for tg in tugas_kelas:
+                    tg_id = tg["id"]
+                    tg_title = tg.get("judul", tg_id)
+                    sub = sub_map.get((un, tg_id))
+
+                    if sub and sub.get("nilai") is not None:
+                        val = sub.get("nilai")
+                        row_data[tg_title] = val
+                        try:
+                            numeric_scores.append(float(val))
+                        except (ValueError, TypeError):
+                            pass
+                    elif sub:
+                        row_data[tg_title] = "Belum Dinilai"
+                    else:
+                        row_data[tg_title] = "-"
+
+                # Hitung rata-rata nilai per siswa
+                row_data["Rata-Rata Nilai"] = round(sum(numeric_scores) / len(numeric_scores), 2) if numeric_scores else "-"
+                table_rows.append(row_data)
+
+            df_daftar_nilai = pd.DataFrame(table_rows)
+            st.dataframe(df_daftar_nilai, use_container_width=True)
+
+            csv_data = df_daftar_nilai.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label=f"💾 Unduh Rekap Transkrip Nilai Kelas {selected_kelas} (.csv)",
+                data=csv_data,
+                file_name=f"rekap_nilai_kelas_{selected_kelas}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
 
 # ==========================================
 # 8. PANEL SISWA (ULANGAN vs TUGAS BIASA)
