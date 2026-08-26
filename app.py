@@ -185,17 +185,13 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     clear_user_submissions_cache()
     return True
 
-# Helper function untuk menghapus tugas beserta seluruh riwayat nilainya
 def delete_tugas_and_submissions(tugas_id):
-    # 1. Hapus dokumen tugas
     db.collection("tugas_pancasila").document(tugas_id).delete()
     
-    # 2. Hapus semua jawaban siswa terkait tugas ini
     j_docs = db.collection("jawaban_siswa").where("id_tugas", "==", tugas_id).stream()
     for doc in j_docs:
         db.collection("jawaban_siswa").document(doc.id).delete()
         
-    # 3. Hapus semua status ujian siswa terkait tugas ini
     s_docs = db.collection("status_ujian").where("id_tugas", "==", tugas_id).stream()
     for doc in s_docs:
         db.collection("status_ujian").document(doc.id).delete()
@@ -925,35 +921,15 @@ def render_guru():
                 "Catatan Guru": sub.get("catatan_guru", "-") if sub else "-"
             })
 
-        t_rekap, t_koreksi, t_analisis = st.tabs(["📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "📈 Analisis & Validitas PG"])
+        t_rekap, t_koreksi, t_analisis, t_kontrol = st.tabs([
+            "📋 Rekap Pengerjaan", 
+            "✏️ Koreksi & Penilaian", 
+            "📈 Analisis & Validitas PG", 
+            "🔓 Kontrol Izin & Buka Kunci"
+        ])
 
         with t_rekap:
             st.dataframe(pd.DataFrame(rekap_rows), use_container_width=True)
-            
-            if is_ulangan_task:
-                st.markdown("### 🔓 Kontrol Izin & Buka Kunci Siswa (Ulangan Harian)")
-                locked_students = [
-                    s for s in siswa_list 
-                    if status_map.get(s["username"], {}).get("status") == "in_progress" 
-                    and not status_map.get(s["username"], {}).get("ijin_guru", False)
-                ]
-                if not locked_students:
-                    st.info("ℹ️ Tidak ada siswa yang saat ini terkunci.")
-                else:
-                    for ls in locked_students:
-                        un_l = ls["username"]
-                        nm_l = ls.get("nama", un_l)
-                        st_l = status_map.get(un_l, {})
-                        v_c = st_l.get("violation_count", 0)
-                        
-                        c_info, c_act = st.columns([3, 1])
-                        c_info.write(f"👤 **{nm_l}** (@{un_l}) — Pelanggaran: **{v_c}x** | Status: **🔒 Terkunci (Keluar/Refresh)**")
-                        if c_act.button("🔓 Beri Izin Mengerjakan", key=f"btn_grant_{un_l}"):
-                            db.collection("status_ujian").document(f"{un_l}_{selected_tugas_id}").set({
-                                "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
-                            }, merge=True)
-                            st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
-                            st.rerun()
 
         with t_koreksi:
             if not sub_list:
@@ -1080,6 +1056,34 @@ def render_guru():
 
                 st.dataframe(pd.DataFrame(analisis_rows), use_container_width=True)
 
+        with t_kontrol:
+            st.subheader("🔓 Kontrol Izin & Buka Kunci Siswa (Ulangan Harian)")
+            if not is_ulangan_task:
+                st.info("ℹ️ Fitur kontrol izin buka kunci hanya berlaku untuk tugas jenis **Ulangan Harian**.")
+            else:
+                locked_students = [
+                    s for s in siswa_list 
+                    if status_map.get(s["username"], {}).get("status") == "in_progress" 
+                    and not status_map.get(s["username"], {}).get("ijin_guru", False)
+                ]
+                if not locked_students:
+                    st.info("ℹ️ Tidak ada siswa yang saat ini terkunci.")
+                else:
+                    for ls in locked_students:
+                        un_l = ls["username"]
+                        nm_l = ls.get("nama", un_l)
+                        st_l = status_map.get(un_l, {})
+                        v_c = st_l.get("violation_count", 0)
+                        
+                        c_info, c_act = st.columns([3, 1])
+                        c_info.write(f"👤 **{nm_l}** (@{un_l}) — Pelanggaran: **{v_c}x** | Status: **🔒 Terkunci (Keluar/Refresh)**")
+                        if c_act.button("🔓 Beri Izin Mengerjakan", key=f"btn_grant_{un_l}"):
+                            db.collection("status_ujian").document(f"{un_l}_{selected_tugas_id}").set({
+                                "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
+                            }, merge=True)
+                            st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
+                            st.rerun()
+
     elif menu == "📜 Daftar Nilai":
         st.header("📜 Transkrip & Daftar Nilai Siswa")
         if not pilihan_kelas:
@@ -1088,11 +1092,9 @@ def render_guru():
 
         selected_kelas = st.selectbox("🏫 Pilih Kelas Ajar", options=pilihan_kelas, key="sb_dn_kelas")
         
-        # 1. Ambil daftar tugas yang AKTIF/EKSIS di database untuk kelas ini
         tugas_kelas = [d for d in get_all_tugas_cached() if is_target_sesuai_kelas(d, selected_kelas)]
         valid_tugas_ids = {tg["id"] for tg in tugas_kelas}
         
-        # 2. Ambil daftar siswa di kelas ini
         siswa_docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", selected_kelas).stream()
         siswa_list = sorted([{"username": d.id, **d.to_dict()} for d in siswa_docs], key=lambda x: str(x.get("nama", "")).lower())
 
@@ -1101,11 +1103,9 @@ def render_guru():
         elif not tugas_kelas:
             st.info(f"Belum ada tugas/kuis aktif untuk Kelas **{selected_kelas}**.")
         else:
-            # 3. Ambil submissions jawaban hanya untuk tugas yang masih eksis
             sub_docs = db.collection("jawaban_siswa").where("kelas_siswa", "==", selected_kelas).stream()
             sub_list = [d.to_dict() for d in sub_docs if d.to_dict().get("id_tugas") in valid_tugas_ids]
             
-            # Mapping (username_siswa, id_tugas) -> submission
             sub_map = {(s.get("username_siswa"), s.get("id_tugas")): s for s in sub_list}
 
             table_rows = []
@@ -1134,7 +1134,6 @@ def render_guru():
                     else:
                         row_data[tg_title] = "-"
 
-                # Hitung rata-rata nilai per siswa
                 row_data["Rata-Rata Nilai"] = round(sum(numeric_scores) / len(numeric_scores), 2) if numeric_scores else "-"
                 table_rows.append(row_data)
 
@@ -1180,7 +1179,6 @@ def render_siswa():
         soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
 
-        # LOGIKA PERMISSION & PERSISTENT LOCK
         if f"quiz_loaded_{tg_id}" not in st.session_state:
             status_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}")
             status_doc = status_ref.get()
@@ -1410,13 +1408,11 @@ def render_siswa():
 
         return
 
-    # DASBOR SISWA (TAMPILAN UTAMA SISWA)
     all_tugas = [
         t for t in get_all_tugas_cached() 
         if is_target_sesuai_kelas(t, kelas_s) and t.get("status", "terbit") == "terbit"
     ]
     
-    # Map seluruh ID tugas eksis
     existing_tugas_dict = {t["id"]: t for t in all_tugas}
 
     st.markdown(f"""
@@ -1475,7 +1471,6 @@ def render_siswa():
     with tab_nilai:
         st.subheader("📊 Riwayat Nilai & Feedback")
         
-        # Saring riwayat nilai HANYA untuk tugas yang masih eksis/ada di database
         valid_subs = {tg_id: sub for tg_id, sub in my_subs.items() if tg_id in existing_tugas_dict}
 
         if not valid_subs:
