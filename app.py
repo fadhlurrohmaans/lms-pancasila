@@ -93,11 +93,18 @@ def get_user_submissions_cached(username):
     docs = db.collection("jawaban_siswa").where("username_siswa", "==", username).stream()
     return {d.to_dict().get("id_tugas"): d.to_dict() for d in docs}
 
+# OPTIMASI: Cache status ujian untuk menghindari query berulang di dashboard
+@st.cache_data(ttl=15)
+def get_user_statuses_cached(username):
+    docs = db.collection("status_ujian").where("username", "==", username).stream()
+    return {d.to_dict().get("id_tugas"): d.to_dict() for d in docs}
+
 # --- CACHE CLEAR HELPERS ---
 def clear_kelas_cache(): get_all_kelas.clear()
 def clear_tugas_cache(): get_all_tugas_cached.clear()
 def clear_materi_cache(): get_all_materi_cached.clear()
 def clear_user_submissions_cache(): get_user_submissions_cached.clear()
+def clear_user_statuses_cache(): get_user_statuses_cached.clear()
 
 # --- UTILITY HELPERS ---
 def safe_read_uploaded_file(uploaded_file):
@@ -139,6 +146,7 @@ def save_draft_to_firebase(username_s, tg_id, answers):
             "username": username_s, "id_tugas": tg_id, "status": "in_progress",
             "draft_answers": answers, "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
+        clear_user_statuses_cache()
     except Exception:
         pass
 
@@ -183,6 +191,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     }, merge=True)
     
     clear_user_submissions_cache()
+    clear_user_statuses_cache()
     return True
 
 def delete_tugas_and_submissions(tugas_id):
@@ -198,6 +207,7 @@ def delete_tugas_and_submissions(tugas_id):
         
     clear_tugas_cache()
     clear_user_submissions_cache()
+    clear_user_statuses_cache()
 
 # ==========================================
 # 3. AI EVALUATION HELPER
@@ -1081,6 +1091,7 @@ def render_guru():
                             db.collection("status_ujian").document(f"{un_l}_{selected_tugas_id}").set({
                                 "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
                             }, merge=True)
+                            clear_user_statuses_cache()
                             st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
                             st.rerun()
 
@@ -1158,6 +1169,7 @@ def render_siswa():
     username_s = user_info.get("username", "")
 
     my_subs = get_user_submissions_cached(username_s)
+    my_statuses = get_user_statuses_cached(username_s)
     active_quiz_id = st.session_state.get("active_quiz_id")
 
     if active_quiz_id:
@@ -1180,9 +1192,8 @@ def render_siswa():
         total_soal = len(soal_list)
 
         if f"quiz_loaded_{tg_id}" not in st.session_state:
-            status_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}")
-            status_doc = status_ref.get()
-            status_data = status_doc.to_dict() if status_doc.exists else {}
+            status_data = my_statuses.get(tg_id, {})
+            has_status = bool(status_data)
             
             draft_ans = status_data.get("draft_answers")
             if draft_ans and isinstance(draft_ans, list) and len(draft_ans) == total_soal:
@@ -1191,17 +1202,19 @@ def render_siswa():
                 st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
 
             if is_ulangan:
-                if not status_doc.exists:
-                    status_ref.set({
+                if not has_status:
+                    db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
                         "username": username_s, "id_tugas": tg_id, "status": "in_progress",
                         "ijin_guru": False, "violation_count": 0, "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
+                    clear_user_statuses_cache()
                     st.session_state[f"ijin_guru_{tg_id}"] = True
                 elif status_data.get("status") == "in_progress":
                     ijin_db = status_data.get("ijin_guru", False)
                     st.session_state[f"ijin_guru_{tg_id}"] = ijin_db
                     if ijin_db:
-                        status_ref.set({"ijin_guru": False}, merge=True)
+                        db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({"ijin_guru": False}, merge=True)
+                        clear_user_statuses_cache()
                 else:
                     st.session_state[f"ijin_guru_{tg_id}"] = status_data.get("ijin_guru", False)
                 st.session_state[f"violation_count_{tg_id}"] = status_data.get("violation_count", 0)
@@ -1231,6 +1244,7 @@ def render_siswa():
                         "status": "in_progress", 
                         "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
+                    clear_user_statuses_cache()
                     
                     st.session_state[f"violation_count_{tg_id}"] += 1
                     new_v = st.session_state[f"violation_count_{tg_id}"]
@@ -1297,13 +1311,14 @@ def render_siswa():
         if is_locked:
             st.error("🔒 **ULANGAN HARIAN TERKUNCI**: Anda terdeteksi **keluar/ke-refresh** dari kuis atau mencapai batas pelanggaran. Anda wajib meminta izin kepada Guru untuk dapat melanjutkan pengerjaan.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
-                status_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}")
-                status_doc = status_ref.get()
-                if status_doc.exists:
-                    ijin_val = status_doc.to_dict().get("ijin_guru", False)
-                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
-                    if ijin_val:
-                        status_ref.set({"ijin_guru": False}, merge=True)
+                clear_user_statuses_cache()
+                fresh_statuses = get_user_statuses_cached(username_s)
+                status_doc_data = fresh_statuses.get(tg_id, {})
+                ijin_val = status_doc_data.get("ijin_guru", False)
+                st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
+                if ijin_val:
+                    db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({"ijin_guru": False}, merge=True)
+                    clear_user_statuses_cache()
                 st.rerun()
 
         elif is_ulangan and violation_count >= 5:
@@ -1320,6 +1335,7 @@ def render_siswa():
                 save_draft_to_firebase(username_s, tg_id, answers)
                 if is_ulangan:
                     db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({"ijin_guru": False}, merge=True)
+                    clear_user_statuses_cache()
                 st.session_state["active_quiz_id"] = None
                 st.session_state.pop("active_quiz_data", None)
                 st.session_state.pop(f"quiz_loaded_{tg_id}", None)
@@ -1358,20 +1374,20 @@ def render_siswa():
                     key=f"radio_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
+                # OPTIMASI: Hanya perbarui memori local (st.session_state), tidak memanggil save_draft Firestore setiap kali opsi diklik
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
-                    save_draft_to_firebase(username_s, tg_id, answers)
             else:
                 saved_text = answers[curr_page] or ""
                 essay_text = st.text_area(
                     "Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
+                # OPTIMASI: Jawaban disimpan ke session lokal terlebih dahulu
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
-                    save_draft_to_firebase(username_s, tg_id, answers)
 
         cols_per_row = 5
         for row_start in range(0, total_soal, cols_per_row):
@@ -1394,7 +1410,7 @@ def render_siswa():
                 tg_submit = dict(tg)
                 tg_submit["soal"] = soal_list
                 
-                with st.spinner("Memproses pengumpulan jawaban..."):
+                with st.spinner("Memproses pengumpulkan jawaban..."):
                     success = submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_forced=False)
                 
                 if success:
@@ -1440,8 +1456,9 @@ def render_siswa():
                     st.markdown(f"### 📝 {tg.get('judul')} [{tag_color}]")
                     st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | {len(tg.get('soal', []))} Soal")
                     
-                    st_doc = db.collection("status_ujian").document(f"{username_s}_{tg['id']}").get()
-                    has_draft = st_doc.exists and st_doc.to_dict().get("draft_answers")
+                    # OPTIMASI: Menggunakan cache 'my_statuses' menggantikan query db.get() di dalam loop
+                    st_data = my_statuses.get(tg['id'], {})
+                    has_draft = bool(st_data.get("draft_answers"))
                     
                     btn_label = "▶️ Lanjutkan Pengerjaan" if has_draft else "🚀 Mulai Kerjakan"
                     if st.button(btn_label, key=f"start_{tg['id']}", type="primary"):
