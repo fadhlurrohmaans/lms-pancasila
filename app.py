@@ -1186,7 +1186,12 @@ def render_siswa():
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
         is_locked = (not ijin_guru) if is_ulangan else False
 
+        # --- PERBAIKAN LOGIKA PELANGGARAN & PENGUNCIAN (10x KECURANGAN) ---
         if is_ulangan:
+            # Otomatis kunci jika batas kecurangan mencapai 10x dan belum ada izin guru
+            if violation_count >= 10 and not ijin_guru:
+                is_locked = True
+
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
                 if not is_locked:
                     doc_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}")
@@ -1195,25 +1200,22 @@ def render_siswa():
                         "id_tugas": tg_id, 
                         "violation_count": firestore.Increment(1),
                         "status": "in_progress", 
+                        "ijin_guru": False, # Otomatis butuh izin jika terkunci
                         "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
                     
                     st.session_state[f"violation_count_{tg_id}"] += 1
                     new_v = st.session_state[f"violation_count_{tg_id}"]
 
-                    if new_v >= 15:
-                        tg_sub = dict(tg)
-                        tg_sub["soal"] = soal_list
-                        submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers, is_violation=True)
-                        
-                        st.session_state["active_quiz_id"] = None
-                        for k in [f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}"]:
-                            st.session_state.pop(k, None)
-                        st.error("🚨 Kuis di-submit otomatis karena mencapai 15 kali pelanggaran!")
+                    # Kunci kuis jika pelanggaran menyentuh angka 10
+                    if new_v >= 10:
+                        st.session_state[f"ijin_guru_{tg_id}"] = False
+                        st.error("🚨 Anda telah melakukan kecurangan 10 kali! Kuis terkunci hingga Guru memberikan izin.")
                         st.rerun()
                     else:
                         st.rerun()
 
+            # JavaScript listener untuk mendeteksi pindah tab/window (pemicu pelanggaran)
             if not is_locked:
                 components.html("""
                     <script>
@@ -1260,8 +1262,9 @@ def render_siswa():
                     </script>
                 """, height=0)
 
+        # Tampilan saat kuis terkunci
         if is_locked:
-            st.error("🔒 **ULANGAN HARIAN TERKUNCI**: Anda terdeteksi **keluar/ke-refresh** dari kuis. Silakan kontak Guru untuk membuka kunci.")
+            st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda telah mencapai **{violation_count}/10 kali** (atau Anda berpindah halaman). Silakan hubungi Guru untuk membuka kunci.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
                 status_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}")
                 status_doc = status_ref.get()
@@ -1269,12 +1272,12 @@ def render_siswa():
                     ijin_val = status_doc.to_dict().get("ijin_guru", False)
                     st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
                     if ijin_val:
+                        # Reset status izin setelah dibuka agar perlindungan tetap aktif
                         status_ref.set({"ijin_guru": False}, merge=True)
                 st.rerun()
 
         elif is_ulangan and violation_count >= 5:
-            st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/15)**: Terdeteksi keluar dari layar kuis!")
-
+            st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/10)**: Terdeteksi keluar dari layar kuis!")
         col_head1, col_head2 = st.columns([3, 1])
         with col_head1:
             st.markdown(f"### 📝 {tg.get('judul')}")
