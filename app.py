@@ -363,16 +363,31 @@ def render_superadmin():
     with t_list:
         st.subheader("👥 Daftar Akun")
         all_user_docs = list(db.collection("users").stream())
-        users = [
-            {
-                "Username": d.id,
-                "Nama": (u := d.to_dict()).get("nama"),
-                "Role": u.get("role", "").upper(),
-                "Kelas": u.get("kelas", "-") if u.get("role") == "siswa" else ", ".join(u.get("kelas_ajar", []) if isinstance(u.get("kelas_ajar"), list) else [u.get("kelas_ajar", "")])
-            } for d in all_user_docs
-        ]
-        if users: st.dataframe(pd.DataFrame(users), use_container_width=True)
+        users = []
+        for d in all_user_docs:
+            u = d.to_dict() or {}
+            role_user = str(u.get("role", "")).lower()
+            
+            if role_user == "siswa":
+                kelas_display = str(u.get("kelas") or "-")
+            else:
+                ka = u.get("kelas_ajar")
+                if isinstance(ka, list):
+                    kelas_display = ", ".join([str(x) for x in ka if x]) or "-"
+                elif ka:
+                    kelas_display = str(ka)
+                else:
+                    kelas_display = "-"
 
+            users.append({
+                "Username": d.id,
+                "Nama": u.get("nama", "-"),
+                "Role": role_user.upper(),
+                "Kelas": kelas_display
+            })
+            
+        if users:
+            st.dataframe(pd.DataFrame(users), use_container_width=True)
     with t_add:
         st.subheader("➕ Buat Akun Satuan")
         daftar_kelas = get_all_kelas()
