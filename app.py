@@ -1176,9 +1176,8 @@ def on_answer_change(tg_id, curr_page):
 def change_quiz_page(tg_id, new_page):
     """Pindah halaman tanpa menumpuk payload DOM"""
     st.session_state[f"quiz_page_{tg_id}"] = new_page
-
 # ==========================================
-# 8. PANEL SISWA (FIXED RADIO INDEX & OPTIMIZED)
+# 8. PANEL SISWA (ULTRA-LIGHT + ANTI-CHEAT ACTIVE)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
@@ -1200,28 +1199,142 @@ def render_siswa():
             st.rerun()
 
         tg_id = tg["id"]
+        jenis_tugas = tg.get("jenis_tugas", "Ulangan Harian")
+        is_ulangan = (jenis_tugas == "Ulangan Harian")
         soal_list = tg.get("soal", [])
         total_soal = len(soal_list)
 
-        # Inisialisasi Data Kuis Pertama Kali
+        # 1. INISIALISASI STATE UJIAN & ANTI-CHEAT (HANYA 1X RUN)
         if f"quiz_loaded_{tg_id}" not in st.session_state:
             my_statuses = get_user_statuses_cached(username_s)
             status_data = my_statuses.get(tg_id, {})
+            has_status = bool(status_data)
+
+            # Draft Jawaban
             draft_ans = status_data.get("draft_answers")
-            
             if draft_ans and isinstance(draft_ans, list) and len(draft_ans) == total_soal:
                 st.session_state[f"quiz_answers_{tg_id}"] = draft_ans
             else:
                 st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
+
+            # Status Izin Guru & Pelanggaran
+            if is_ulangan:
+                if not has_status:
+                    db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
+                        "username": username_s, "id_tugas": tg_id, "status": "in_progress",
+                        "ijin_guru": False, "violation_count": 0, "updated_at": firestore.SERVER_TIMESTAMP
+                    }, merge=True)
+                    clear_user_statuses_cache()
+                    st.session_state[f"ijin_guru_{tg_id}"] = True
+                elif status_data.get("status") == "in_progress":
+                    ijin_db = status_data.get("ijin_guru", False)
+                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_db
+                    if ijin_db:
+                        db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({"ijin_guru": False}, merge=True)
+                        clear_user_statuses_cache()
+                else:
+                    st.session_state[f"ijin_guru_{tg_id}"] = status_data.get("ijin_guru", False)
+                st.session_state[f"violation_count_{tg_id}"] = status_data.get("violation_count", 0)
+            else:
+                st.session_state[f"ijin_guru_{tg_id}"] = True
+                st.session_state[f"violation_count_{tg_id}"] = 0
 
             st.session_state[f"quiz_page_{tg_id}"] = 0
             st.session_state[f"quiz_loaded_{tg_id}"] = True
 
         answers = st.session_state[f"quiz_answers_{tg_id}"]
         curr_page = st.session_state[f"quiz_page_{tg_id}"]
+        violation_count = st.session_state.get(f"violation_count_{tg_id}", 0)
+        ijin_guru = st.session_state.get(f"ijin_guru_{tg_id}", True)
+        
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
+        is_locked = (not ijin_guru) if is_ulangan else False
 
-        # Header Ringkas
+        # 2. LOGIKA TRIGGER PELANGGARAN & AUTO-SUBMIT
+        if is_ulangan:
+            # Hidden Trigger Button yang diklik oleh JS
+            if st.button("⚠️ Catat Pelanggaran", key=f"btn_rec_viol_{tg_id}", type="secondary"):
+                if not is_locked:
+                    doc_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}")
+                    doc_ref.set({
+                        "username": username_s, 
+                        "id_tugas": tg_id, 
+                        "violation_count": firestore.Increment(1),
+                        "status": "in_progress", 
+                        "updated_at": firestore.SERVER_TIMESTAMP
+                    }, merge=True)
+                    clear_user_statuses_cache()
+                    
+                    st.session_state[f"violation_count_{tg_id}"] += 1
+                    new_v = st.session_state[f"violation_count_{tg_id}"]
+
+                    if new_v >= 15:
+                        tg_sub = dict(tg)
+                        tg_sub["soal"] = soal_list
+                        submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers, is_violation=True)
+                        
+                        st.session_state["active_quiz_id"] = None
+                        for k in [f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_loaded_{tg_id}", f"ac_rendered_{tg_id}"]:
+                            st.session_state.pop(k, None)
+                        st.error("🚨 Kuis otomatis dikumpulkan karena mencapai 15 kali pelanggaran!")
+                        st.rerun()
+                    else:
+                        st.rerun()
+
+            # Injeksi JS Anti-Cheat (Mount 1x Saja Ke Event Window Parent)
+            if not is_locked and not st.session_state.get(f"ac_rendered_{tg_id}", False):
+                components.html("""
+                    <script>
+                    (function() {
+                        const parentDoc = window.parent.document;
+                        let lastTrigger = 0;
+
+                        function triggerViolation() {
+                            const now = Date.now();
+                            if (now - lastTrigger < 3000) return; // Anti spam threshold 3 detik
+                            lastTrigger = now;
+
+                            const buttons = Array.from(parentDoc.querySelectorAll('button'));
+                            const triggerBtn = buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
+                            if (triggerBtn) {
+                                triggerBtn.click();
+                            }
+                        }
+
+                        if (!window.parent._antiCheatInitialized) {
+                            window.parent._antiCheatInitialized = true;
+                            parentDoc.addEventListener('visibilitychange', function() {
+                                if (parentDoc.hidden) triggerViolation();
+                            });
+                            window.parent.addEventListener('blur', function() {
+                                triggerViolation();
+                            });
+                        }
+                    })();
+                    </script>
+                """, height=0)
+                st.session_state[f"ac_rendered_{tg_id}"] = True
+
+        # 3. TAMPILAN JIKA ULANGAN TERKUNCI
+        if is_locked:
+            st.error("🔒 **ULANGAN HARIAN TERKUNCI**: Anda terdeteksi **keluar/berpindah layar/refresh** dari kuis. Silakan minta izin ke Guru untuk membuka kuis.")
+            if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_perm_{tg_id}", type="primary"):
+                clear_user_statuses_cache()
+                fresh_statuses = get_user_statuses_cached(username_s)
+                status_doc_data = fresh_statuses.get(tg_id, {})
+                ijin_val = status_doc_data.get("ijin_guru", False)
+                st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
+                if ijin_val:
+                    db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({"ijin_guru": False}, merge=True)
+                    clear_user_statuses_cache()
+                st.rerun()
+            return
+
+        # Warning Pelanggaran jika ada
+        if is_ulangan and violation_count > 0:
+            st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/15)**: Terdeteksi pernah keluar dari layar kuis!")
+
+        # 4. HEADER KUIS
         c_h1, c_h2 = st.columns([3, 1])
         with c_h1:
             st.markdown(f"### 📝 {tg.get('judul')}")
@@ -1229,6 +1342,9 @@ def render_siswa():
         with c_h2:
             if st.button("⬅️ Keluar", key="btn_exit_quiz", type="secondary", use_container_width=True):
                 save_draft_to_firebase(username_s, tg_id, answers)
+                if is_ulangan:
+                    db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({"ijin_guru": False}, merge=True)
+                    clear_user_statuses_cache()
                 st.session_state["active_quiz_id"] = None
                 st.session_state.pop("active_quiz_data", None)
                 st.session_state.pop(f"quiz_loaded_{tg_id}", None)
@@ -1236,7 +1352,7 @@ def render_siswa():
 
         st.progress((curr_page + 1) / total_soal)
 
-        # Navigasi Cepat
+        # 5. NAVIGASI NUMERIK SELEKTIF
         c_prev, c_jump, c_next = st.columns([1, 2, 1])
         with c_prev:
             if curr_page > 0:
@@ -1266,7 +1382,7 @@ def render_siswa():
 
         st.divider()
 
-        # Render Soal
+        # 6. RENDER DOKUMEN SOAL
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
@@ -1278,7 +1394,6 @@ def render_siswa():
         if tg.get("tipe") == "pg":
             opsi_list = soal_item.get("opsi", [])
             
-            # Sanitasi & Konversi Nilai Index ke Integer Aman
             safe_index = None
             if raw_ans is not None:
                 try:
@@ -1313,7 +1428,7 @@ def render_siswa():
 
         st.divider()
 
-        # Submit Akhir
+        # 7. TOMBOL SUBMIT UTAMA
         if st.button("🚀 Kumpulkan Semua Jawaban", key="btn_final_submit", type="primary", use_container_width=True):
             tg_submit = dict(tg)
             tg_submit["soal"] = soal_list
@@ -1323,7 +1438,7 @@ def render_siswa():
                 st.balloons()
                 st.success("✅ Jawaban berhasil dikumpulkan!")
                 st.session_state["active_quiz_id"] = None
-                for k in ["active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}"]:
+                for k in ["active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"ac_rendered_{tg_id}"]:
                     st.session_state.pop(k, None)
                 st.rerun()
 
@@ -1410,7 +1525,9 @@ def render_siswa():
                     "Catatan Guru": sub_info.get("catatan_guru", "-")
                 })
             st.dataframe(pd.DataFrame(riwayat_rows), use_container_width=True)
-            # ==========================================
+
+
+# ==========================================
 # 9. MAIN ROUTER
 # ==========================================
 if role == "superadmin":
