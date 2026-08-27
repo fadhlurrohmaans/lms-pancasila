@@ -263,6 +263,19 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 if "user" not in st.session_state:
     st.session_state["user"] = None
 
+# --- AUTO-CREATE INITIAL SUPERADMIN IF DB EMPTY ---
+admin_ref = db.collection("users").document("admin")
+if not admin_ref.get().exists:
+    admin_ref.set({
+        "nama": "Super Admin",
+        "role": "superadmin",
+        "password": hash_pass("admin123"),
+        "password_plain": "admin123",
+        "created_at": firestore.SERVER_TIMESTAMP
+    })
+    st.toast("💡 Akun default awal berhasil dibuat! Username: admin | Pass: admin123")
+# --------------------------------------------------
+
 if st.session_state["user"] is None:
     st.title("🇮🇩 LMS Pendidikan Pancasila")
     st.info("💡 **Informasi**: Akun Siswa dan Guru dikelola oleh **Super Admin**.")
@@ -288,9 +301,7 @@ if st.session_state["user"] is None:
                     else: st.error("Password salah!")
                 else: st.error("Username tidak terdaftar!")
             else: st.warning("Isi username dan password.")
-    st.stop()
-
-# ==========================================
+    st.stop()# ==========================================
 # 5. SIDEBAR
 # ==========================================
 user_info = st.session_state["user"]
