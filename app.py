@@ -1165,7 +1165,7 @@ def render_guru():
             )
 
 # ==========================================
-# 8. PANEL SISWA (ULANGAN vs TUGAS BIASA)
+# 8. PANEL SISWA (ULANGAN vs TUGAS BIASA - OPTIMIZED)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
@@ -1195,6 +1195,7 @@ def render_siswa():
         soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
 
+        # Inisialisasi Kuis Satu Kali
         if f"quiz_loaded_{tg_id}" not in st.session_state:
             status_data = my_statuses.get(tg_id, {})
             has_status = bool(status_data)
@@ -1238,7 +1239,6 @@ def render_siswa():
         is_locked = (not ijin_guru) if is_ulangan else False
 
         if is_ulangan:
-            # Tombol pemicu disembunyikan otomatis oleh CSS di bagian atas
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
                 if not is_locked:
                     doc_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}")
@@ -1260,15 +1260,15 @@ def render_siswa():
                         submit_jawaban_siswa(tg_sub, username_s, nama_s, kelas_s, answers, is_violation=True)
                         
                         st.session_state["active_quiz_id"] = None
-                        for k in [f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}"]:
+                        for k in [f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"ac_rendered_{tg_id}"]:
                             st.session_state.pop(k, None)
                         st.error("🚨 Kuis di-submit otomatis karena mencapai 15 kali pelanggaran!")
                         st.rerun()
                     else:
                         st.rerun()
 
-            if not is_locked:
-                # OPTIMASI: Event Listener JS ringan tanpa loop setInterval & tanpa pemindaian DOM terus menerus
+            # PERBAIKAN 1: Injeksi iframe Anti-Cheat HANYA 1x untuk mencegah RAM Leak
+            if not is_locked and not st.session_state.get(f"ac_rendered_{tg_id}", False):
                 components.html("""
                     <script>
                     (function() {
@@ -1299,9 +1299,10 @@ def render_siswa():
                     })();
                     </script>
                 """, height=0)
+                st.session_state[f"ac_rendered_{tg_id}"] = True
 
         if is_locked:
-            st.error("🔒 **ULANGAN HARIAN TERKUNCI**: Anda terdeteksi **keluar/ke-refresh** dari kuis atau mencapai batas pelanggaran. Anda wajib meminta izin kepada Guru untuk dapat melanjutkan pengerjaan.")
+            st.error("🔒 **ULANGAN HARIAN TERKUNCI**: Anda terdeteksi **keluar/ke-refresh** dari kuis. Silakan minta izin kepada Guru.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
                 clear_user_statuses_cache()
                 fresh_statuses = get_user_statuses_cached(username_s)
@@ -1312,14 +1313,14 @@ def render_siswa():
                     db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({"ijin_guru": False}, merge=True)
                     clear_user_statuses_cache()
                 st.rerun()
-
         elif is_ulangan and violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/15)**: Terdeteksi keluar dari layar kuis!")
 
+        # Header Kuis
         col_head1, col_head2 = st.columns([3, 1])
         with col_head1:
             st.markdown(f"### 📝 {tg.get('judul')}")
-            info_sub = f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Jenis: **{jenis_tugas}** | Terjawab: **{terjawab_count}/{total_soal}**"
+            info_sub = f"Terjawab: **{terjawab_count}/{total_soal}**"
             if is_ulangan: info_sub += f" | Pelanggaran: **{violation_count}x**"
             st.caption(info_sub)
         with col_head2:
@@ -1329,26 +1330,48 @@ def render_siswa():
                     db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({"ijin_guru": False}, merge=True)
                     clear_user_statuses_cache()
                 st.session_state["active_quiz_id"] = None
-                st.session_state.pop("active_quiz_data", None)
-                st.session_state.pop(f"quiz_loaded_{tg_id}", None)
+                for k in ["active_quiz_data", f"quiz_loaded_{tg_id}", f"ac_rendered_{tg_id}"]:
+                    st.session_state.pop(k, None)
                 st.rerun()
 
         st.progress((curr_page + 1) / total_soal)
 
-        c_top_prev, c_top_next = st.columns(2)
-        with c_top_prev:
-            if curr_page > 0 and st.button("⬅️ Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
-                save_draft_to_firebase(username_s, tg_id, answers)
+        # Navigasi Atas
+        c_prev, c_jump, c_next = st.columns([1, 2, 1])
+        with c_prev:
+            if curr_page > 0 and st.button("⬅️ Sebelum", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
                 st.session_state[f"quiz_page_{tg_id}"] -= 1
                 st.rerun()
-        with c_top_next:
-            if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", key=f"top_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
-                save_draft_to_firebase(username_s, tg_id, answers)
+
+        # PERBAIKAN 2: Navigasi Dropdown Ringan menggantikan kisi 50 tombol yang berat
+        with c_jump:
+            jump_options = list(range(total_soal))
+            def format_soal_label(i):
+                ans = answers[i]
+                status = "🟢" if ans is not None and (not isinstance(ans, str) or ans.strip() != "") else "⚪"
+                return f"{status} Soal No. {i + 1}"
+            
+            selected_no = st.selectbox(
+                "Lompat Nomor", 
+                options=jump_options, 
+                index=curr_page, 
+                format_func=format_soal_label,
+                key=f"sb_jump_{tg_id}_{curr_page}",
+                label_visibility="collapsed",
+                disabled=is_locked
+            )
+            if selected_no != curr_page:
+                st.session_state[f"quiz_page_{tg_id}"] = selected_no
+                st.rerun()
+
+        with c_next:
+            if curr_page < total_soal - 1 and st.button("Lanjut ➡️", key=f"top_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
                 st.session_state[f"quiz_page_{tg_id}"] += 1
                 st.rerun()
 
         st.divider()
 
+        # Tampilan Soal
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
@@ -1379,28 +1402,15 @@ def render_siswa():
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
-        cols_per_row = 5
-        for row_start in range(0, total_soal, cols_per_row):
-            nav_cols = st.columns(cols_per_row)
-            for idx in range(cols_per_row):
-                q_idx = row_start + idx
-                if q_idx < total_soal:
-                    is_ans = answers[q_idx] is not None
-                    lbl = f"{'🟢' if is_ans else '⚪'} {q_idx + 1}"
-                    btn_t = "primary" if q_idx == curr_page else "secondary"
-                    if nav_cols[idx].button(lbl, key=f"nav_p_{q_idx}", type=btn_t, use_container_width=True, disabled=is_locked):
-                        save_draft_to_firebase(username_s, tg_id, answers)
-                        st.session_state[f"quiz_page_{tg_id}"] = q_idx
-                        st.rerun()
-
         st.divider()
 
+        # Tombol Submit Utama
         if not is_locked:
             if st.button("🚀 Kumpulkan Semua Jawaban", key=f"bot_submit_{tg_id}", type="primary", use_container_width=True):
                 tg_submit = dict(tg)
                 tg_submit["soal"] = soal_list
                 
-                with st.spinner("Memproses pengumpulkan jawaban..."):
+                with st.spinner("Memproses pengumpulan jawaban..."):
                     success = submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_forced=False)
                 
                 if success:
@@ -1408,12 +1418,13 @@ def render_siswa():
                     st.success("✅ Jawaban Anda berhasil dikumpulkan!")
 
                     st.session_state["active_quiz_id"] = None
-                    for k in [f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}"]:
+                    for k in ["active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"ac_rendered_{tg_id}"]:
                         st.session_state.pop(k, None)
                     st.rerun()
 
         return
 
+    # Tampilan Dashboard Utama Siswa
     all_tugas = [
         t for t in get_all_tugas_cached() 
         if is_target_sesuai_kelas(t, kelas_s) and t.get("status", "terbit") == "terbit"
@@ -1476,7 +1487,6 @@ def render_siswa():
 
     with tab_nilai:
         st.subheader("📊 Riwayat Nilai & Feedback")
-        
         valid_subs = {tg_id: sub for tg_id, sub in my_subs.items() if tg_id in existing_tugas_dict}
 
         if not valid_subs:
@@ -1492,9 +1502,8 @@ def render_siswa():
                     "Nilai": val if val is not None else "Menunggu Koreksi",
                     "Catatan Guru": sub_info.get("catatan_guru", "-")
                 })
-            
             st.dataframe(pd.DataFrame(riwayat_rows), use_container_width=True)
-
+            
 # ==========================================
 # 9. MAIN ROUTER
 # ==========================================
