@@ -146,6 +146,18 @@ def clear_jawaban_cache():
     get_status_ujian_cached.clear()
 
 # --- UTILITY HELPERS ---
+def save_draft_to_firebase(username_s, tg_id, answers):
+    """Menyimpan draf jawaban sementara ke Firestore tanpa lonjakan Write Ops."""
+    try:
+        db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
+            "username": username_s,
+            "id_tugas": tg_id,
+            "draft_answers": answers,
+            "updated_at": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+    except Exception:
+        pass
+
 def safe_read_uploaded_file(uploaded_file):
     if uploaded_file.name.endswith('.csv'):
         for enc in ['utf-8', 'utf-8-sig', 'cp1252', 'latin1']:
@@ -187,7 +199,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     total_soal = len(soal_list)
     
     if is_violation:
-        catatan = "⚠️ Submit Otomatis (Mencapai Limit Maksimal Pelanggaran 15x)"
+        catatan = "⚠️ Submit Otomatis (Mencapai Limit Maksimal Pelanggaran 10x)"
     elif is_forced:
         catatan = "Di-submit Paksa oleh Guru"
     else:
@@ -307,7 +319,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 if "user" not in st.session_state:
     st.session_state["user"] = None
 
-# Admin initialization cached to prevent top-level reads
 if ensure_default_admin_created():
     st.toast("💡 Akun default awal berhasil dibuat! Username: admin | Pass: admin123")
 
@@ -1154,7 +1165,12 @@ def render_siswa():
             status_doc = status_ref.get()
             status_data = status_doc.to_dict() if status_doc.exists else {}
             
-            st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
+            # --- FITUR AUTOSAVE: MUAT DRAF DARI FIREBASE JIKA TERSEDIA ---
+            draft_saved = status_data.get("draft_answers")
+            if draft_saved and isinstance(draft_saved, list) and len(draft_saved) == total_soal:
+                st.session_state[f"quiz_answers_{tg_id}"] = draft_saved
+            else:
+                st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
 
             if is_ulangan:
                 if not status_doc.exists:
@@ -1188,7 +1204,6 @@ def render_siswa():
 
         # --- PERBAIKAN LOGIKA PELANGGARAN & PENGUNCIAN (10x KECURANGAN) ---
         if is_ulangan:
-            # Otomatis kunci jika batas kecurangan mencapai 10x dan belum ada izin guru
             if violation_count >= 10 and not ijin_guru:
                 is_locked = True
 
@@ -1200,14 +1215,13 @@ def render_siswa():
                         "id_tugas": tg_id, 
                         "violation_count": firestore.Increment(1),
                         "status": "in_progress", 
-                        "ijin_guru": False, # Otomatis butuh izin jika terkunci
+                        "ijin_guru": False,
                         "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
                     
                     st.session_state[f"violation_count_{tg_id}"] += 1
                     new_v = st.session_state[f"violation_count_{tg_id}"]
 
-                    # Kunci kuis jika pelanggaran menyentuh angka 10
                     if new_v >= 10:
                         st.session_state[f"ijin_guru_{tg_id}"] = False
                         st.error("🚨 Anda telah melakukan kecurangan 10 kali! Kuis terkunci hingga Guru memberikan izin.")
@@ -1215,7 +1229,6 @@ def render_siswa():
                     else:
                         st.rerun()
 
-            # JavaScript listener untuk mendeteksi pindah tab/window (pemicu pelanggaran)
             if not is_locked:
                 components.html("""
                     <script>
@@ -1262,7 +1275,6 @@ def render_siswa():
                     </script>
                 """, height=0)
 
-        # Tampilan saat kuis terkunci
         if is_locked:
             st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda telah mencapai **{violation_count}/10 kali** (atau Anda berpindah halaman). Silakan hubungi Guru untuk membuka kunci.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
@@ -1272,12 +1284,12 @@ def render_siswa():
                     ijin_val = status_doc.to_dict().get("ijin_guru", False)
                     st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
                     if ijin_val:
-                        # Reset status izin setelah dibuka agar perlindungan tetap aktif
                         status_ref.set({"ijin_guru": False}, merge=True)
                 st.rerun()
 
         elif is_ulangan and violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/10)**: Terdeteksi keluar dari layar kuis!")
+
         col_head1, col_head2 = st.columns([3, 1])
         with col_head1:
             st.markdown(f"### 📝 {tg.get('judul')}")
@@ -1286,6 +1298,8 @@ def render_siswa():
             st.caption(info_sub)
         with col_head2:
             if st.button("⬅️ Keluar Sementara", key="btn_exit_quiz", type="secondary", use_container_width=True):
+                # Autosave saat keluar sementara
+                save_draft_to_firebase(username_s, tg_id, st.session_state[f"quiz_answers_{tg_id}"])
                 if is_ulangan:
                     db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({"ijin_guru": False}, merge=True)
                 st.session_state["active_quiz_id"] = None
@@ -1295,13 +1309,16 @@ def render_siswa():
 
         st.progress((curr_page + 1) / total_soal)
 
+        # --- NAVIGASI DENGAN AUTOSAVE ---
         c_top_prev, c_top_next = st.columns(2)
         with c_top_prev:
             if curr_page > 0 and st.button("⬅️ Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
+                save_draft_to_firebase(username_s, tg_id, st.session_state[f"quiz_answers_{tg_id}"])
                 st.session_state[f"quiz_page_{tg_id}"] -= 1
                 st.rerun()
         with c_top_next:
             if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", key=f"top_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
+                save_draft_to_firebase(username_s, tg_id, st.session_state[f"quiz_answers_{tg_id}"])
                 st.session_state[f"quiz_page_{tg_id}"] += 1
                 st.rerun()
 
@@ -1334,6 +1351,7 @@ def render_siswa():
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
+        # --- GRID NAVIGASI NOMOR DENGAN AUTOSAVE ---
         cols_per_row = 5
         for row_start in range(0, total_soal, cols_per_row):
             nav_cols = st.columns(cols_per_row)
@@ -1344,6 +1362,7 @@ def render_siswa():
                     lbl = f"{'🟢' if is_ans else '⚪'} {q_idx + 1}"
                     btn_t = "primary" if q_idx == curr_page else "secondary"
                     if nav_cols[idx].button(lbl, key=f"nav_p_{q_idx}", type=btn_t, use_container_width=True, disabled=is_locked):
+                        save_draft_to_firebase(username_s, tg_id, st.session_state[f"quiz_answers_{tg_id}"])
                         st.session_state[f"quiz_page_{tg_id}"] = q_idx
                         st.rerun()
 
