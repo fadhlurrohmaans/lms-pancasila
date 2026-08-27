@@ -262,7 +262,7 @@ def delete_tugas_and_submissions(tugas_id):
     clear_jawaban_cache()
 
 # ==========================================
-# 3. AI EVALUATION HELPER (DYNAMIC MODEL DETECTION)
+# 3. AI EVALUATION HELPER (FAST & LIGHTWEIGHT)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -272,31 +272,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     try:
         genai.configure(api_key=api_key)
 
-        # 1. Ambil daftar model aktif secara otomatis yang mendukung generateContent
-        available_models = []
-        try:
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    name = m.name.replace('models/', '')
-                    # Utamakan model Flash / Pro
-                    if 'flash' in name or 'pro' in name:
-                        available_models.append(name)
-        except Exception:
-            pass
-
-        # 2. Fallback kandidat versi spesifik jika list_models tidak merespon
-        fallback_models = [
-            'gemini-2.0-flash',
-            'gemini-1.5-flash-002',
-            'gemini-1.5-flash-001',
-            'gemini-1.5-pro-002',
-            'gemini-1.5-pro-001',
-            'gemini-2.5-flash'
-        ]
-
-        # Gabungkan model hasil deteksi otomatis + fallback (tanpa duplikasi)
-        candidate_models = list(dict.fromkeys(available_models + fallback_models))
-
         total_soal = len(soal_list)
         prompt_items = []
         for i in range(total_soal):
@@ -304,37 +279,37 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
             j = jawaban_list[i] if i < len(jawaban_list) else ""
             q_text = s.get('pertanyaan', '') if isinstance(s, dict) else str(s)
             j_text = str(j).strip() if j and str(j).strip() else '(Siswa tidak menjawab)'
-            prompt_items.append(f"--- SOAL NOMOR {i+1} ---\nPertanyaan: {q_text}\nJawaban Siswa: {j_text}")
+            prompt_items.append(f"Soal {i+1}: {q_text}\nJawaban Siswa: {j_text}")
 
-        prompt = f"Jumlah Total Soal: {total_soal}\n\n" + "\n\n".join(prompt_items)
-        system_instruction = (
-            "Anda adalah Guru Pendidikan Pancasila yang bijaksana dan fair.\n"
-            "Tugas: Evaluasi SELURUH nomor soal essay yang diberikan secara objektif.\n\n"
-            "Aturan Penilaian & Feedback:\n"
-            "1. Periksa setiap nomor soal satu per satu (skala 0-100 per soal).\n"
-            "2. Hitung RATA-RATA NILAI AKHIR dari seluruh soal (0-100) dan masukkan ke field 'nilai' sebagai integer.\n"
-            "3. Pada field 'feedback', tuliskan rincian koreksi per nomor soal, diawali apresiasi dan diakhiri motivasi.\n"
-            "4. Gunakan Bahasa Indonesia yang hangat, ramah, dan edukatif."
+        prompt = (
+            f"Jumlah Soal: {total_soal}\n\n"
+            + "\n\n".join(prompt_items)
+            + "\n\nKembalikan HANYA format JSON persis seperti berikut tanpa teks ekstra:\n"
+            '{"nilai": 85, "feedback": "Catatan koreksi Anda..."}'
         )
 
-        strict_schema = {
-            "type": "OBJECT",
-            "properties": {
-                "nilai": {"type": "INTEGER"},
-                "feedback": {"type": "STRING"}
-            },
-            "required": ["nilai", "feedback"]
-        }
-        generation_config = {"response_mime_type": "application/json", "response_schema": strict_schema}
+        system_instruction = (
+            "Anda adalah Guru Pendidikan Pancasila. Evaluasi jawaban siswa secara objektif (skala 0-100).\n"
+            "Hitung nilai rata-rata integer (0-100) dan berikan feedback per nomor yang ramah serta edukatif."
+        )
 
-        response, last_error = None, None
+        # Hanya gunakan model tercepat & paling stabil agar respon instan
+        candidate_models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest']
+
+        response = None
+        last_error = None
+
         for model_name in candidate_models:
             try:
-                model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
-                try:
-                    response = model.generate_content(prompt, generation_config=generation_config)
-                except Exception:
-                    response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=system_instruction
+                )
+                # JSON Mode ringan tanpa validasi schema yang berat
+                response = model.generate_content(
+                    prompt,
+                    generation_config={"response_mime_type": "application/json"}
+                )
                 if response and hasattr(response, 'text') and response.text.strip():
                     break
             except Exception as err:
@@ -342,19 +317,22 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
                 continue
 
         if not response or not hasattr(response, 'text') or not response.text.strip():
-            return None, f"AI tidak mengembalikan respon. Error terakhir: {str(last_error)}"
+            return None, f"AI tidak merespon. Error: {str(last_error)}"
 
-        # Sanitasi hasil respon teks jika terbungkus format Markdown JSON block
+        # Sanitasi teks JSON
         raw_text = response.text.strip()
         raw_text = re.sub(r'^```json\s*', '', raw_text)
         raw_text = re.sub(r'\s*```$', '', raw_text)
 
         result_json = json.loads(raw_text)
-        return int(result_json.get("nilai", 0)), str(result_json.get("feedback", "")).strip() or "Terima kasih telah mengerjakan!"
+        nilai = int(result_json.get("nilai", 0))
+        feedback = str(result_json.get("feedback", "")).strip() or "Terima kasih telah mengerjakan!"
+
+        return nilai, feedback
 
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {str(e)}"
-# ==========================================
+        # ==========================================
 # 4. AUTHENTICATION
 # ==========================================
 if "user" not in st.session_state:
