@@ -1178,7 +1178,7 @@ def change_quiz_page(tg_id, new_page):
     st.session_state[f"quiz_page_{tg_id}"] = new_page
 
 # ==========================================
-# 8. PANEL SISWA (ULTRA-LIGHTWEIGHT QUIZ MODE)
+# 8. PANEL SISWA (FIXED RADIO INDEX & OPTIMIZED)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
@@ -1236,11 +1236,13 @@ def render_siswa():
 
         st.progress((curr_page + 1) / total_soal)
 
-        # Navigasi Cepat (Sebelum / Dropdown / Sesudah)
+        # Navigasi Cepat
         c_prev, c_jump, c_next = st.columns([1, 2, 1])
         with c_prev:
             if curr_page > 0:
-                st.button("⬅️ Sebelum", key="nav_prev_btn", on_click=change_quiz_page, args=(tg_id, curr_page - 1), use_container_width=True)
+                if st.button("⬅️ Sebelum", key="nav_prev_btn", use_container_width=True):
+                    st.session_state[f"quiz_page_{tg_id}"] = curr_page - 1
+                    st.rerun()
 
         with c_jump:
             jump_options = list(range(total_soal))
@@ -1249,7 +1251,7 @@ def render_siswa():
                 options=jump_options,
                 index=curr_page,
                 format_func=lambda i: f"{'🟢' if answers[i] is not None and str(answers[i]).strip() != '' else '⚪'} Soal No. {i + 1}",
-                key=f"sb_jump_{curr_page}",
+                key=f"sb_jump_{tg_id}",
                 label_visibility="collapsed"
             )
             if selected_no != curr_page:
@@ -1258,40 +1260,56 @@ def render_siswa():
 
         with c_next:
             if curr_page < total_soal - 1:
-                st.button("Lanjut ➡️", key="nav_next_btn", type="primary", on_click=change_quiz_page, args=(tg_id, curr_page + 1), use_container_width=True)
+                if st.button("Lanjut ➡️", key="nav_next_btn", type="primary", use_container_width=True):
+                    st.session_state[f"quiz_page_{tg_id}"] = curr_page + 1
+                    st.rerun()
 
         st.divider()
 
-        # Render Soal tunggal
+        # Render Soal
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
         st.markdown(f"#### Soal No. {curr_page + 1}")
         st.markdown(f"**{q_text}**")
 
-        saved_ans = answers[curr_page]
+        raw_ans = answers[curr_page]
 
         if tg.get("tipe") == "pg":
             opsi_list = soal_item.get("opsi", [])
-            # Menggunakan STATIC KEY untuk mencegah memory leak
-            st.radio(
+            
+            # Sanitasi & Konversi Nilai Index ke Integer Aman
+            safe_index = None
+            if raw_ans is not None:
+                try:
+                    parsed_idx = int(raw_ans)
+                    if 0 <= parsed_idx < len(opsi_list):
+                        safe_index = parsed_idx
+                except (ValueError, TypeError):
+                    safe_index = None
+
+            selected_opt = st.radio(
                 "Pilih Jawaban Anda:",
-                options=[0, 1, 2, 3],
-                index=saved_ans if saved_ans is not None else None,
+                options=list(range(len(opsi_list))),
+                index=safe_index,
                 format_func=lambda x: f"{['A','B','C','D'][x]}. {opsi_list[x]}",
-                key=f"widget_ans_{tg_id}",
-                on_change=on_answer_change,
-                args=(tg_id, curr_page)
+                key=f"radio_ans_{tg_id}_{curr_page}"
             )
+
+            if selected_opt != raw_ans:
+                answers[curr_page] = selected_opt
+                st.session_state[f"quiz_answers_{tg_id}"] = answers
         else:
-            st.text_area(
+            saved_text = str(raw_ans) if raw_ans is not None else ""
+            essay_text = st.text_area(
                 "Jawaban Anda:",
-                value=saved_ans or "",
+                value=saved_text,
                 height=140,
-                key=f"widget_ans_{tg_id}",
-                on_change=on_answer_change,
-                args=(tg_id, curr_page)
+                key=f"text_ans_{tg_id}_{curr_page}"
             )
+            if essay_text != saved_text:
+                answers[curr_page] = essay_text if essay_text.strip() else None
+                st.session_state[f"quiz_answers_{tg_id}"] = answers
 
         st.divider()
 
@@ -1309,11 +1327,10 @@ def render_siswa():
                     st.session_state.pop(k, None)
                 st.rerun()
 
-        # Keluar dari fungsi render_siswa agar UI Dashboard tidak diproses sama sekali
         return
 
     # ------------------------------------------
-    # DASHBOARD UTAMA SISWA (TIDAK BERJALAN SAAT KUIS)
+    # DASHBOARD UTAMA SISWA (JIKA TIDAK SEDANG KUIS)
     # ------------------------------------------
     my_subs = get_user_submissions_cached(username_s)
     my_statuses = get_user_statuses_cached(username_s)
@@ -1392,8 +1409,8 @@ def render_siswa():
                     "Nilai": val if val is not None else "Menunggu Koreksi",
                     "Catatan Guru": sub_info.get("catatan_guru", "-")
                 })
-            st.dataframe(pd.DataFrame(riwayat_rows), use_container_width=True)            
-# ==========================================
+            st.dataframe(pd.DataFrame(riwayat_rows), use_container_width=True)
+            # ==========================================
 # 9. MAIN ROUTER
 # ==========================================
 if role == "superadmin":
