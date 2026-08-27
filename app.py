@@ -5,6 +5,7 @@ import re
 import random
 import string
 import hashlib
+import time
 from datetime import datetime
 
 import streamlit as st
@@ -146,8 +147,18 @@ def clear_jawaban_cache():
     get_status_ujian_cached.clear()
 
 # --- UTILITY HELPERS ---
-def save_draft_to_firebase(username_s, tg_id, answers):
-    """Menyimpan draf jawaban sementara ke Firestore tanpa lonjakan Write Ops."""
+def save_draft_to_firebase(username_s, tg_id, answers, force=False):
+    """
+    Menyimpan draf jawaban sementara ke Firestore dengan sistem Throttling 
+    (cooldown min 5 detik) untuk mencegah lonjakan Write Ops akibat spam klik siswa.
+    """
+    last_save_key = f"last_save_{username_s}_{tg_id}"
+    now = time.time()
+    last_save_time = st.session_state.get(last_save_key, 0)
+
+    if not force and (now - last_save_time < 5):
+        return  # Abaikan simpan jika klik terlalu cepat (<5 detik)
+
     try:
         db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({
             "username": username_s,
@@ -155,6 +166,7 @@ def save_draft_to_firebase(username_s, tg_id, answers):
             "draft_answers": answers,
             "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
+        st.session_state[last_save_key] = now
     except Exception:
         pass
 
@@ -1165,7 +1177,7 @@ def render_siswa():
             status_doc = status_ref.get()
             status_data = status_doc.to_dict() if status_doc.exists else {}
             
-            # --- FITUR AUTOSAVE: MUAT DRAF DARI FIREBASE JIKA TERSEDIA ---
+            # --- MUAT DRAF DARI FIREBASE JIKA TERSEDIA ---
             draft_saved = status_data.get("draft_answers")
             if draft_saved and isinstance(draft_saved, list) and len(draft_saved) == total_soal:
                 st.session_state[f"quiz_answers_{tg_id}"] = draft_saved
@@ -1202,7 +1214,7 @@ def render_siswa():
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
         is_locked = (not ijin_guru) if is_ulangan else False
 
-        # --- PERBAIKAN LOGIKA PELANGGARAN & PENGUNCIAN (10x KECURANGAN) ---
+        # --- LOGIKA PELANGGARAN & PENGUNCIAN ---
         if is_ulangan:
             if violation_count >= 10 and not ijin_guru:
                 is_locked = True
@@ -1298,8 +1310,7 @@ def render_siswa():
             st.caption(info_sub)
         with col_head2:
             if st.button("⬅️ Keluar Sementara", key="btn_exit_quiz", type="secondary", use_container_width=True):
-                # Autosave saat keluar sementara
-                save_draft_to_firebase(username_s, tg_id, st.session_state[f"quiz_answers_{tg_id}"])
+                save_draft_to_firebase(username_s, tg_id, st.session_state[f"quiz_answers_{tg_id}"], force=True)
                 if is_ulangan:
                     db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({"ijin_guru": False}, merge=True)
                 st.session_state["active_quiz_id"] = None
@@ -1309,21 +1320,47 @@ def render_siswa():
 
         st.progress((curr_page + 1) / total_soal)
 
-        # --- NAVIGASI DENGAN AUTOSAVE ---
+        # =========================================================================
+        # --- DROPDOWN NAVIGASI NOMOR SOAL (PAGE DOWN / SELECTBOX) DI PALING ATAS ---
+        # =========================================================================
+        q_options = list(range(total_soal))
+        def format_q_num(idx):
+            ans = answers[idx]
+            is_filled = ans is not None and (not isinstance(ans, str) or ans.strip() != "")
+            status_str = "🟢 (Terjawab)" if is_filled else "⚪ (Belum)"
+            return f"Soal Nomor {idx + 1} {status_str}"
+
+        selected_page = st.selectbox(
+            "📌 Pilih Nomor Soal (Dropdown Navigasi):",
+            options=q_options,
+            index=curr_page,
+            format_func=format_q_num,
+            key=f"sb_nav_soal_{tg_id}_{curr_page}",
+            disabled=is_locked
+        )
+
+        # Jika siswa mengubah nomor via Dropdown Page Down
+        if selected_page != curr_page:
+            save_draft_to_firebase(username_s, tg_id, st.session_state[f"quiz_answers_{tg_id}"])
+            st.session_state[f"quiz_page_{tg_id}"] = selected_page
+            st.rerun()
+
+        # Tombol Prev & Next Cepat
         c_top_prev, c_top_next = st.columns(2)
         with c_top_prev:
-            if curr_page > 0 and st.button("⬅️ Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
+            if curr_page > 0 and st.button("⬅️ Soal Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
                 save_draft_to_firebase(username_s, tg_id, st.session_state[f"quiz_answers_{tg_id}"])
                 st.session_state[f"quiz_page_{tg_id}"] -= 1
                 st.rerun()
         with c_top_next:
-            if curr_page < total_soal - 1 and st.button("Selanjutnya ➡️", key=f"top_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
+            if curr_page < total_soal - 1 and st.button("Soal Selanjutnya ➡️", key=f"top_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
                 save_draft_to_firebase(username_s, tg_id, st.session_state[f"quiz_answers_{tg_id}"])
                 st.session_state[f"quiz_page_{tg_id}"] += 1
                 st.rerun()
 
         st.divider()
 
+        # --- TAMPILAN KONTEN SOAL ---
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
@@ -1344,32 +1381,22 @@ def render_siswa():
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
+                    save_draft_to_firebase(username_s, tg_id, answers)
             else:
                 saved_text = answers[curr_page] or ""
                 essay_text = st.text_area("Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}", disabled=is_locked)
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
-
-        # --- GRID NAVIGASI NOMOR DENGAN AUTOSAVE ---
-        cols_per_row = 5
-        for row_start in range(0, total_soal, cols_per_row):
-            nav_cols = st.columns(cols_per_row)
-            for idx in range(cols_per_row):
-                q_idx = row_start + idx
-                if q_idx < total_soal:
-                    is_ans = answers[q_idx] is not None
-                    lbl = f"{'🟢' if is_ans else '⚪'} {q_idx + 1}"
-                    btn_t = "primary" if q_idx == curr_page else "secondary"
-                    if nav_cols[idx].button(lbl, key=f"nav_p_{q_idx}", type=btn_t, use_container_width=True, disabled=is_locked):
-                        save_draft_to_firebase(username_s, tg_id, st.session_state[f"quiz_answers_{tg_id}"])
-                        st.session_state[f"quiz_page_{tg_id}"] = q_idx
-                        st.rerun()
+                    save_draft_to_firebase(username_s, tg_id, answers)
 
         st.divider()
 
+        # --- PENGUMPULAN AKHIR (PROTEKSI DOUBLE SUBMIT) ---
         if not is_locked:
-            if st.button("🚀 Kumpulkan Semua Jawaban", key=f"bot_submit_{tg_id}", type="primary", use_container_width=True):
+            is_submitting = st.session_state.get(f"is_submitting_{tg_id}", False)
+            if st.button("🚀 Kumpulkan Semua Jawaban", key=f"bot_submit_{tg_id}", type="primary", use_container_width=True, disabled=is_submitting):
+                st.session_state[f"is_submitting_{tg_id}"] = True
                 tg_submit = dict(tg)
                 tg_submit["soal"] = soal_list
                 
@@ -1380,7 +1407,7 @@ def render_siswa():
                     st.balloons()
                     st.success("✅ Jawaban Anda berhasil dikumpulkan!")
                     st.session_state["active_quiz_id"] = None
-                    for k in [f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}"]:
+                    for k in [f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}"]:
                         st.session_state.pop(k, None)
                     st.rerun()
         return
