@@ -148,9 +148,6 @@ def clear_jawaban_cache():
 
 # --- UTILITY HELPERS ---
 def save_draft_to_firebase(username_s, tg_id, answers, force=False):
-    """
-    Menyimpan draf jawaban ke Firestore dengan Throttling/Interval minimum 5 detik.
-    """
     last_save_key = f"last_save_{username_s}_{tg_id}"
     now = time.time()
     last_save_time = st.session_state.get(last_save_key, 0)
@@ -248,19 +245,14 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     return True
 
 def delete_tugas_and_submissions(tugas_id):
-    """Menggunakan WriteBatch Firestore untuk efisiensi penghapusan masal (Hemat Ops)"""
     batch = db.batch()
-    
-    # Hapus dokumen tugas utama
     tugas_ref = db.collection("tugas_pancasila").document(tugas_id)
     batch.delete(tugas_ref)
     
-    # Batched delete dokumen jawaban
     j_docs = db.collection("jawaban_siswa").where("id_tugas", "==", tugas_id).stream()
     for doc in j_docs:
         batch.delete(doc.reference)
         
-    # Batched delete dokumen status ujian
     s_docs = db.collection("status_ujian").where("id_tugas", "==", tugas_id).stream()
     for doc in s_docs:
         batch.delete(doc.reference)
@@ -976,14 +968,24 @@ def render_guru():
                             else:
                                 st.info(a or "(Kosong)")
 
+                        # INTEGRASI AUTO KOREKSI AI
                         if selected_tugas.get("tipe") == "essay" and st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}"):
-                            with st.spinner("Analyzing..."):
+                            with st.spinner("Menganalisis jawaban dengan AI..."):
                                 val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
                             if val is not None:
-                                st.session_state[val_key] = int(val)
-                                st.session_state[cat_key] = str(fb)
-                                st.success("Dimuat dari AI! Silakan klik Simpan.")
+                                int_val = int(val)
+                                str_fb = str(fb)
+                                st.session_state[val_key] = int_val
+                                st.session_state[cat_key] = str_fb
+                                db.collection("jawaban_siswa").document(sub_id).update({
+                                    "nilai": int_val, 
+                                    "catatan_guru": str_fb
+                                })
+                                clear_jawaban_cache()
+                                st.success("✅ Nilai dan catatan AI berhasil diperbarui dan disimpan!")
                                 st.rerun()
+                            else:
+                                st.error(f"❌ Auto Koreksi AI Gagal: {fb}")
 
                         with st.form(key=f"f_eval_{sub_id}"):
                             n_in = st.number_input("Nilai (0-100)", 0, 100, key=val_key)
@@ -1184,7 +1186,6 @@ def render_siswa():
             status_doc = status_ref.get()
             status_data = status_doc.to_dict() if status_doc.exists else {}
             
-            # --- MUAT DRAF DARI FIREBASE JIKA TERSEDIA ---
             draft_saved = status_data.get("draft_answers")
             if draft_saved and isinstance(draft_saved, list) and len(draft_saved) == total_soal:
                 st.session_state[f"quiz_answers_{tg_id}"] = draft_saved
@@ -1219,8 +1220,7 @@ def render_siswa():
         violation_count = st.session_state.get(f"violation_count_{tg_id}", 0)
         ijin_guru = st.session_state.get(f"ijin_guru_{tg_id}", True)
         
-        # --- DUAL-LAYER CLOUD AUTO-SYNC TIMER (SINKRONISASI BERKALA 3 MENIT HANYA) ---
-        INTERVAL_SYNC = 180  # 180 Detik = 3 Menit
+        INTERVAL_SYNC = 180
         waktu_sekarang = time.time()
         last_sync = st.session_state.get(f"last_cloud_sync_{tg_id}", waktu_sekarang)
         if waktu_sekarang - last_sync > INTERVAL_SYNC:
@@ -1231,7 +1231,6 @@ def render_siswa():
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
         is_locked = (not ijin_guru) if is_ulangan else False
 
-        # --- LOGIKA PELANGGARAN & PENGUNCIAN ---
         if is_ulangan:
             if violation_count >= 10 and not ijin_guru:
                 is_locked = True
@@ -1327,7 +1326,6 @@ def render_siswa():
             st.caption(info_sub)
         with col_head2:
             if st.button("⬅️ Keluar Sementara", key="btn_exit_quiz", type="secondary", use_container_width=True):
-                # Simpan draf paksa ke Cloud saat mengklik Keluar Sementara
                 save_draft_to_firebase(username_s, tg_id, st.session_state[f"quiz_answers_{tg_id}"], force=True)
                 if is_ulangan:
                     db.collection("status_ujian").document(f"{username_s}_{tg_id}").set({"ijin_guru": False}, merge=True)
@@ -1338,9 +1336,6 @@ def render_siswa():
 
         st.progress((curr_page + 1) / total_soal)
 
-        # =========================================================================
-        # --- DROPDOWN NAVIGASI NOMOR SOAL (BEBAS WRITE OPS FIREBASE) ---
-        # =========================================================================
         q_options = list(range(total_soal))
         def format_q_num(idx):
             ans = answers[idx]
@@ -1357,12 +1352,10 @@ def render_siswa():
             disabled=is_locked
         )
 
-        # 0 WRITE OPS: Berpindah halaman via Dropdown hanya mengubah index di memory (RAM)
         if selected_page != curr_page:
             st.session_state[f"quiz_page_{tg_id}"] = selected_page
             st.rerun()
 
-        # 0 WRITE OPS: Tombol Prev & Next Cepat hanya berpindah di RAM
         c_top_prev, c_top_next = st.columns(2)
         with c_top_prev:
             if curr_page > 0 and st.button("⬅️ Soal Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
@@ -1375,7 +1368,6 @@ def render_siswa():
 
         st.divider()
 
-        # --- TAMPILAN KONTEN SOAL ---
         soal_item = soal_list[curr_page]
         q_text = soal_item.get("pertanyaan") if isinstance(soal_item, dict) else str(soal_item)
 
@@ -1393,21 +1385,18 @@ def render_siswa():
                     key=f"radio_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
-                # 0 WRITE OPS FIREBASE: Menyimpan opsi terpilih hanya ke RAM session_state
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
             else:
                 saved_text = answers[curr_page] or ""
                 essay_text = st.text_area("Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}", disabled=is_locked)
-                # 0 WRITE OPS FIREBASE: Menyimpan essay ketikan hanya ke RAM session_state
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
 
         st.divider()
 
-        # --- PENGUMPULAN AKHIR (SUBMIT AKHIR SINKRON KE CLOUD) ---
         if not is_locked:
             is_submitting = st.session_state.get(f"is_submitting_{tg_id}", False)
             if st.button("🚀 Kumpulkan Semua Jawaban", key=f"bot_submit_{tg_id}", type="primary", use_container_width=True, disabled=is_submitting):
