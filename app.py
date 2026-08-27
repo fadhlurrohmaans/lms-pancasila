@@ -262,7 +262,7 @@ def delete_tugas_and_submissions(tugas_id):
     clear_jawaban_cache()
 
 # ==========================================
-# 3. AI EVALUATION HELPER
+# 3. AI EVALUATION HELPER (FIXED MODEL ENDPOINTS)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -280,7 +280,15 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
             "required": ["nilai", "feedback"]
         }
         generation_config = {"response_mime_type": "application/json", "response_schema": strict_schema}
-        candidate_models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']
+        
+        # Daftar model yang aktif dan didukung API terbaru
+        candidate_models = [
+            'gemini-2.5-flash',
+            'gemini-2.0-flash',
+            'gemini-1.5-flash-latest',
+            'gemini-1.5-pro-latest',
+            'gemini-1.5-flash'
+        ]
 
         total_soal = len(soal_list)
         prompt_items = []
@@ -318,12 +326,16 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         if not response or not hasattr(response, 'text') or not response.text.strip():
             return None, f"AI tidak mengembalikan respon. Error terakhir: {str(last_error)}"
 
-        result_json = json.loads(response.text.strip())
+        # Sanitasi hasil respon teks jika terbungkus format Markdown JSON block
+        raw_text = response.text.strip()
+        raw_text = re.sub(r'^```json\s*', '', raw_text)
+        raw_text = re.sub(r'\s*```$', '', raw_text)
+
+        result_json = json.loads(raw_text)
         return int(result_json.get("nilai", 0)), str(result_json.get("feedback", "")).strip() or "Terima kasih telah mengerjakan!"
 
     except Exception as e:
         return None, f"Gagal mengeksekusi AI: {str(e)}"
-
 # ==========================================
 # 4. AUTHENTICATION
 # ==========================================
