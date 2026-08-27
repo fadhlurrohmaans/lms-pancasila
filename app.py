@@ -50,6 +50,11 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 6px; overflow-x: auto; white-space: nowrap; border-bottom: 2px solid #eaeaea; padding-bottom: 4px; }
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 20px; font-weight: 600; }
     .stTabs [aria-selected="true"] { background-color: #1e3c72 !important; color: white !important; }
+    
+    /* OPTIMASI: Sembunyikan tombol pemicu pelanggaran murni via CSS tanpa loop JavaScript */
+    div[data-testid="stElementContainer"]:has(button[key*="btn_record_violation_"]) {
+        display: none !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -93,7 +98,6 @@ def get_user_submissions_cached(username):
     docs = db.collection("jawaban_siswa").where("username_siswa", "==", username).stream()
     return {d.to_dict().get("id_tugas"): d.to_dict() for d in docs}
 
-# OPTIMASI: Cache status ujian untuk menghindari query berulang di dashboard
 @st.cache_data(ttl=15)
 def get_user_statuses_cached(username):
     docs = db.collection("status_ujian").where("username", "==", username).stream()
@@ -146,7 +150,7 @@ def save_draft_to_firebase(username_s, tg_id, answers):
             "username": username_s, "id_tugas": tg_id, "status": "in_progress",
             "draft_answers": answers, "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
-        clear_user_statuses_cache()
+        # OPTIMASI: Jangan panggil clear_user_statuses_cache() di sini agar berpindah nomor tidak memicu fetch Firestore ulang
     except Exception:
         pass
 
@@ -1234,6 +1238,7 @@ def render_siswa():
         is_locked = (not ijin_guru) if is_ulangan else False
 
         if is_ulangan:
+            # Tombol pemicu disembunyikan otomatis oleh CSS di bagian atas
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
                 if not is_locked:
                     doc_ref = db.collection("status_ujian").document(f"{username_s}_{tg_id}")
@@ -1263,47 +1268,34 @@ def render_siswa():
                         st.rerun()
 
             if not is_locked:
+                # OPTIMASI: Event Listener JS ringan tanpa loop setInterval & tanpa pemindaian DOM terus menerus
                 components.html("""
                     <script>
                     (function() {
                         const parentDoc = window.parent.document;
                         let lastTrigger = 0;
 
-                        function getViolationButton() {
-                            const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                            return buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
-                        }
-
-                        function hideViolationButton() {
-                            const btn = getViolationButton();
-                            if (btn && btn.parentElement) {
-                                const container = btn.closest('[data-testid="stElementContainer"]') || btn.parentElement;
-                                if (container && container.style.display !== 'none') {
-                                    container.style.display = 'none';
-                                }
-                            }
-                        }
-
-                        setInterval(hideViolationButton, 500);
-
                         function triggerViolation() {
                             const now = Date.now();
                             if (now - lastTrigger < 3000) return;
                             lastTrigger = now;
 
-                            const triggerBtn = getViolationButton();
+                            const buttons = Array.from(parentDoc.querySelectorAll('button'));
+                            const triggerBtn = buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
                             if (triggerBtn) {
                                 triggerBtn.click();
                             }
                         }
 
-                        parentDoc.addEventListener('visibilitychange', function() {
-                            if (parentDoc.hidden) triggerViolation();
-                        });
-
-                        window.parent.addEventListener('blur', function() {
-                            triggerViolation();
-                        });
+                        if (!window.parent._antiCheatInitialized) {
+                            window.parent._antiCheatInitialized = true;
+                            parentDoc.addEventListener('visibilitychange', function() {
+                                if (parentDoc.hidden) triggerViolation();
+                            });
+                            window.parent.addEventListener('blur', function() {
+                                triggerViolation();
+                            });
+                        }
                     })();
                     </script>
                 """, height=0)
@@ -1374,7 +1366,6 @@ def render_siswa():
                     key=f"radio_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
-                # OPTIMASI: Hanya perbarui memori local (st.session_state), tidak memanggil save_draft Firestore setiap kali opsi diklik
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
@@ -1384,7 +1375,6 @@ def render_siswa():
                     "Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
-                # OPTIMASI: Jawaban disimpan ke session lokal terlebih dahulu
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
@@ -1456,7 +1446,6 @@ def render_siswa():
                     st.markdown(f"### 📝 {tg.get('judul')} [{tag_color}]")
                     st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | {len(tg.get('soal', []))} Soal")
                     
-                    # OPTIMASI: Menggunakan cache 'my_statuses' menggantikan query db.get() di dalam loop
                     st_data = my_statuses.get(tg['id'], {})
                     has_draft = bool(st_data.get("draft_answers"))
                     
