@@ -262,7 +262,7 @@ def delete_tugas_and_submissions(tugas_id):
     clear_jawaban_cache()
 
 # ==========================================
-# 3. AI EVALUATION HELPER (FIXED MODEL ENDPOINTS)
+# 3. AI EVALUATION HELPER (DYNAMIC MODEL DETECTION)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -271,24 +271,31 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 
     try:
         genai.configure(api_key=api_key)
-        strict_schema = {
-            "type": "OBJECT",
-            "properties": {
-                "nilai": {"type": "INTEGER"},
-                "feedback": {"type": "STRING"}
-            },
-            "required": ["nilai", "feedback"]
-        }
-        generation_config = {"response_mime_type": "application/json", "response_schema": strict_schema}
-        
-        # Daftar model yang aktif dan didukung API terbaru
-        candidate_models = [
-            'gemini-2.5-flash',
+
+        # 1. Ambil daftar model aktif secara otomatis yang mendukung generateContent
+        available_models = []
+        try:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    name = m.name.replace('models/', '')
+                    # Utamakan model Flash / Pro
+                    if 'flash' in name or 'pro' in name:
+                        available_models.append(name)
+        except Exception:
+            pass
+
+        # 2. Fallback kandidat versi spesifik jika list_models tidak merespon
+        fallback_models = [
             'gemini-2.0-flash',
-            'gemini-1.5-flash-latest',
-            'gemini-1.5-pro-latest',
-            'gemini-1.5-flash'
+            'gemini-1.5-flash-002',
+            'gemini-1.5-flash-001',
+            'gemini-1.5-pro-002',
+            'gemini-1.5-pro-001',
+            'gemini-2.5-flash'
         ]
+
+        # Gabungkan model hasil deteksi otomatis + fallback (tanpa duplikasi)
+        candidate_models = list(dict.fromkeys(available_models + fallback_models))
 
         total_soal = len(soal_list)
         prompt_items = []
@@ -310,6 +317,16 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
             "4. Gunakan Bahasa Indonesia yang hangat, ramah, dan edukatif."
         )
 
+        strict_schema = {
+            "type": "OBJECT",
+            "properties": {
+                "nilai": {"type": "INTEGER"},
+                "feedback": {"type": "STRING"}
+            },
+            "required": ["nilai", "feedback"]
+        }
+        generation_config = {"response_mime_type": "application/json", "response_schema": strict_schema}
+
         response, last_error = None, None
         for model_name in candidate_models:
             try:
@@ -318,7 +335,8 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
                     response = model.generate_content(prompt, generation_config=generation_config)
                 except Exception:
                     response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-                if response and hasattr(response, 'text') and response.text.strip(): break
+                if response and hasattr(response, 'text') and response.text.strip():
+                    break
             except Exception as err:
                 last_error = err
                 continue
