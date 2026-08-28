@@ -657,10 +657,9 @@ def render_superadmin():
                     curr_ka = u_data.get("kelas_ajar", [])
                     if isinstance(curr_ka, str): 
                         curr_ka = [curr_ka]
-# Memastikan curr_ka dikonversi ke list jika bernilai None atau bukan iterable
-curr_ka_safe = curr_ka if isinstance(curr_ka, (list, tuple, set)) else []
-
-valid_defaults = [k for k in curr_ka_safe if k in daftar_k]
+                    
+                    curr_ka_safe = curr_ka if isinstance(curr_ka, (list, tuple, set)) else []
+                    valid_defaults = [k for k in curr_ka_safe if k in daftar_k]
 
                     st.write(f"👤 **Pengaturan Kelas Ajar untuk Guru:** {u_data.get('nama')}")
                     new_ka = st.multiselect("Tentukan Kelas Ajar Guru:", options=daftar_k, default=valid_defaults, key=f"ms_guru_{target_uid}")
