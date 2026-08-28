@@ -1495,12 +1495,15 @@ def render_siswa():
         if is_locked:
             st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda telah mencapai **{violation_count}/10 kali** (atau Anda berpindah layar/tab). Silakan hubungi Guru untuk membuka izin.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
-                status_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
-                status_doc = status_ref.get()
-                if status_doc.exists:
-                    ijin_val = status_doc.to_dict().get("ijin_guru", False)
-                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
-                st.rerun()
+                if not check_click_cooldown(1.5, f"check_perm_{tg_id}"):
+                    st.warning("⚠️ Mohon tunggu sejenak sebelum mengecek kembali.")
+                else:
+                    status_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
+                    status_doc = status_ref.get()
+                    if status_doc.exists:
+                        ijin_val = status_doc.to_dict().get("ijin_guru", False)
+                        st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
+                    st.rerun()
 
         elif is_ulangan and violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/10)**: Terdeteksi keluar dari layar kuis!")
@@ -1582,7 +1585,7 @@ def render_siswa():
             is_submitting = st.session_state.get(f"is_submitting_{tg_id}", False)
             if st.button("🚀 Kumpulkan Semua Jawaban", key=f"bot_submit_{tg_id}", type="primary", use_container_width=True, disabled=is_submitting):
                 if not check_click_cooldown(1.5, f"submit_{tg_id}"):
-                    st.warning("⚠️ Proses pengumpulan sedang berlangsung atau tombol ditekan terlalu cepat.")
+                    st.warning("⚠️ Proses pengumpulkan sedang berlangsung atau tombol ditekan terlalu cepat.")
                 else:
                     st.session_state[f"is_submitting_{tg_id}"] = True
                     tg_submit = dict(tg)
