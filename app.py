@@ -80,26 +80,15 @@ st.markdown("""
         text-align: center;
     }
 
-    /* -------------------------------------------------------------
-       PERBAIKAN 1: Sembunyikan Tombol Pelanggaran & Auto-Rerun dari Siswa
-       Menggunakan penargetan ketat agar tombol benar-benar tidak terlihat
-       dan tidak mengganggu antarmuka pengguna.
-    ------------------------------------------------------------- */
-    div[data-testid="stElementContainer"]:has(button[key*="btn_record_violation_"]),
-    div[data-testid="stElementContainer"]:has(button[key*="btn_auto_rerun_trigger_"]),
-    button[key*="btn_record_violation_"],
-    button[key*="btn_auto_rerun_trigger_"] {
+    /* Target CSS Khusus Tombol Pelanggaran & Auto-Rerun */
+    .hidden-trigger-container {
         display: none !important;
-        position: fixed !important;
-        top: -9999px !important;
-        left: -9999px !important;
-        opacity: 0 !important;
-        pointer-events: none !important;
         visibility: hidden !important;
         height: 0px !important;
         width: 0px !important;
-        margin: 0px !important;
-        padding: 0px !important;
+        overflow: hidden !important;
+        position: absolute !important;
+        left: -9999px !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -1292,7 +1281,7 @@ def render_guru():
                     st.write(f"⚠️ Terdeteksi **{len(locked_students)} siswa** sedang terkunci / membutuhkan izin.")
                     
                     # -------------------------------------------------------------
-                    # PERBAIKAN 2: Tetapkan violation_count agar TIDAK di-reset ke 0
+                    # PERBAIKAN: Reset violation_count jika >= 10 agar bisa lanjut
                     # -------------------------------------------------------------
                     if st.button("🔓 Beri Izin ke SEMUA Siswa Terkunci", type="primary", use_container_width=True):
                         if check_click_cooldown(1.5, f"grant_all_{selected_tugas_id}"):
@@ -1300,8 +1289,10 @@ def render_guru():
                             for ls in locked_students:
                                 un_l = ls["username"]
                                 doc_ref = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
+                                curr_v = sub_map.get(un_l, {}).get("violation_count", 0)
                                 batch.set(doc_ref, {
                                     "ijin_guru": True,
+                                    "violation_count": 0 if curr_v >= 10 else curr_v,
                                     "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
                                 if f"local_exam_status_{un_l}_{selected_tugas_id}" in st.session_state:
@@ -1330,8 +1321,10 @@ def render_guru():
                             batch = db.batch()
                             for un_l in selected_unames:
                                 doc_ref = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
+                                curr_v = sub_map.get(un_l, {}).get("violation_count", 0)
                                 batch.set(doc_ref, {
                                     "ijin_guru": True,
+                                    "violation_count": 0 if curr_v >= 10 else curr_v,
                                     "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
                                 if f"local_exam_status_{un_l}_{selected_tugas_id}" in st.session_state:
@@ -1356,6 +1349,7 @@ def render_guru():
                             if check_click_cooldown(1.5, f"grant_indiv_{un_l}"):
                                 db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}").set({
                                     "ijin_guru": True, 
+                                    "violation_count": 0 if v_c >= 10 else v_c,
                                     "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
                                 if f"local_exam_status_{un_l}_{selected_tugas_id}" in st.session_state:
@@ -1443,10 +1437,12 @@ def render_siswa():
         soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
 
-        server_status = get_student_exam_status(username_s, tg_id, bypass_firestore=False, violation_threshold=5)
+        # Selalu bypass Firestore jika terjadi masalah penguncian agar real-time mendapatkan izin guru
+        server_status = get_student_exam_status(username_s, tg_id, bypass_firestore=True)
         violation_count = server_status["violation_count"]
         ijin_guru = server_status["ijin_guru"]
         
+        # Logika terkunci: Terkunci jika tidak dapat izin guru ATAU pelanggaran di atas sama dengan 10
         is_locked = (not ijin_guru or violation_count >= 10) if is_ulangan else False
 
         draft_bridge_val = st.text_input(
@@ -1509,12 +1505,13 @@ def render_siswa():
         """, height=0)
 
         # -------------------------------------------------------------
-        # PERBAIKAN 1 B: Kontainer Sembunyi untuk Tombol Triggers
-        # Pembungkusan eksplisit menggunakan div tersembunyi
+        # PERBAIKAN 1: Tombol Trigger Ditaruh Dalam Div Sembunyi
+        # HTML + CSS inline kelas hidden-trigger-container menjamin
+        # tombol sepenuhnya tersembunyi dari antarmuka pengguna
         # -------------------------------------------------------------
         if is_ulangan:
-            st.markdown('<div style="display:none !important; visibility:hidden !important;">', unsafe_allow_html=True)
-            if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
+            st.markdown('<div class="hidden-trigger-container">', unsafe_allow_html=True)
+            if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}"):
                 if not is_locked:
                     doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
                     new_v = violation_count + 1
@@ -1539,12 +1536,9 @@ def render_siswa():
                     }
 
                     get_user_pengerjaan_cached.clear()
-
-                    if new_v >= 10:
-                        st.error("🚨 Anda telah melakukan kecurangan 10 kali! Ujian telah terkunci di server.")
                     st.rerun()
 
-            if st.button("🔄 Auto Rerun Trigger", key=f"btn_auto_rerun_trigger_{tg_id}", type="secondary"):
+            if st.button("🔄 Auto Rerun Trigger", key=f"btn_auto_rerun_trigger_{tg_id}"):
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1566,10 +1560,6 @@ def render_siswa():
                         const triggerBtn = parentDoc.querySelector('button[key*="btn_record_violation_"]');
                         if (triggerBtn) {{
                             triggerBtn.click();
-                        }} else {{
-                            const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                            const btn = buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
-                            if (btn) btn.click();
                         }}
                     }}
 
@@ -1595,16 +1585,15 @@ def render_siswa():
             st.caption("💡 Tekan tombol di bawah untuk memeriksa apakah Guru telah memberikan izin akses:")
             
             if st.button("🔄 Cek Status Izin Guru Sekarang", key=f"btn_check_permission_{tg_id}", type="primary", use_container_width=True):
-                if not check_click_cooldown(cooldown_seconds=4.0, key=f"refresh_izin_{tg_id}"):
-                    st.warning("⏳ Mohon tunggu beberapa detik sebelum mengecek ulang status izin guru untuk mencegah beban server.")
+                # Bersihkan cache lokal pengerjaan untuk langsung mengambil status izin terbaru dari server
+                st.session_state.pop(f"local_exam_status_{username_s}_{tg_id}", None)
+                status = get_student_exam_status(username_s, tg_id, bypass_firestore=True)
+                if status["ijin_guru"] and status["violation_count"] < 10:
+                    st.success("✅ Izin telah diberikan oleh Guru! Membuka kunci...")
+                    time.sleep(0.5)
                 else:
-                    status = get_student_exam_status(username_s, tg_id, bypass_firestore=True, violation_threshold=5)
-                    if status["ijin_guru"] and status["violation_count"] < 10:
-                        st.success("✅ Izin telah diberikan oleh Guru! Membuka kunci...")
-                        time.sleep(1)
-                    else:
-                        st.warning("⚠️ Status pengerjaan masih terkunci. Guru belum memberikan izin.")
-                    st.rerun()
+                    st.warning("⚠️ Status pengerjaan masih terkunci. Guru belum memberikan izin.")
+                st.rerun()
 
         elif is_ulangan and violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/10)**: Terdeteksi keluar dari layar kuis!")
