@@ -16,7 +16,7 @@ import pandas as pd
 import google.generativeai as genai
 
 # ==========================================
-# 1. CONFIG & STYLING
+# 1. CONFIG & STYLING (Termasuk Poin 2: CSS Opacity & Overlay Anti-Cheat Button)
 # ==========================================
 st.set_page_config(
     page_title="LMS Pendidikan Pancasila",
@@ -52,10 +52,12 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 20px; font-weight: 600; }
     .stTabs [aria-selected="true"] { background-color: #1e3c72 !important; color: white !important; }
     
+    /* Hide localStorage bridge input element */
     div[data-testid="stTextInput"]:has(input[aria-label="Draft Bridge Input"]) {
         display: none !important;
     }
 
+    /* Melarang interaksi kursor secara instan pada tombol yang sedang diproses atau di-disable */
     .stButton > button:disabled,
     .stDownloadButton > button:disabled,
     button:disabled,
@@ -65,6 +67,7 @@ st.markdown("""
         opacity: 0.65 !important;
     }
 
+    /* Styling khusus Banner Cooldown & Status Izin Guru */
     .cooldown-banner {
         background-color: #fff3cd;
         color: #856404;
@@ -77,14 +80,21 @@ st.markdown("""
         text-align: center;
     }
 
-    .hidden-trigger-container {
-        display: none !important;
-        visibility: hidden !important;
+    /* -------------------------------------------------------------
+       POIN 2: Styling Tombol "Catat Pelanggaran" (Opacity & Position Overlay)
+       Menggunakan opacity:0 dan pointer-events:none agar dapat di-click
+       secara programmatic oleh JS tanpa terlihat/diintervensi siswa.
+    ------------------------------------------------------------- */
+    div[data-testid="stElementContainer"]:has(button[key*="btn_record_violation_"]) {
+        position: fixed !important;
+        top: -9999px !important;
+        left: -9999px !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        z-index: -9999 !important;
         height: 0px !important;
         width: 0px !important;
         overflow: hidden !important;
-        position: absolute !important;
-        left: -9999px !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -93,6 +103,7 @@ st.markdown("""
 # 2. CLICK COOLDOWN HELPER
 # ==========================================
 def check_click_cooldown(cooldown_seconds=1.5, key="global"):
+    """Mencatat timestamp klik terakhir dan menolak aksi yang terlalu cepat (kurang dari cooldown_seconds)"""
     now = time.time()
     state_key = f"_last_click_{key}"
     last_click = st.session_state.get(state_key, 0.0)
@@ -122,7 +133,7 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
-# --- FIRESTORE AGGREGATION QUERY HELPERS (.count()) ---
+# --- FIRESTORE AGGREGATION QUERY HELPERS (.count()) HEBAT KUOTA ---
 @st.cache_data(ttl=60)
 def count_siswa_by_kelas(kelas):
     try:
@@ -181,7 +192,7 @@ def get_guru_dashboard_stats(pilihan_kelas_tuple):
         "total_submitted": total_submitted
     }
 
-# --- OPTIMIZED CACHED READ FUNCTIONS ---
+# --- OPTIMIZED CACHED READ FUNCTIONS (HIGH TTL) ---
 @st.cache_data(ttl=86400)
 def ensure_default_admin_created():
     admin_ref = db.collection("users").document("admin")
@@ -223,32 +234,21 @@ def get_all_materi_cached():
     docs = db.collection("materi_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-# --- HYBRID READ (CACHE LOKAL + THRESHOLD BYPASS) ---
-def get_student_exam_status(username, tg_id, bypass_firestore=False, violation_threshold=5):
-    cache_key_state = f"local_exam_status_{username}_{tg_id}"
-    local_data = st.session_state.get(cache_key_state)
-    
-    current_local_violations = local_data.get("violation_count", 0) if local_data else 0
-    should_bypass = bypass_firestore or (local_data is None) or (current_local_violations > 0 and current_local_violations % violation_threshold == 0)
+# --- CACHE DATA PENGERJAAN SISWA & STATUS TERKUNCI ---
 
-    if should_bypass:
-        doc_ref = db.collection("pengerjaan_siswa").document(f"{username}_{tg_id}")
-        doc = doc_ref.get()
-        if doc.exists:
-            data = doc.to_dict()
-            remote_status = {
-                "violation_count": data.get("violation_count", 0),
-                "ijin_guru": data.get("ijin_guru", True),
-                "status": data.get("status", "in_progress")
-            }
-            st.session_state[cache_key_state] = remote_status
-            return remote_status
-        else:
-            default_status = {"violation_count": 0, "ijin_guru": True, "status": "in_progress"}
-            st.session_state[cache_key_state] = default_status
-            return default_status
-    
-    return local_data
+# POIN 4: Caching Streamlit dengan ttl Singkat (5-10 detik) untuk Status Pelanggaran / Kunci Server
+@st.cache_data(ttl=5)
+def get_student_exam_status_cached(username, tg_id):
+    doc_ref = db.collection("pengerjaan_siswa").document(f"{username}_{tg_id}")
+    doc = doc_ref.get()
+    if doc.exists:
+        data = doc.to_dict()
+        return {
+            "violation_count": data.get("violation_count", 0),
+            "ijin_guru": data.get("ijin_guru", True),
+            "status": data.get("status", "in_progress")
+        }
+    return {"violation_count": 0, "ijin_guru": True, "status": "in_progress"}
 
 @st.cache_data(ttl=30)
 def get_user_pengerjaan_cached(username):
@@ -285,6 +285,7 @@ def clear_users_cache():
     get_guru_dashboard_stats.clear()
 
 def clear_pengerjaan_cache():
+    get_student_exam_status_cached.clear()
     get_user_pengerjaan_cached.clear()
     get_pengerjaan_by_tugas_kelas_cached.clear()
     get_all_pengerjaan_by_kelas_cached.clear()
@@ -339,6 +340,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     else:
         catatan = "Penilaian Otomatis Sistem"
     
+    # POIN 6: Pisahkan/Kecilkan Dokumen Pengerjaan Siswa (Tidak Menyimpan Ulang Master Soal PG/Gambar)
     doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
 
     if tg.get("tipe") == "pg":
@@ -368,10 +370,6 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
             "submitted_at": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
 
-    cache_key_state = f"local_exam_status_{username_s}_{tg_id}"
-    if cache_key_state in st.session_state:
-        st.session_state.pop(cache_key_state, None)
-
     clear_pengerjaan_cache()
     return True
 
@@ -392,7 +390,7 @@ def delete_tugas_and_submissions(tugas_id):
     clear_pengerjaan_cache()
 
 # ==========================================
-# 4. AI EVALUATION HELPER
+# 4. AI EVALUATION HELPER (FAST & LIGHTWEIGHT)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -1140,6 +1138,7 @@ def render_guru():
                             else:
                                 st.info(a or "(Kosong)")
 
+                        # Auto Koreksi AI dengan status disabled instan & cooldown
                         is_ai_running = st.session_state.get(f"is_ai_running_{sub_id}", False)
                         if selected_tugas.get("tipe") == "essay" and st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}", disabled=is_ai_running):
                             if not check_click_cooldown(1.5, f"ai_{sub_id}"):
@@ -1278,14 +1277,10 @@ def render_guru():
                             for ls in locked_students:
                                 un_l = ls["username"]
                                 doc_ref = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
-                                curr_v = sub_map.get(un_l, {}).get("violation_count", 0)
                                 batch.set(doc_ref, {
                                     "ijin_guru": True,
-                                    "violation_count": 0 if curr_v >= 10 else curr_v,
                                     "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
-                                if f"local_exam_status_{un_l}_{selected_tugas_id}" in st.session_state:
-                                    st.session_state.pop(f"local_exam_status_{un_l}_{selected_tugas_id}", None)
                             batch.commit()
                             clear_pengerjaan_cache()
                             st.success(f"✅ Berhasil memberikan izin kepada seluruh ({len(locked_students)}) siswa!")
@@ -1310,14 +1305,10 @@ def render_guru():
                             batch = db.batch()
                             for un_l in selected_unames:
                                 doc_ref = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
-                                curr_v = sub_map.get(un_l, {}).get("violation_count", 0)
                                 batch.set(doc_ref, {
                                     "ijin_guru": True,
-                                    "violation_count": 0 if curr_v >= 10 else curr_v,
                                     "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
-                                if f"local_exam_status_{un_l}_{selected_tugas_id}" in st.session_state:
-                                    st.session_state.pop(f"local_exam_status_{un_l}_{selected_tugas_id}", None)
                             batch.commit()
                             clear_pengerjaan_cache()
                             st.success(f"✅ Berhasil memberikan izin kepada {len(selected_unames)} siswa terpilih!")
@@ -1337,14 +1328,10 @@ def render_guru():
                         if c_act.button("🔓 Beri Izin", key=f"btn_grant_{un_l}"):
                             if check_click_cooldown(1.5, f"grant_indiv_{un_l}"):
                                 db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}").set({
-                                    "ijin_guru": True, 
-                                    "violation_count": 0 if v_c >= 10 else v_c,
-                                    "updated_at": firestore.SERVER_TIMESTAMP
+                                    "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
-                                if f"local_exam_status_{un_l}_{selected_tugas_id}" in st.session_state:
-                                    st.session_state.pop(f"local_exam_status_{un_l}_{selected_tugas_id}", None)
                                 clear_pengerjaan_cache()
-                                st.success(f"✅ Izin berhasil diberikan untuk {nm_l}!")
+                                st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
                                 st.rerun()
 
     elif menu == "📜 Daftar Nilai":
@@ -1426,10 +1413,14 @@ def render_siswa():
         soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
 
-        server_status = get_student_exam_status(username_s, tg_id, bypass_firestore=True)
+        # -------------------------------------------------------------
+        # POIN 3 & 4: SERVER-SIDE LOCKDOWN & CACHED READ status DRI FIRESTORE
+        # -------------------------------------------------------------
+        server_status = get_student_exam_status_cached(username_s, tg_id)
         violation_count = server_status["violation_count"]
         ijin_guru = server_status["ijin_guru"]
         
+        # Status terkunci jika ijin_guru False ATAU pelanggaran server >= 10
         is_locked = (not ijin_guru or violation_count >= 10) if is_ulangan else False
 
         draft_bridge_val = st.text_input(
@@ -1491,9 +1482,11 @@ def render_siswa():
             </script>
         """, height=0)
 
+        # -------------------------------------------------------------
+        # POIN 3 & 5: TOMBOL TERSEMBUNYI UNTUK MENYIMPAN PELANGGARAN KE FIRESTORE
+        # -------------------------------------------------------------
         if is_ulangan:
-            st.markdown('<div class="hidden-trigger-container">', unsafe_allow_html=True)
-            if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}"):
+            if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
                 if not is_locked:
                     doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
                     new_v = violation_count + 1
@@ -1510,20 +1503,17 @@ def render_siswa():
                     }
                     doc_ref.set(payload, merge=True)
 
-                    cache_key_state = f"local_exam_status_{username_s}_{tg_id}"
-                    st.session_state[cache_key_state] = {
-                        "violation_count": new_v,
-                        "ijin_guru": False if new_v >= 10 else ijin_guru,
-                        "status": "in_progress"
-                    }
-
+                    # POIN 5: Invalidate/Clear Cache agar status real-time langsung terbaca
+                    get_student_exam_status_cached.clear()
                     get_user_pengerjaan_cached.clear()
+
+                    if new_v >= 10:
+                        st.error("🚨 Anda telah melakukan kecurangan 10 kali! Ujian telah terkunci di server.")
                     st.rerun()
 
-            if st.button("🔄 Auto Rerun Trigger", key=f"btn_auto_rerun_trigger_{tg_id}"):
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
+        # -------------------------------------------------------------
+        # POIN 1: PERBAIKAN SCRIPT DETECTION (JAVASCRIPT) HET-STREAMLIT SAFE
+        # -------------------------------------------------------------
         if not is_locked and is_ulangan:
             components.html(f"""
                 <script>
@@ -1533,21 +1523,30 @@ def render_siswa():
 
                     function triggerViolation() {{
                         const now = Date.now();
+                        // Cooldown 3 detik antar pencatatan kecurangan
                         if (now - lastTriggerViolation < 3000) return;
                         lastTriggerViolation = now;
 
+                        // Cari tombol berdasarkan key unik Streamlit
                         const triggerBtn = parentDoc.querySelector('button[key*="btn_record_violation_"]');
                         if (triggerBtn) {{
                             triggerBtn.click();
+                        }} else {{
+                            // Fallback jika tombol belum ter-render sempurna
+                            const buttons = Array.from(parentDoc.querySelectorAll('button'));
+                            const btn = buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
+                            if (btn) btn.click();
                         }}
                     }}
 
+                    // Listener 1: Pindah Tab / Minimalize Window
                     parentDoc.addEventListener('visibilitychange', function() {{
                         if (parentDoc.hidden) {{
                             triggerViolation();
                         }}
                     }});
 
+                    // Listener 2: Blur / Pindah Fokus Aplikasi (Buka App Lain/Inspect)
                     window.parent.addEventListener('blur', function() {{
                         triggerViolation();
                     }});
@@ -1555,20 +1554,54 @@ def render_siswa():
                 </script>
             """, height=0)
 
+        # -------------------------------------------------------------
+        # TAMPILAN JIKA STATUS TERKUNCI (LOCKDOWN DISPLAY)
+        # -------------------------------------------------------------
         if is_locked:
             st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda tersimpan di server sebanyak **{violation_count}/10 kali** (terdeteksi berpindah tab/layar). Halaman ini terkunci dan tidak bisa diakali dengan refresh browser. Silakan hubungi Guru untuk membuka izin.")
             
-            st.caption("💡 Tekan tombol di bawah untuk memeriksa apakah Guru telah memberikan izin akses:")
-            
-            if st.button("🔄 Cek Status Izin Guru Sekarang", key=f"btn_check_permission_{tg_id}", type="primary", use_container_width=True):
-                st.session_state.pop(f"local_exam_status_{username_s}_{tg_id}", None)
-                status = get_student_exam_status(username_s, tg_id, bypass_firestore=True)
-                if status["ijin_guru"] and status["violation_count"] < 10:
-                    st.success("✅ Izin telah diberikan oleh Guru! Membuka kunci...")
-                    time.sleep(0.5)
-                else:
-                    st.warning("⚠️ Status pengerjaan masih terkunci. Guru belum memberikan izin.")
-                st.rerun()
+            last_chk_key = f"_last_check_perm_{tg_id}"
+            last_chk_time = st.session_state.get(last_chk_key, 0.0)
+            now_time = time.time()
+            elapsed = now_time - last_chk_time
+            remaining = max(0, int(10 - elapsed))
+
+            if remaining > 0:
+                st.markdown(
+                    f'<div class="cooldown-banner">⏳ **Harap tunggu {remaining} detik lagi** sebelum dapat mengecek status izin kembali ke server.</div>', 
+                    unsafe_allow_html=True
+                )
+                st.button("🔄 Cek Status Izin Guru (Mohon Tunggu...)", key=f"btn_check_permission_{tg_id}", type="primary", disabled=True, use_container_width=True)
+
+                components.html(f"""
+                    <script>
+                    (function() {{
+                        let timeLeft = {remaining};
+                        const interval = setInterval(function() {{
+                            timeLeft--;
+                            if (timeLeft <= 0) {{
+                                clearInterval(interval);
+                                window.parent.location.reload();
+                            }}
+                        }}, 1000);
+                    }})();
+                    </script>
+                """, height=0)
+
+            else:
+                st.caption("💡 Tekan tombol di bawah untuk memeriksa apakah Guru telah memberikan izin akses:")
+                if st.button("🔄 Cek Status Izin Guru Sekarang", key=f"btn_check_permission_{tg_id}", type="primary", use_container_width=True):
+                    st.session_state[last_chk_key] = time.time()
+                    
+                    # Force Invalidate Cache Firestore
+                    get_student_exam_status_cached.clear()
+                    
+                    status = get_student_exam_status_cached(username_s, tg_id)
+                    if status["ijin_guru"]:
+                        st.success("✅ Izin telah diberikan oleh Guru! Membuka kunci...")
+                    else:
+                        st.warning("⚠️ Status pengerjaan masih terkunci. Guru belum memberikan izin.")
+                    st.rerun()
 
         elif is_ulangan and violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/10)**: Terdeteksi keluar dari layar kuis!")
@@ -1675,7 +1708,7 @@ def render_siswa():
                         for k in [
                             f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
                             f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                            f"draft_hydrated_{tg_id}", f"local_exam_status_{username_s}_{tg_id}"
+                            f"draft_hydrated_{tg_id}"
                         ]:
                             st.session_state.pop(k, None)
                         st.rerun()
@@ -1762,3 +1795,7 @@ elif role == "guru":
     render_guru()
 elif role == "siswa":
     render_siswa()
+app.py
+Info Umum
+JenisTeks
+Menampilkan app.py.
