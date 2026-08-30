@@ -16,7 +16,7 @@ import pandas as pd
 import google.generativeai as genai
 
 # ==========================================
-# 1. CONFIG & STYLING (Termasuk Poin 2: CSS Opacity & Overlay Anti-Cheat Button)
+# 1. CONFIG & STYLING (Termasuk CSS Opacity & Overlay Anti-Cheat Buttons)
 # ==========================================
 st.set_page_config(
     page_title="LMS Pendidikan Pancasila",
@@ -81,11 +81,12 @@ st.markdown("""
     }
 
     /* -------------------------------------------------------------
-       POIN 2: Styling Tombol "Catat Pelanggaran" (Opacity & Position Overlay)
-       Menggunakan opacity:0 dan pointer-events:none agar dapat di-click
-       secara programmatic oleh JS tanpa terlihat/diintervensi siswa.
+       Styling Tombol Tersembunyi (Pelanggaran & Auto-Rerun Streamlit)
+       Menggunakan opacity:0 dan position absolute/fixed di luar viewport
+       agar dapat di-click secara programmatic oleh JS tanpa terlihat siswa.
     ------------------------------------------------------------- */
-    div[data-testid="stElementContainer"]:has(button[key*="btn_record_violation_"]) {
+    div[data-testid="stElementContainer"]:has(button[key*="btn_record_violation_"]),
+    div[data-testid="stElementContainer"]:has(button[key*="btn_auto_rerun_trigger_"]) {
         position: fixed !important;
         top: -9999px !important;
         left: -9999px !important;
@@ -235,8 +236,6 @@ def get_all_materi_cached():
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
 # --- CACHE DATA PENGERJAAN SISWA & STATUS TERKUNCI ---
-
-# POIN 4: Caching Streamlit dengan ttl Singkat (5-10 detik) untuk Status Pelanggaran / Kunci Server
 @st.cache_data(ttl=5)
 def get_student_exam_status_cached(username, tg_id):
     doc_ref = db.collection("pengerjaan_siswa").document(f"{username}_{tg_id}")
@@ -340,7 +339,6 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     else:
         catatan = "Penilaian Otomatis Sistem"
     
-    # POIN 6: Pisahkan/Kecilkan Dokumen Pengerjaan Siswa (Tidak Menyimpan Ulang Master Soal PG/Gambar)
     doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
 
     if tg.get("tipe") == "pg":
@@ -1138,7 +1136,6 @@ def render_guru():
                             else:
                                 st.info(a or "(Kosong)")
 
-                        # Auto Koreksi AI dengan status disabled instan & cooldown
                         is_ai_running = st.session_state.get(f"is_ai_running_{sub_id}", False)
                         if selected_tugas.get("tipe") == "essay" and st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}", disabled=is_ai_running):
                             if not check_click_cooldown(1.5, f"ai_{sub_id}"):
@@ -1414,7 +1411,7 @@ def render_siswa():
         total_soal = len(soal_list)
 
         # -------------------------------------------------------------
-        # POIN 3 & 4: SERVER-SIDE LOCKDOWN & CACHED READ status DRI FIRESTORE
+        # SERVER-SIDE LOCKDOWN & CACHED READ STATUS DARI FIRESTORE
         # -------------------------------------------------------------
         server_status = get_student_exam_status_cached(username_s, tg_id)
         violation_count = server_status["violation_count"]
@@ -1483,9 +1480,10 @@ def render_siswa():
         """, height=0)
 
         # -------------------------------------------------------------
-        # POIN 3 & 5: TOMBOL TERSEMBUNYI UNTUK MENYIMPAN PELANGGARAN KE FIRESTORE
+        # TOMBOL TERSEMBUNYI UNTUK PENCATATAN PELANGGARAN & AUTO RERUN
         # -------------------------------------------------------------
         if is_ulangan:
+            # Tombol Tersembunyi 1: Catat Pelanggaran Ke Firestore
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
                 if not is_locked:
                     doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
@@ -1503,7 +1501,6 @@ def render_siswa():
                     }
                     doc_ref.set(payload, merge=True)
 
-                    # POIN 5: Invalidate/Clear Cache agar status real-time langsung terbaca
                     get_student_exam_status_cached.clear()
                     get_user_pengerjaan_cached.clear()
 
@@ -1511,8 +1508,13 @@ def render_siswa():
                         st.error("🚨 Anda telah melakukan kecurangan 10 kali! Ujian telah terkunci di server.")
                     st.rerun()
 
+            # Tombol Tersembunyi 2: Rerun Internal Streamlit untuk Auto Check Permission
+            if st.button("🔄 Auto Rerun Trigger", key=f"btn_auto_rerun_trigger_{tg_id}", type="secondary"):
+                get_student_exam_status_cached.clear()
+                st.rerun()
+
         # -------------------------------------------------------------
-        # POIN 1: PERBAIKAN SCRIPT DETECTION (JAVASCRIPT) HET-STREAMLIT SAFE
+        # DETEKSI PENGALIHAN TAB / LAYAR (JAVASCRIPT)
         # -------------------------------------------------------------
         if not is_locked and is_ulangan:
             components.html(f"""
@@ -1523,30 +1525,25 @@ def render_siswa():
 
                     function triggerViolation() {{
                         const now = Date.now();
-                        // Cooldown 3 detik antar pencatatan kecurangan
                         if (now - lastTriggerViolation < 3000) return;
                         lastTriggerViolation = now;
 
-                        // Cari tombol berdasarkan key unik Streamlit
                         const triggerBtn = parentDoc.querySelector('button[key*="btn_record_violation_"]');
                         if (triggerBtn) {{
                             triggerBtn.click();
                         }} else {{
-                            // Fallback jika tombol belum ter-render sempurna
                             const buttons = Array.from(parentDoc.querySelectorAll('button'));
                             const btn = buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
                             if (btn) btn.click();
                         }}
                     }}
 
-                    // Listener 1: Pindah Tab / Minimalize Window
                     parentDoc.addEventListener('visibilitychange', function() {{
                         if (parentDoc.hidden) {{
                             triggerViolation();
                         }}
                     }});
 
-                    // Listener 2: Blur / Pindah Fokus Aplikasi (Buka App Lain/Inspect)
                     window.parent.addEventListener('blur', function() {{
                         triggerViolation();
                     }});
@@ -1568,11 +1565,15 @@ def render_siswa():
 
             if remaining > 0:
                 st.markdown(
-                    f'<div class="cooldown-banner">⏳ **Harap tunggu {remaining} detik lagi** sebelum dapat mengecek status izin kembali ke server.</div>', 
+                    f'<div class="cooldown-banner">⏳ **Harap tunggu {remaining} detik lagi** sebelum dapat mengecek status izin kembali ke server. (Sistem mengecek izin secara otomatis)</div>', 
                     unsafe_allow_html=True
                 )
                 st.button("🔄 Cek Status Izin Guru (Mohon Tunggu...)", key=f"btn_check_permission_{tg_id}", type="primary", disabled=True, use_container_width=True)
 
+                # =========================================================
+                # TRIGGER AUTOMATIC RERUN INTEGRATED IN STREAMLIT BUTTON
+                # Digunakan menggantikan window.parent.location.reload()
+                # =========================================================
                 components.html(f"""
                     <script>
                     (function() {{
@@ -1581,7 +1582,15 @@ def render_siswa():
                             timeLeft--;
                             if (timeLeft <= 0) {{
                                 clearInterval(interval);
-                                window.parent.location.reload();
+                                const parentDoc = window.parent.document;
+                                const rerunBtn = parentDoc.querySelector('button[key*="btn_auto_rerun_trigger_"]');
+                                if (rerunBtn) {{
+                                    rerunBtn.click();
+                                }} else {{
+                                    const buttons = Array.from(parentDoc.querySelectorAll('button'));
+                                    const btn = buttons.find(b => b.innerText.includes('Auto Rerun Trigger'));
+                                    if (btn) btn.click();
+                                }}
                             }}
                         }}, 1000);
                     }})();
@@ -1592,8 +1601,6 @@ def render_siswa():
                 st.caption("💡 Tekan tombol di bawah untuk memeriksa apakah Guru telah memberikan izin akses:")
                 if st.button("🔄 Cek Status Izin Guru Sekarang", key=f"btn_check_permission_{tg_id}", type="primary", use_container_width=True):
                     st.session_state[last_chk_key] = time.time()
-                    
-                    # Force Invalidate Cache Firestore
                     get_student_exam_status_cached.clear()
                     
                     status = get_student_exam_status_cached(username_s, tg_id)
