@@ -235,9 +235,9 @@ def get_all_materi_cached():
     docs = db.collection("materi_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-# --- CACHE DATA PENGERJAAN SISWA & STATUS TERKUNCI ---
-@st.cache_data(ttl=5)
-def get_student_exam_status_cached(username, tg_id):
+# --- UNCACHED (REAL-TIME) READ UNTUK STATUS IZIN UNTUK KEPERLUAN KRITIS ---
+def get_student_exam_status(username, tg_id):
+    """Membaca data status ujian siswa langsung dari Firestore secara real-time (tanpa cache)"""
     doc_ref = db.collection("pengerjaan_siswa").document(f"{username}_{tg_id}")
     doc = doc_ref.get()
     if doc.exists:
@@ -284,7 +284,6 @@ def clear_users_cache():
     get_guru_dashboard_stats.clear()
 
 def clear_pengerjaan_cache():
-    get_student_exam_status_cached.clear()
     get_user_pengerjaan_cached.clear()
     get_pengerjaan_by_tugas_kelas_cached.clear()
     get_all_pengerjaan_by_kelas_cached.clear()
@@ -1276,11 +1275,12 @@ def render_guru():
                                 doc_ref = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
                                 batch.set(doc_ref, {
                                     "ijin_guru": True,
+                                    "violation_count": 0,
                                     "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
                             batch.commit()
                             clear_pengerjaan_cache()
-                            st.success(f"✅ Berhasil memberikan izin kepada seluruh ({len(locked_students)}) siswa!")
+                            st.success(f"✅ Berhasil memberikan izin dan mereset hitungan pelanggaran kepada seluruh ({len(locked_students)}) siswa!")
                             st.rerun()
 
                     st.divider()
@@ -1304,11 +1304,12 @@ def render_guru():
                                 doc_ref = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
                                 batch.set(doc_ref, {
                                     "ijin_guru": True,
+                                    "violation_count": 0,
                                     "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
                             batch.commit()
                             clear_pengerjaan_cache()
-                            st.success(f"✅ Berhasil memberikan izin kepada {len(selected_unames)} siswa terpilih!")
+                            st.success(f"✅ Berhasil memberikan izin dan mereset hitungan pelanggaran kepada {len(selected_unames)} siswa terpilih!")
                             st.rerun()
 
                     st.divider()
@@ -1325,10 +1326,12 @@ def render_guru():
                         if c_act.button("🔓 Beri Izin", key=f"btn_grant_{un_l}"):
                             if check_click_cooldown(1.5, f"grant_indiv_{un_l}"):
                                 db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}").set({
-                                    "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
+                                    "ijin_guru": True, 
+                                    "violation_count": 0, 
+                                    "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
                                 clear_pengerjaan_cache()
-                                st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
+                                st.success(f"✅ Izin berhasil diberikan dan pelanggaran direset untuk {nm_l}!")
                                 st.rerun()
 
     elif menu == "📜 Daftar Nilai":
@@ -1411,9 +1414,9 @@ def render_siswa():
         total_soal = len(soal_list)
 
         # -------------------------------------------------------------
-        # SERVER-SIDE LOCKDOWN & CACHED READ STATUS DARI FIRESTORE
+        # SERVER-SIDE LOCKDOWN & UNCACHED READ STATUS DARI FIRESTORE
         # -------------------------------------------------------------
-        server_status = get_student_exam_status_cached(username_s, tg_id)
+        server_status = get_student_exam_status(username_s, tg_id)
         violation_count = server_status["violation_count"]
         ijin_guru = server_status["ijin_guru"]
         
@@ -1501,7 +1504,6 @@ def render_siswa():
                     }
                     doc_ref.set(payload, merge=True)
 
-                    get_student_exam_status_cached.clear()
                     get_user_pengerjaan_cached.clear()
 
                     if new_v >= 10:
@@ -1510,7 +1512,6 @@ def render_siswa():
 
             # Tombol Tersembunyi 2: Rerun Internal Streamlit untuk Auto Check Permission
             if st.button("🔄 Auto Rerun Trigger", key=f"btn_auto_rerun_trigger_{tg_id}", type="secondary"):
-                get_student_exam_status_cached.clear()
                 st.rerun()
 
         # -------------------------------------------------------------
@@ -1557,58 +1558,14 @@ def render_siswa():
         if is_locked:
             st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda tersimpan di server sebanyak **{violation_count}/10 kali** (terdeteksi berpindah tab/layar). Halaman ini terkunci dan tidak bisa diakali dengan refresh browser. Silakan hubungi Guru untuk membuka izin.")
             
-            last_chk_key = f"_last_check_perm_{tg_id}"
-            last_chk_time = st.session_state.get(last_chk_key, 0.0)
-            now_time = time.time()
-            elapsed = now_time - last_chk_time
-            remaining = max(0, int(10 - elapsed))
-
-            if remaining > 0:
-                st.markdown(
-                    f'<div class="cooldown-banner">⏳ **Harap tunggu {remaining} detik lagi** sebelum dapat mengecek status izin kembali ke server. (Sistem mengecek izin secara otomatis)</div>', 
-                    unsafe_allow_html=True
-                )
-                st.button("🔄 Cek Status Izin Guru (Mohon Tunggu...)", key=f"btn_check_permission_{tg_id}", type="primary", disabled=True, use_container_width=True)
-
-                # =========================================================
-                # TRIGGER AUTOMATIC RERUN INTEGRATED IN STREAMLIT BUTTON
-                # Digunakan menggantikan window.parent.location.reload()
-                # =========================================================
-                components.html(f"""
-                    <script>
-                    (function() {{
-                        let timeLeft = {remaining};
-                        const interval = setInterval(function() {{
-                            timeLeft--;
-                            if (timeLeft <= 0) {{
-                                clearInterval(interval);
-                                const parentDoc = window.parent.document;
-                                const rerunBtn = parentDoc.querySelector('button[key*="btn_auto_rerun_trigger_"]');
-                                if (rerunBtn) {{
-                                    rerunBtn.click();
-                                }} else {{
-                                    const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                                    const btn = buttons.find(b => b.innerText.includes('Auto Rerun Trigger'));
-                                    if (btn) btn.click();
-                                }}
-                            }}
-                        }}, 1000);
-                    }})();
-                    </script>
-                """, height=0)
-
-            else:
-                st.caption("💡 Tekan tombol di bawah untuk memeriksa apakah Guru telah memberikan izin akses:")
-                if st.button("🔄 Cek Status Izin Guru Sekarang", key=f"btn_check_permission_{tg_id}", type="primary", use_container_width=True):
-                    st.session_state[last_chk_key] = time.time()
-                    get_student_exam_status_cached.clear()
-                    
-                    status = get_student_exam_status_cached(username_s, tg_id)
-                    if status["ijin_guru"]:
-                        st.success("✅ Izin telah diberikan oleh Guru! Membuka kunci...")
-                    else:
-                        st.warning("⚠️ Status pengerjaan masih terkunci. Guru belum memberikan izin.")
-                    st.rerun()
+            st.caption("💡 Tekan tombol di bawah untuk memeriksa apakah Guru telah memberikan izin akses:")
+            if st.button("🔄 Cek Status Izin Guru Sekarang", key=f"btn_check_permission_{tg_id}", type="primary", use_container_width=True):
+                status = get_student_exam_status(username_s, tg_id)
+                if status["ijin_guru"] and status["violation_count"] < 10:
+                    st.success("✅ Izin telah diberikan oleh Guru! Membuka kunci...")
+                else:
+                    st.warning("⚠️ Status pengerjaan masih terkunci. Guru belum memberikan izin.")
+                st.rerun()
 
         elif is_ulangan and violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/10)**: Terdeteksi keluar dari layar kuis!")
