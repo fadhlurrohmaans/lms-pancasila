@@ -1,3 +1,4 @@
+
 import os
 import json
 import io
@@ -16,7 +17,7 @@ import pandas as pd
 import google.generativeai as genai
 
 # ==========================================
-# 1. CONFIG & STYLING (Termasuk CSS Opacity & Overlay Anti-Cheat Buttons)
+# 1. CONFIG & STYLING
 # ==========================================
 st.set_page_config(
     page_title="LMS Pendidikan Pancasila",
@@ -65,37 +66,6 @@ st.markdown("""
         pointer-events: none !important;
         cursor: not-allowed !important;
         opacity: 0.65 !important;
-    }
-
-    /* Styling khusus Banner Cooldown & Status Izin Guru */
-    .cooldown-banner {
-        background-color: #fff3cd;
-        color: #856404;
-        border: 1px solid #ffeeba;
-        padding: 12px 16px;
-        border-radius: 10px;
-        margin-top: 10px;
-        margin-bottom: 10px;
-        font-weight: 500;
-        text-align: center;
-    }
-
-    /* -------------------------------------------------------------
-       Styling Tombol Tersembunyi (Pelanggaran & Auto-Rerun Streamlit)
-       Menggunakan opacity:0 dan position absolute/fixed di luar viewport
-       agar dapat di-click secara programmatic oleh JS tanpa terlihat siswa.
-    ------------------------------------------------------------- */
-    div[data-testid="stElementContainer"]:has(button[key*="btn_record_violation_"]),
-    div[data-testid="stElementContainer"]:has(button[key*="btn_auto_rerun_trigger_"]) {
-        position: fixed !important;
-        top: -9999px !important;
-        left: -9999px !important;
-        opacity: 0 !important;
-        pointer-events: none !important;
-        z-index: -9999 !important;
-        height: 0px !important;
-        width: 0px !important;
-        overflow: hidden !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -235,20 +205,7 @@ def get_all_materi_cached():
     docs = db.collection("materi_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-# --- UNCACHED (REAL-TIME) READ UNTUK STATUS IZIN UNTUK KEPERLUAN KRITIS ---
-def get_student_exam_status(username, tg_id):
-    """Membaca data status ujian siswa langsung dari Firestore secara real-time (tanpa cache)"""
-    doc_ref = db.collection("pengerjaan_siswa").document(f"{username}_{tg_id}")
-    doc = doc_ref.get()
-    if doc.exists:
-        data = doc.to_dict()
-        return {
-            "violation_count": data.get("violation_count", 0),
-            "ijin_guru": data.get("ijin_guru", True),
-            "status": data.get("status", "in_progress")
-        }
-    return {"violation_count": 0, "ijin_guru": True, "status": "in_progress"}
-
+# --- CACHE DATA PENGERJAAN SISWA ---
 @st.cache_data(ttl=30)
 def get_user_pengerjaan_cached(username):
     docs = db.collection("pengerjaan_siswa").where("username_siswa", "==", username).stream()
@@ -361,7 +318,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
         formatted_ans = [a if a is not None else "" for a in (answers if answers else [])]
         doc_ref.set({
             "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
-            "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay",
+            "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay", "soal": soal_list,
             "jawaban": formatted_ans, "nilai": None, "catatan_guru": catatan, "status": "submitted",
             "violation_count": violation_count,
             "submitted_at": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP
@@ -1120,7 +1077,7 @@ def render_guru():
                     if cat_key not in st.session_state: st.session_state[cat_key] = str(sub.get("catatan_guru", ""))
 
                     with st.expander(f"👤 {sub.get('nama_siswa')} — Nilai: {sub.get('nilai', 'Belum')}"):
-                        soal_items = selected_tugas.get("soal", [])
+                        soal_items = sub.get("soal", selected_tugas.get("soal", []))
                         jawaban_items = sub.get("jawaban", [])
 
                         for idx, (q, a) in enumerate(zip(soal_items, jawaban_items), 1):
@@ -1135,6 +1092,7 @@ def render_guru():
                             else:
                                 st.info(a or "(Kosong)")
 
+                        # Auto Koreksi AI dengan status disabled instan & cooldown
                         is_ai_running = st.session_state.get(f"is_ai_running_{sub_id}", False)
                         if selected_tugas.get("tipe") == "essay" and st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}", disabled=is_ai_running):
                             if not check_click_cooldown(1.5, f"ai_{sub_id}"):
@@ -1275,12 +1233,11 @@ def render_guru():
                                 doc_ref = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
                                 batch.set(doc_ref, {
                                     "ijin_guru": True,
-                                    "violation_count": 0,
                                     "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
                             batch.commit()
                             clear_pengerjaan_cache()
-                            st.success(f"✅ Berhasil memberikan izin dan mereset hitungan pelanggaran kepada seluruh ({len(locked_students)}) siswa!")
+                            st.success(f"✅ Berhasil memberikan izin kepada seluruh ({len(locked_students)}) siswa!")
                             st.rerun()
 
                     st.divider()
@@ -1304,12 +1261,11 @@ def render_guru():
                                 doc_ref = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
                                 batch.set(doc_ref, {
                                     "ijin_guru": True,
-                                    "violation_count": 0,
                                     "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
                             batch.commit()
                             clear_pengerjaan_cache()
-                            st.success(f"✅ Berhasil memberikan izin dan mereset hitungan pelanggaran kepada {len(selected_unames)} siswa terpilih!")
+                            st.success(f"✅ Berhasil memberikan izin kepada {len(selected_unames)} siswa terpilih!")
                             st.rerun()
 
                     st.divider()
@@ -1326,12 +1282,10 @@ def render_guru():
                         if c_act.button("🔓 Beri Izin", key=f"btn_grant_{un_l}"):
                             if check_click_cooldown(1.5, f"grant_indiv_{un_l}"):
                                 db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}").set({
-                                    "ijin_guru": True, 
-                                    "violation_count": 0, 
-                                    "updated_at": firestore.SERVER_TIMESTAMP
+                                    "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
                                 }, merge=True)
                                 clear_pengerjaan_cache()
-                                st.success(f"✅ Izin berhasil diberikan dan pelanggaran direset untuk {nm_l}!")
+                                st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
                                 st.rerun()
 
     elif menu == "📜 Daftar Nilai":
@@ -1407,21 +1361,12 @@ def render_siswa():
         jenis_tugas = tg.get("jenis_tugas", "Ulangan Harian")
         is_ulangan = (jenis_tugas == "Ulangan Harian")
         storage_key = f"lms_draft_{username_s}_{tg_id}"
+        violation_storage_key = f"lms_vcount_{username_s}_{tg_id}"
 
         if f"quiz_soal_{tg_id}" not in st.session_state:
             st.session_state[f"quiz_soal_{tg_id}"] = tg.get("soal", [])
         soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
-
-        # -------------------------------------------------------------
-        # SERVER-SIDE LOCKDOWN & UNCACHED READ STATUS DARI FIRESTORE
-        # -------------------------------------------------------------
-        server_status = get_student_exam_status(username_s, tg_id)
-        violation_count = server_status["violation_count"]
-        ijin_guru = server_status["ijin_guru"]
-        
-        # Status terkunci jika ijin_guru False ATAU pelanggaran server >= 10
-        is_locked = (not ijin_guru or violation_count >= 10) if is_ulangan else False
 
         draft_bridge_val = st.text_input(
             "Draft Bridge Input", 
@@ -1443,6 +1388,10 @@ def render_siswa():
             if f"quiz_answers_{tg_id}" not in st.session_state:
                 st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
 
+            if f"violation_count_{tg_id}" not in st.session_state:
+                st.session_state[f"violation_count_{tg_id}"] = 0
+
+            st.session_state[f"ijin_guru_{tg_id}"] = True
             st.session_state[f"quiz_page_{tg_id}"] = 0
             st.session_state[f"quiz_loaded_{tg_id}"] = True
 
@@ -1468,8 +1417,11 @@ def render_siswa():
 
         answers = st.session_state[f"quiz_answers_{tg_id}"]
         curr_page = st.session_state[f"quiz_page_{tg_id}"]
+        violation_count = st.session_state.get(f"violation_count_{tg_id}", 0)
+        ijin_guru = st.session_state.get(f"ijin_guru_{tg_id}", True)
 
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
+        is_locked = (not ijin_guru) if is_ulangan else False
 
         answers_json_str = json.dumps(answers)
         components.html(f"""
@@ -1478,45 +1430,26 @@ def render_siswa():
                 const key = "{storage_key}";
                 const data = {answers_json_str};
                 window.parent.localStorage.setItem(key, JSON.stringify(data));
+                window.parent.localStorage.setItem("{violation_storage_key}", "{violation_count}");
             }})();
             </script>
         """, height=0)
 
-        # -------------------------------------------------------------
-        # TOMBOL TERSEMBUNYI UNTUK PENCATATAN PELANGGARAN & AUTO RERUN
-        # -------------------------------------------------------------
         if is_ulangan:
-            # Tombol Tersembunyi 1: Catat Pelanggaran Ke Firestore
+            if violation_count >= 10:
+                st.session_state[f"ijin_guru_{tg_id}"] = False
+                is_locked = True
+
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
                 if not is_locked:
-                    doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
-                    new_v = violation_count + 1
-                    payload = {
-                        "id_tugas": tg_id,
-                        "judul_tugas": tg.get("judul"),
-                        "username_siswa": username_s,
-                        "nama_siswa": nama_s,
-                        "kelas_siswa": kelas_s,
-                        "status": "in_progress",
-                        "violation_count": new_v,
-                        "ijin_guru": False if new_v >= 10 else ijin_guru,
-                        "updated_at": firestore.SERVER_TIMESTAMP
-                    }
-                    doc_ref.set(payload, merge=True)
-
-                    get_user_pengerjaan_cached.clear()
+                    st.session_state[f"violation_count_{tg_id}"] += 1
+                    new_v = st.session_state[f"violation_count_{tg_id}"]
 
                     if new_v >= 10:
-                        st.error("🚨 Anda telah melakukan kecurangan 10 kali! Ujian telah terkunci di server.")
+                        st.session_state[f"ijin_guru_{tg_id}"] = False
+                        st.error("🚨 Anda telah melakukan kecurangan 10 kali! Kuis terkunci secara lokal.")
                     st.rerun()
 
-            # Tombol Tersembunyi 2: Rerun Internal Streamlit untuk Auto Check Permission
-            if st.button("🔄 Auto Rerun Trigger", key=f"btn_auto_rerun_trigger_{tg_id}", type="secondary"):
-                st.rerun()
-
-        # -------------------------------------------------------------
-        # DETEKSI PENGALIHAN TAB / LAYAR (JAVASCRIPT)
-        # -------------------------------------------------------------
         if not is_locked and is_ulangan:
             components.html(f"""
                 <script>
@@ -1524,25 +1457,33 @@ def render_siswa():
                     const parentDoc = window.parent.document;
                     let lastTriggerViolation = 0;
 
+                    function getBtnByText(text) {{
+                        const buttons = Array.from(parentDoc.querySelectorAll('button'));
+                        return buttons.find(b => b.innerText.includes(text));
+                    }}
+
+                    function hideActionButtons() {{
+                        const btn = getBtnByText('Catat Pelanggaran');
+                        if (btn && btn.parentElement) {{
+                            const container = btn.closest('[data-testid="stElementContainer"]') || btn.parentElement;
+                            if (container && container.style.display !== 'none') {{
+                                container.style.display = 'none';
+                            }}
+                        }}
+                    }}
+
+                    setInterval(hideActionButtons, 500);
+
                     function triggerViolation() {{
                         const now = Date.now();
                         if (now - lastTriggerViolation < 3000) return;
                         lastTriggerViolation = now;
-
-                        const triggerBtn = parentDoc.querySelector('button[key*="btn_record_violation_"]');
-                        if (triggerBtn) {{
-                            triggerBtn.click();
-                        }} else {{
-                            const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                            const btn = buttons.find(b => b.innerText.includes('Catat Pelanggaran'));
-                            if (btn) btn.click();
-                        }}
+                        const triggerBtn = getBtnByText('Catat Pelanggaran');
+                        if (triggerBtn) triggerBtn.click();
                     }}
 
                     parentDoc.addEventListener('visibilitychange', function() {{
-                        if (parentDoc.hidden) {{
-                            triggerViolation();
-                        }}
+                        if (parentDoc.hidden) {{ triggerViolation(); }}
                     }});
 
                     window.parent.addEventListener('blur', function() {{
@@ -1552,27 +1493,25 @@ def render_siswa():
                 </script>
             """, height=0)
 
-        # -------------------------------------------------------------
-        # TAMPILAN JIKA STATUS TERKUNCI (LOCKDOWN DISPLAY)
-        # -------------------------------------------------------------
         if is_locked:
-            st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda tersimpan di server sebanyak **{violation_count}/10 kali** (terdeteksi berpindah tab/layar). Halaman ini terkunci dan tidak bisa diakali dengan refresh browser. Silakan hubungi Guru untuk membuka izin.")
-            
-            st.caption("💡 Tekan tombol di bawah untuk memeriksa apakah Guru telah memberikan izin akses:")
-            if st.button("🔄 Cek Status Izin Guru Sekarang", key=f"btn_check_permission_{tg_id}", type="primary", use_container_width=True):
-                status = get_student_exam_status(username_s, tg_id)
-                if status["ijin_guru"] and status["violation_count"] < 10:
-                    st.success("✅ Izin telah diberikan oleh Guru! Membuka kunci...")
+            st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda telah mencapai **{violation_count}/10 kali** (atau Anda berpindah layar/tab). Silakan hubungi Guru untuk membuka izin.")
+            if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
+                if not check_click_cooldown(1.5, f"check_perm_{tg_id}"):
+                    st.warning("⚠️ Mohon tunggu sejenak sebelum mengecek kembali.")
                 else:
-                    st.warning("⚠️ Status pengerjaan masih terkunci. Guru belum memberikan izin.")
-                st.rerun()
+                    status_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
+                    status_doc = status_ref.get()
+                    if status_doc.exists:
+                        ijin_val = status_doc.to_dict().get("ijin_guru", False)
+                        st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
+                    st.rerun()
 
         elif is_ulangan and violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/10)**: Terdeteksi keluar dari layar kuis!")
 
         st.markdown(f"### 📝 {tg.get('judul')}")
         info_sub = f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Jenis: **{jenis_tugas}** | Terjawab: **{terjawab_count}/{total_soal}**"
-        if is_ulangan: info_sub += f" | Pelanggaran Server: **{violation_count}x**"
+        if is_ulangan: info_sub += f" | Pelanggaran: **{violation_count}x**"
         st.caption(info_sub)
 
         st.progress((curr_page + 1) / total_soal)
@@ -1663,6 +1602,7 @@ def render_siswa():
                         components.html(f"""
                             <script>
                             window.parent.localStorage.removeItem("{storage_key}");
+                            window.parent.localStorage.removeItem("{violation_storage_key}");
                             </script>
                         """, height=0)
 
@@ -1672,7 +1612,7 @@ def render_siswa():
                         for k in [
                             f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
                             f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                            f"draft_hydrated_{tg_id}"
+                            f"draft_hydrated_{tg_id}", f"violation_count_{tg_id}", f"ijin_guru_{tg_id}"
                         ]:
                             st.session_state.pop(k, None)
                         st.rerun()
@@ -1759,3 +1699,7 @@ elif role == "guru":
     render_guru()
 elif role == "siswa":
     render_siswa()
+app.py
+General Info
+TypeText
+Displaying app.py.
