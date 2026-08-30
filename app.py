@@ -56,36 +56,11 @@ st.markdown("""
     div[data-testid="stTextInput"]:has(input[aria-label="Draft Bridge Input"]) {
         display: none !important;
     }
-
-    /* Melarang interaksi kursor secara instan pada tombol yang sedang diproses atau di-disable */
-    .stButton > button:disabled,
-    .stDownloadButton > button:disabled,
-    button:disabled,
-    button[disabled] {
-        pointer-events: none !important;
-        cursor: not-allowed !important;
-        opacity: 0.65 !important;
-    }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. CLICK COOLDOWN HELPER
-# ==========================================
-def check_click_cooldown(cooldown_seconds=1.5, key="global"):
-    """Mencatat timestamp klik terakhir dan menolak aksi yang terlalu cepat (kurang dari cooldown_seconds)"""
-    now = time.time()
-    state_key = f"_last_click_{key}"
-    last_click = st.session_state.get(state_key, 0.0)
-    
-    if now - last_click < cooldown_seconds:
-        return False
-        
-    st.session_state[state_key] = now
-    return True
-
-# ==========================================
-# 3. FIREBASE & CACHING OPTIMIZATION
+# 2. FIREBASE & CACHING OPTIMIZATION
 # ==========================================
 @st.cache_resource
 def init_firebase():
@@ -124,6 +99,7 @@ def count_submitted_by_tugas_kelas(tugas_id, kelas):
 
 @st.cache_data(ttl=60)
 def get_guru_dashboard_stats(pilihan_kelas_tuple):
+    """Menghitung ringkasan statistik Guru menggunakan Aggregation Queries count()"""
     try:
         total_materi = db.collection("materi_pancasila").count().get()[0][0].value
     except Exception:
@@ -135,25 +111,16 @@ def get_guru_dashboard_stats(pilihan_kelas_tuple):
         total_tugas = 0
 
     total_siswa = 0
+    for k in pilihan_kelas_tuple:
+        total_siswa += count_siswa_by_kelas(k)
+
     total_submitted = 0
-
-    if pilihan_kelas_tuple:
-        kelas_list = list(pilihan_kelas_tuple)
-        chunk_size = 30
-        for i in range(0, len(kelas_list), chunk_size):
-            chunk = kelas_list[i:i + chunk_size]
-            
-            try:
-                q_siswa = db.collection("users").where("role", "==", "siswa").where("kelas", "in", chunk)
-                total_siswa += q_siswa.count().get()[0][0].value
-            except Exception:
-                pass
-
-            try:
-                q_sub = db.collection("pengerjaan_siswa").where("kelas_siswa", "in", chunk).where("status", "==", "submitted")
-                total_submitted += q_sub.count().get()[0][0].value
-            except Exception:
-                pass
+    for k in pilihan_kelas_tuple:
+        try:
+            q_sub = db.collection("pengerjaan_siswa").where("kelas_siswa", "==", k).where("status", "==", "submitted")
+            total_submitted += q_sub.count().get()[0][0].value
+        except Exception:
+            pass
 
     return {
         "total_siswa": total_siswa,
@@ -163,7 +130,7 @@ def get_guru_dashboard_stats(pilihan_kelas_tuple):
     }
 
 # --- OPTIMIZED CACHED READ FUNCTIONS (HIGH TTL) ---
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400)  # 24 Jam
 def ensure_default_admin_created():
     admin_ref = db.collection("users").document("admin")
     if not admin_ref.get().exists:
@@ -177,29 +144,29 @@ def ensure_default_admin_created():
         return True
     return False
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400)  # 24 Jam
 def get_all_kelas():
     doc = db.collection("config").document("master_kelas").get()
     if doc.exists:
         return sorted(doc.to_dict().get("daftar", []))
     return []
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=600)  # 10 Menit
 def get_all_users_cached():
     docs = db.collection("users").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=600)  # 10 Menit
 def get_siswa_by_kelas_cached(kelas):
     docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", kelas).stream()
     return [{"username": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300)  # 5 Menit
 def get_all_tugas_cached():
     docs = db.collection("tugas_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300)  # 5 Menit
 def get_all_materi_cached():
     docs = db.collection("materi_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
@@ -282,7 +249,7 @@ def is_target_sesuai_kelas(doc_data, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
-def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=False, is_violation=False, violation_count=0):
+def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=False, is_violation=False):
     tg_id = tg["id"]
     soal_list = tg.get("soal", [])
     total_soal = len(soal_list)
@@ -310,7 +277,6 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
             "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
             "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "pg", "jawaban": formatted_ans,
             "nilai": score, "catatan_guru": catatan, "status": "submitted",
-            "violation_count": violation_count,
             "submitted_at": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
     else:
@@ -319,7 +285,6 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
             "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
             "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay", "soal": soal_list,
             "jawaban": formatted_ans, "nilai": None, "catatan_guru": catatan, "status": "submitted",
-            "violation_count": violation_count,
             "submitted_at": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
 
@@ -327,23 +292,20 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     return True
 
 def delete_tugas_and_submissions(tugas_id):
-    p_docs = list(db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).stream())
-    chunk_size = 450
+    batch = db.batch()
+    tugas_ref = db.collection("tugas_pancasila").document(tugas_id)
+    batch.delete(tugas_ref)
     
-    for i in range(0, len(p_docs), chunk_size):
-        batch = db.batch()
-        chunk = p_docs[i:i + chunk_size]
-        for doc in chunk:
-            batch.delete(doc.reference)
-        batch.commit()
-
-    db.collection("tugas_pancasila").document(tugas_id).delete()
-    
+    p_docs = db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).stream()
+    for doc in p_docs:
+        batch.delete(doc.reference)
+        
+    batch.commit()
     clear_tugas_cache()
     clear_pengerjaan_cache()
 
 # ==========================================
-# 4. AI EVALUATION HELPER (FAST & LIGHTWEIGHT)
+# 3. AI EVALUATION HELPER (FAST & LIGHTWEIGHT)
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -412,7 +374,7 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         return None, f"Gagal mengeksekusi AI: {str(e)}"
 
 # ==========================================
-# 5. AUTHENTICATION
+# 4. AUTHENTICATION
 # ==========================================
 if "user" not in st.session_state:
     st.session_state["user"] = None
@@ -448,7 +410,7 @@ if st.session_state["user"] is None:
     st.stop()
 
 # ==========================================
-# 6. SIDEBAR
+# 5. SIDEBAR
 # ==========================================
 user_info = st.session_state["user"]
 role = user_info["role"]
@@ -470,7 +432,7 @@ if st.sidebar.button("🚪 Keluar / Logout"):
 st.sidebar.divider()
 
 # ==========================================
-# 7. PANEL SUPER ADMIN
+# 6. PANEL SUPER ADMIN
 # ==========================================
 def render_superadmin():
     st.title("⚙️ Panel Super Admin")
@@ -720,13 +682,14 @@ def render_superadmin():
                 st.rerun()
 
 # ==========================================
-# 8. PANEL GURU
+# 7. PANEL GURU (DENGAN FIRESTORE .count() AGGREGATION)
 # ==========================================
 def render_guru():
     st.title("🇮🇩 Panel Guru")
     pilihan_kelas = user_info.get("kelas_ajar") or get_all_kelas()
     if isinstance(pilihan_kelas, str): pilihan_kelas = [pilihan_kelas]
 
+    # --- RINGKASAN STATISTIK GURU (AGGREGATION QUERY .count() HEMAT KUOTA) ---
     guru_stats = get_guru_dashboard_stats(tuple(pilihan_kelas))
     st.markdown("##### ⚡ Ringkasan Statistik Real-Time (Aggregation count())")
     m_col1, m_col2, m_col3, m_col4 = st.columns(4)
@@ -769,9 +732,7 @@ def render_guru():
                                     e_file_url = st.text_input("🔗 Link Lampiran", value=m.get("file_url", "") or "", key=f"e_url_{m_id}")
 
                                     if st.form_submit_button("💾 Simpan Perubahan"):
-                                        if not check_click_cooldown(1.5, f"edit_mat_{m_id}"):
-                                            st.warning("⚠️ Mohon tunggu sejenak sebelum menyimpan kembali.")
-                                        elif e_bab and e_judul and e_target:
+                                        if e_bab and e_judul and e_target:
                                             db.collection("materi_pancasila").document(m_id).update({
                                                 "bab": e_bab, "judul": e_judul, "target_kelas": e_target,
                                                 "konten": e_konten, "file_url": e_file_url.strip() if e_file_url else None,
@@ -782,11 +743,10 @@ def render_guru():
                                             st.rerun()
 
                             if st.button("🗑️ Hapus", key=f"btn_del_mat_{m_id}", type="primary"):
-                                if check_click_cooldown(1.5, f"del_mat_{m_id}"):
-                                    db.collection("materi_pancasila").document(m_id).delete()
-                                    clear_materi_cache()
-                                    st.success("✅ Materi berhasil dihapus!")
-                                    st.rerun()
+                                db.collection("materi_pancasila").document(m_id).delete()
+                                clear_materi_cache()
+                                st.success("✅ Materi berhasil dihapus!")
+                                st.rerun()
 
         with t_buat:
             with st.form(key="form_tambah_materi_baru", clear_on_submit=True):
@@ -797,9 +757,7 @@ def render_guru():
                 file_url = st.text_input("🔗 Link Lampiran Dokumen", key="add_url")
 
                 if st.form_submit_button("📁 Simpan Materi Baru"):
-                    if not check_click_cooldown(1.5, "add_materi"):
-                        st.warning("⚠️ Mohon tunggu sejenak sebelum menambah materi lagi.")
-                    elif bab and judul and target_k:
+                    if bab and judul and target_k:
                         db.collection("materi_pancasila").add({
                             "bab": bab, "judul": judul, "target_kelas": target_k, "konten": konten,
                             "file_url": file_url.strip() if file_url else None, "created_at": firestore.SERVER_TIMESTAMP
@@ -834,16 +792,14 @@ def render_guru():
                             new_st = "draft" if is_published else "terbit"
                             btn_st_label = "🔴 Ubah ke Draft" if is_published else "🟢 Terbitkan Tugas"
                             if st.button(btn_st_label, key=f"toggle_st_{tg['id']}"):
-                                if check_click_cooldown(1.5, f"toggle_{tg['id']}"):
-                                    db.collection("tugas_pancasila").document(tg["id"]).update({"status": new_st})
-                                    clear_tugas_cache()
-                                    st.rerun()
+                                db.collection("tugas_pancasila").document(tg["id"]).update({"status": new_st})
+                                clear_tugas_cache()
+                                st.rerun()
                         with col_t2:
                             if st.button(f"🗑️ Hapus Tugas", key=f"del_{tg['id']}", type="primary"):
-                                if check_click_cooldown(1.5, f"del_tugas_{tg['id']}"):
-                                    delete_tugas_and_submissions(tg["id"])
-                                    st.success("✅ Berhasil! Tugas beserta seluruh riwayat nilainya telah dihapus.")
-                                    st.rerun()
+                                delete_tugas_and_submissions(tg["id"])
+                                st.success("✅ Berhasil! Tugas beserta seluruh riwayat nilainya telah dihapus.")
+                                st.rerun()
 
         with t_buat:
             judul = st.text_input("Judul Tugas")
@@ -866,9 +822,7 @@ def render_guru():
                         soal_list.append({"pertanyaan": q, "opsi": [o0, o1, o2, o3], "kunci": k})
                     
                     if st.form_submit_button("Simpan Tugas PG"):
-                        if not check_click_cooldown(1.5, "simpan_tugas_pg"):
-                            st.warning("⚠️ Memproses pembuatan tugas, mohon tunggu...")
-                        elif judul and target_k:
+                        if judul and target_k:
                             db.collection("tugas_pancasila").add({
                                 "judul": judul, "instruksi": instruksi, "tipe": "pg", "target_kelas": target_k,
                                 "jenis_tugas": jenis_tugas, "status": status_t, "soal": soal_list, "created_at": firestore.SERVER_TIMESTAMP
@@ -881,9 +835,7 @@ def render_guru():
                 with st.form("form_essay"):
                     soal_list = [{"pertanyaan": st.text_area(f"Soal #{i+1}", key=f"qe_{i}")} for i in range(n_essay)]
                     if st.form_submit_button("Simpan Tugas Essay"):
-                        if not check_click_cooldown(1.5, "simpan_tugas_essay"):
-                            st.warning("⚠️ Memproses pembuatan tugas, mohon tunggu...")
-                        elif judul and target_k:
+                        if judul and target_k:
                             db.collection("tugas_pancasila").add({
                                 "judul": judul, "instruksi": instruksi, "tipe": "essay", "target_kelas": target_k,
                                 "jenis_tugas": jenis_tugas, "status": status_t, "soal": soal_list, "created_at": firestore.SERVER_TIMESTAMP
@@ -935,16 +887,13 @@ def render_guru():
                             updated_soal.append({"pertanyaan": e_q})
 
                     if st.form_submit_button("💾 Perbarui Tugas & Soal"):
-                        if not check_click_cooldown(1.5, f"edit_tg_{sel_id}"):
-                            st.warning("⚠️ Perubahan sedang disimpan, harap tunggu...")
-                        else:
-                            db.collection("tugas_pancasila").document(sel_id).update({
-                                "judul": e_judul, "instruksi": e_instruksi, "target_kelas": e_target,
-                                "jenis_tugas": e_jenis, "status": e_status, "soal": updated_soal, "updated_at": firestore.SERVER_TIMESTAMP
-                            })
-                            clear_tugas_cache()
-                            st.success("✅ Berhasil! Informasi tugas dan soal telah diperbarui.")
-                            st.rerun()
+                        db.collection("tugas_pancasila").document(sel_id).update({
+                            "judul": e_judul, "instruksi": e_instruksi, "target_kelas": e_target,
+                            "jenis_tugas": e_jenis, "status": e_status, "soal": updated_soal, "updated_at": firestore.SERVER_TIMESTAMP
+                        })
+                        clear_tugas_cache()
+                        st.success("✅ Berhasil! Informasi tugas dan soal telah diperbarui.")
+                        st.rerun()
 
         with t_imp:
             st.subheader("📥 Import Soal Tugas (.csv / .xlsx)")
@@ -966,37 +915,36 @@ def render_guru():
             imp_tipe = st.selectbox("Tipe Soal Import", ["pg", "essay"])
 
             if up_soal and imp_judul and imp_target and st.button("🚀 Import Soal Sekarang", type="primary"):
-                if check_click_cooldown(1.5, "imp_soal"):
-                    df_s = safe_read_uploaded_file(up_soal)
-                    df_s.columns = [str(c).strip().lower() for c in df_s.columns]
-                    q_col = next((c for c in ["pertanyaan", "soal", "question"] if c in df_s.columns), None)
+                df_s = safe_read_uploaded_file(up_soal)
+                df_s.columns = [str(c).strip().lower() for c in df_s.columns]
+                q_col = next((c for c in ["pertanyaan", "soal", "question"] if c in df_s.columns), None)
 
-                    if not q_col:
-                        st.error(f"❌ Kolom pertanyaan tidak ditemukan.")
-                        st.stop()
+                if not q_col:
+                    st.error(f"❌ Kolom pertanyaan tidak ditemukan.")
+                    st.stop()
 
-                    parsed_s = []
-                    if imp_tipe == "pg":
-                        key_m = {'a': 0, 'b': 1, 'c': 2, 'd': 3, '0': 0, '1': 1, '2': 2, '3': 3}
-                        for _, r in df_s.iterrows():
-                            if pd.isna(r[q_col]): continue
-                            parsed_s.append({
-                                "pertanyaan": str(r[q_col]),
-                                "opsi": [str(r["opsi_a"]), str(r["opsi_b"]), str(r["opsi_c"]), str(r["opsi_d"])],
-                                "kunci": key_m.get(str(r["kunci"]).strip().lower(), 0)
-                            })
-                    else:
-                        for _, r in df_s.iterrows():
-                            if pd.isna(r[q_col]): continue
-                            parsed_s.append({"pertanyaan": str(r[q_col])})
+                parsed_s = []
+                if imp_tipe == "pg":
+                    key_m = {'a': 0, 'b': 1, 'c': 2, 'd': 3, '0': 0, '1': 1, '2': 2, '3': 3}
+                    for _, r in df_s.iterrows():
+                        if pd.isna(r[q_col]): continue
+                        parsed_s.append({
+                            "pertanyaan": str(r[q_col]),
+                            "opsi": [str(r["opsi_a"]), str(r["opsi_b"]), str(r["opsi_c"]), str(r["opsi_d"])],
+                            "kunci": key_m.get(str(r["kunci"]).strip().lower(), 0)
+                        })
+                else:
+                    for _, r in df_s.iterrows():
+                        if pd.isna(r[q_col]): continue
+                        parsed_s.append({"pertanyaan": str(r[q_col])})
 
-                    db.collection("tugas_pancasila").add({
-                        "judul": imp_judul, "instruksi": imp_instruksi, "tipe": imp_tipe, "target_kelas": imp_target,
-                        "jenis_tugas": imp_jenis, "status": imp_status, "soal": parsed_s, "created_at": firestore.SERVER_TIMESTAMP
-                    })
-                    clear_tugas_cache()
-                    st.success(f"✅ Berhasil! {len(parsed_s)} soal berhasil diimpor.")
-                    st.rerun()
+                db.collection("tugas_pancasila").add({
+                    "judul": imp_judul, "instruksi": imp_instruksi, "tipe": imp_tipe, "target_kelas": imp_target,
+                    "jenis_tugas": imp_jenis, "status": imp_status, "soal": parsed_s, "created_at": firestore.SERVER_TIMESTAMP
+                })
+                clear_tugas_cache()
+                st.success(f"✅ Berhasil! {len(parsed_s)} soal berhasil diimpor.")
+                st.rerun()
 
     elif menu == "📊 Rekap & Penilaian":
         st.header("📊 Rekap & Penilaian Tugas Per Kelas")
@@ -1013,6 +961,7 @@ def render_guru():
             selected_tugas_id = st.selectbox("📝 Pilih Tugas", list(tg_options.keys()), format_func=lambda x: tg_options[x])
             selected_tugas = next(t for t in tugas_kelas if t["id"] == selected_tugas_id)
 
+        # MENGGUNAKAN FIRESTORE AGGREGATION COUNT .count() UNTUK STATISTIK REKAP KELAS
         total_siswa_k = count_siswa_by_kelas(selected_kelas)
         total_submitted_k = count_submitted_by_tugas_kelas(selected_tugas_id, selected_kelas)
         total_belum_k = max(0, total_siswa_k - total_submitted_k)
@@ -1029,14 +978,13 @@ def render_guru():
             st.write(f"👥 Total Siswa: **{total_siswa_k}** | Sudah Submit: **{total_submitted_k}** | Belum Submit: **{total_belum_k}**")
         with col_sub_btn:
             if siswa_belum_submit and st.button("⚡ Submit Paksa Semua Siswa Belum", type="primary", use_container_width=True):
-                if check_click_cooldown(1.5, f"forced_sub_all_{selected_tugas_id}"):
-                    for s_unsub in siswa_belum_submit:
-                        submit_jawaban_siswa(
-                            selected_tugas, s_unsub["username"], s_unsub.get("nama", s_unsub["username"]), 
-                            selected_kelas, answers=[], is_forced=True
-                        )
-                    st.success(f"✅ Berhasil melakukan Submit Paksa untuk {len(siswa_belum_submit)} siswa!")
-                    st.rerun()
+                for s_unsub in siswa_belum_submit:
+                    submit_jawaban_siswa(
+                        selected_tugas, s_unsub["username"], s_unsub.get("nama", s_unsub["username"]), 
+                        selected_kelas, answers=[], is_forced=True
+                    )
+                st.success(f"✅ Berhasil melakukan Submit Paksa untuk {len(siswa_belum_submit)} siswa!")
+                st.rerun()
 
         rekap_rows = []
         is_ulangan_task = selected_tugas.get("jenis_tugas", "Ulangan Harian") == "Ulangan Harian"
@@ -1091,43 +1039,33 @@ def render_guru():
                             else:
                                 st.info(a or "(Kosong)")
 
-                        # Auto Koreksi AI dengan status disabled instan & cooldown
-                        is_ai_running = st.session_state.get(f"is_ai_running_{sub_id}", False)
-                        if selected_tugas.get("tipe") == "essay" and st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}", disabled=is_ai_running):
-                            if not check_click_cooldown(1.5, f"ai_{sub_id}"):
-                                st.warning("⚠️ Proses AI sedang berjalan atau ditekan terlalu cepat. Harap tunggu.")
+                        # INTEGRASI AUTO KOREKSI AI
+                        if selected_tugas.get("tipe") == "essay" and st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}"):
+                            with st.spinner("Menganalisis jawaban dengan AI..."):
+                                val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
+                            if val is not None:
+                                int_val = int(val)
+                                str_fb = str(fb)
+                                st.session_state[val_key] = int_val
+                                st.session_state[cat_key] = str_fb
+                                db.collection("pengerjaan_siswa").document(sub_id).update({
+                                    "nilai": int_val, 
+                                    "catatan_guru": str_fb
+                                })
+                                clear_pengerjaan_cache()
+                                st.success("✅ Nilai dan catatan AI berhasil diperbarui dan disimpan!")
+                                st.rerun()
                             else:
-                                st.session_state[f"is_ai_running_{sub_id}"] = True
-                                with st.spinner("Menganalisis jawaban dengan AI..."):
-                                    val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
-                                st.session_state[f"is_ai_running_{sub_id}"] = False
-                                
-                                if val is not None:
-                                    int_val = int(val)
-                                    str_fb = str(fb)
-                                    st.session_state[val_key] = int_val
-                                    st.session_state[cat_key] = str_fb
-                                    db.collection("pengerjaan_siswa").document(sub_id).update({
-                                        "nilai": int_val, 
-                                        "catatan_guru": str_fb
-                                    })
-                                    clear_pengerjaan_cache()
-                                    st.success("✅ Nilai dan catatan AI berhasil diperbarui dan disimpan!")
-                                    st.rerun()
-                                else:
-                                    st.error(f"❌ Auto Koreksi AI Gagal: {fb}")
+                                st.error(f"❌ Auto Koreksi AI Gagal: {fb}")
 
                         with st.form(key=f"f_eval_{sub_id}"):
                             n_in = st.number_input("Nilai (0-100)", 0, 100, key=val_key)
                             c_in = st.text_area("Catatan Guru", key=cat_key)
                             if st.form_submit_button("💾 Simpan Perubahan"):
-                                if not check_click_cooldown(1.5, f"eval_{sub_id}"):
-                                    st.warning("⚠️ Nilai sedang disimpan, harap tunggu...")
-                                else:
-                                    db.collection("pengerjaan_siswa").document(sub_id).update({"nilai": n_in, "catatan_guru": c_in})
-                                    clear_pengerjaan_cache()
-                                    st.success("✅ Tersimpan!")
-                                    st.rerun()
+                                db.collection("pengerjaan_siswa").document(sub_id).update({"nilai": n_in, "catatan_guru": c_in})
+                                clear_pengerjaan_cache()
+                                st.success("✅ Tersimpan!")
+                                st.rerun()
 
         with t_analisis:
             st.subheader("📈 Analisis Butir Soal & Uji Validitas (PG)")
@@ -1218,58 +1156,9 @@ def render_guru():
                     if sub_map.get(s["username"], {}).get("status") == "in_progress" 
                     and not sub_map.get(s["username"], {}).get("ijin_guru", False)
                 ]
-                
                 if not locked_students:
-                    st.info("ℹ️ Tidak ada siswa yang sedang terkunci.")
+                    st.info("ℹ️ Tidak ada siswa yang terkunci.")
                 else:
-                    st.write(f"⚠️ Terdeteksi **{len(locked_students)} siswa** sedang terkunci / membutuhkan izin.")
-                    
-                    if st.button("🔓 Beri Izin ke SEMUA Siswa Terkunci", type="primary", use_container_width=True):
-                        if check_click_cooldown(1.5, f"grant_all_{selected_tugas_id}"):
-                            batch = db.batch()
-                            for ls in locked_students:
-                                un_l = ls["username"]
-                                doc_ref = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
-                                batch.set(doc_ref, {
-                                    "ijin_guru": True,
-                                    "updated_at": firestore.SERVER_TIMESTAMP
-                                }, merge=True)
-                            batch.commit()
-                            clear_pengerjaan_cache()
-                            st.success(f"✅ Berhasil memberikan izin kepada seluruh ({len(locked_students)}) siswa!")
-                            st.rerun()
-
-                    st.divider()
-
-                    st.markdown("##### 👥 Beri Izin ke Beberapa Siswa Terpilih")
-                    options_map = {
-                        s["username"]: f"{s.get('nama', s['username'])} (@{s['username']}) - Pelanggaran: {sub_map.get(s['username'], {}).get('violation_count', 0)}x" 
-                        for s in locked_students
-                    }
-                    selected_unames = st.multiselect(
-                        "Pilih Siswa yang Ingin Diberi Izin:",
-                        options=list(options_map.keys()),
-                        format_func=lambda x: options_map[x],
-                        key=f"ms_grant_ijin_{selected_tugas_id}"
-                    )
-                    
-                    if st.button("🔓 Beri Izin ke Siswa Terpilih", use_container_width=True, disabled=not selected_unames):
-                        if check_click_cooldown(1.5, f"grant_sel_{selected_tugas_id}"):
-                            batch = db.batch()
-                            for un_l in selected_unames:
-                                doc_ref = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
-                                batch.set(doc_ref, {
-                                    "ijin_guru": True,
-                                    "updated_at": firestore.SERVER_TIMESTAMP
-                                }, merge=True)
-                            batch.commit()
-                            clear_pengerjaan_cache()
-                            st.success(f"✅ Berhasil memberikan izin kepada {len(selected_unames)} siswa terpilih!")
-                            st.rerun()
-
-                    st.divider()
-
-                    st.markdown("##### 👤 Beri Izin Secara Individual")
                     for ls in locked_students:
                         un_l = ls["username"]
                         nm_l = ls.get("nama", un_l)
@@ -1278,14 +1167,13 @@ def render_guru():
                         
                         c_info, c_act = st.columns([3, 1])
                         c_info.write(f"👤 **{nm_l}** (@{un_l}) — Pelanggaran: **{v_c}x**")
-                        if c_act.button("🔓 Beri Izin", key=f"btn_grant_{un_l}"):
-                            if check_click_cooldown(1.5, f"grant_indiv_{un_l}"):
-                                db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}").set({
-                                    "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
-                                }, merge=True)
-                                clear_pengerjaan_cache()
-                                st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
-                                st.rerun()
+                        if c_act.button("🔓 Beri Izin Mengerjakan", key=f"btn_grant_{un_l}"):
+                            db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}").set({
+                                "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
+                            }, merge=True)
+                            clear_pengerjaan_cache()
+                            st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
+                            st.rerun()
 
     elif menu == "📜 Daftar Nilai":
         st.header("📜 Transkrip & Daftar Nilai Siswa")
@@ -1336,7 +1224,7 @@ def render_guru():
             st.download_button("💾 Unduh Rekap Transkrip Nilai (.csv)", csv_data, f"rekap_nilai_kelas_{selected_kelas}.csv", "text/csv", use_container_width=True)
 
 # ==========================================
-# 9. PANEL SISWA
+# 8. PANEL SISWA
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
@@ -1360,13 +1248,13 @@ def render_siswa():
         jenis_tugas = tg.get("jenis_tugas", "Ulangan Harian")
         is_ulangan = (jenis_tugas == "Ulangan Harian")
         storage_key = f"lms_draft_{username_s}_{tg_id}"
-        violation_storage_key = f"lms_vcount_{username_s}_{tg_id}"
 
         if f"quiz_soal_{tg_id}" not in st.session_state:
             st.session_state[f"quiz_soal_{tg_id}"] = tg.get("soal", [])
         soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
 
+        # --- BRIDGE LOCALSTORAGE TO PYTHON SESSION_STATE ---
         draft_bridge_val = st.text_input(
             "Draft Bridge Input", 
             key=f"draft_bridge_val_{tg_id}", 
@@ -1384,13 +1272,33 @@ def render_siswa():
                 pass
 
         if f"quiz_loaded_{tg_id}" not in st.session_state:
+            status_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
+            status_doc = status_ref.get()
+            status_data = status_doc.to_dict() if status_doc.exists else {}
+
             if f"quiz_answers_{tg_id}" not in st.session_state:
                 st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
 
-            if f"violation_count_{tg_id}" not in st.session_state:
+            if is_ulangan:
+                if not status_doc.exists:
+                    status_ref.set({
+                        "username_siswa": username_s, "nama_siswa": nama_s, "kelas_siswa": kelas_s,
+                        "id_tugas": tg_id, "status": "in_progress", "ijin_guru": False,
+                        "violation_count": 0, "updated_at": firestore.SERVER_TIMESTAMP
+                    }, merge=True)
+                    st.session_state[f"ijin_guru_{tg_id}"] = True
+                elif status_data.get("status") == "in_progress":
+                    ijin_db = status_data.get("ijin_guru", False)
+                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_db
+                    if ijin_db:
+                        status_ref.set({"ijin_guru": False}, merge=True)
+                else:
+                    st.session_state[f"ijin_guru_{tg_id}"] = status_data.get("ijin_guru", False)
+                st.session_state[f"violation_count_{tg_id}"] = status_data.get("violation_count", 0)
+            else:
+                st.session_state[f"ijin_guru_{tg_id}"] = True
                 st.session_state[f"violation_count_{tg_id}"] = 0
 
-            st.session_state[f"ijin_guru_{tg_id}"] = True
             st.session_state[f"quiz_page_{tg_id}"] = 0
             st.session_state[f"quiz_loaded_{tg_id}"] = True
 
@@ -1429,14 +1337,13 @@ def render_siswa():
                 const key = "{storage_key}";
                 const data = {answers_json_str};
                 window.parent.localStorage.setItem(key, JSON.stringify(data));
-                window.parent.localStorage.setItem("{violation_storage_key}", "{violation_count}");
             }})();
             </script>
         """, height=0)
 
+        # LOGIKA ANTI-CHEAT BEBAS KUOTA FIREBASE
         if is_ulangan:
-            if violation_count >= 10:
-                st.session_state[f"ijin_guru_{tg_id}"] = False
+            if violation_count >= 10 and not ijin_guru:
                 is_locked = True
 
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
@@ -1446,15 +1353,31 @@ def render_siswa():
 
                     if new_v >= 10:
                         st.session_state[f"ijin_guru_{tg_id}"] = False
-                        st.error("🚨 Anda telah melakukan kecurangan 10 kali! Kuis terkunci secara lokal.")
-                    st.rerun()
+                        
+                        db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}").set({
+                            "username_siswa": username_s, 
+                            "id_tugas": tg_id, 
+                            "violation_count": new_v,
+                            "status": "in_progress", 
+                            "ijin_guru": False,
+                            "updated_at": firestore.SERVER_TIMESTAMP
+                        }, merge=True)
+                        
+                        st.error("🚨 Anda telah melakukan kecurangan 10 kali! Kuis terkunci hingga Guru memberikan izin.")
+                        st.rerun()
+                    else:
+                        st.rerun()
 
         if not is_locked and is_ulangan:
+            v_key_storage = f"lms_vcount_{username_s}_{tg_id}"
             components.html(f"""
                 <script>
                 (function() {{
                     const parentDoc = window.parent.document;
+                    const storageKey = "{v_key_storage}";
                     let lastTriggerViolation = 0;
+
+                    window.parent.sessionStorage.setItem(storageKey, "{violation_count}");
 
                     function getBtnByText(text) {{
                         const buttons = Array.from(parentDoc.querySelectorAll('button'));
@@ -1493,21 +1416,21 @@ def render_siswa():
             """, height=0)
 
         if is_locked:
-            st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda telah mencapai **{violation_count}/10 kali** (atau Anda berpindah layar/tab). Silakan hubungi Guru untuk membuka izin.")
+            st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda telah mencapai **{violation_count}/10 kali** (atau Anda berpindah halaman). Silakan hubungi Guru untuk membuka kunci.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
-                if not check_click_cooldown(1.5, f"check_perm_{tg_id}"):
-                    st.warning("⚠️ Mohon tunggu sejenak sebelum mengecek kembali.")
-                else:
-                    status_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
-                    status_doc = status_ref.get()
-                    if status_doc.exists:
-                        ijin_val = status_doc.to_dict().get("ijin_guru", False)
-                        st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
-                    st.rerun()
+                status_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
+                status_doc = status_ref.get()
+                if status_doc.exists:
+                    ijin_val = status_doc.to_dict().get("ijin_guru", False)
+                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
+                    if ijin_val:
+                        status_ref.set({"ijin_guru": False}, merge=True)
+                st.rerun()
 
         elif is_ulangan and violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/10)**: Terdeteksi keluar dari layar kuis!")
 
+        # HEADER KUIS (Tombol Keluar/Kembali Dihapus)
         st.markdown(f"### 📝 {tg.get('judul')}")
         info_sub = f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Jenis: **{jenis_tugas}** | Terjawab: **{terjawab_count}/{total_soal}**"
         if is_ulangan: info_sub += f" | Pelanggaran: **{violation_count}x**"
@@ -1557,10 +1480,6 @@ def render_siswa():
             if tg.get("tipe") == "pg":
                 opsi_list = soal_item.get("opsi", [])
                 saved_ans = answers[curr_page]
-                
-                if saved_ans is not None and (not isinstance(saved_ans, int) or saved_ans < 0 or saved_ans > 3):
-                    saved_ans = None
-
                 selected_opt = st.radio(
                     "Pilih Jawaban Anda:", options=[0, 1, 2, 3],
                     index=saved_ans if saved_ans is not None else None,
@@ -1581,40 +1500,34 @@ def render_siswa():
 
         st.divider()
 
+        # TOMBOL KUMPULKAN (Hanya Muncul Jika Berada di Soal Terakhir)
         if not is_locked and curr_page == total_soal - 1:
             is_submitting = st.session_state.get(f"is_submitting_{tg_id}", False)
             if st.button("🚀 Kumpulkan Semua Jawaban", key=f"bot_submit_{tg_id}", type="primary", use_container_width=True, disabled=is_submitting):
-                if not check_click_cooldown(1.5, f"submit_{tg_id}"):
-                    st.warning("⚠️ Proses pengumpulkan sedang berlangsung atau tombol ditekan terlalu cepat.")
-                else:
-                    st.session_state[f"is_submitting_{tg_id}"] = True
-                    tg_submit = dict(tg)
-                    tg_submit["soal"] = soal_list
-                    
-                    with st.spinner("Memproses pengumpulkan jawaban ke server..."):
-                        success = submit_jawaban_siswa(
-                            tg_submit, username_s, nama_s, kelas_s, answers, 
-                            is_forced=False, violation_count=violation_count
-                        )
-                    
-                    if success:
-                        components.html(f"""
-                            <script>
-                            window.parent.localStorage.removeItem("{storage_key}");
-                            window.parent.localStorage.removeItem("{violation_storage_key}");
-                            </script>
-                        """, height=0)
+                st.session_state[f"is_submitting_{tg_id}"] = True
+                tg_submit = dict(tg)
+                tg_submit["soal"] = soal_list
+                
+                with st.spinner("Memproses pengumpulkan jawaban..."):
+                    success = submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_forced=False)
+                
+                if success:
+                    components.html(f"""
+                        <script>
+                        window.parent.localStorage.removeItem("{storage_key}");
+                        </script>
+                    """, height=0)
 
-                        st.balloons()
-                        st.success("✅ Jawaban Anda berhasil dikumpulkan!")
-                        st.session_state["active_quiz_id"] = None
-                        for k in [
-                            f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
-                            f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                            f"draft_hydrated_{tg_id}", f"violation_count_{tg_id}", f"ijin_guru_{tg_id}"
-                        ]:
-                            st.session_state.pop(k, None)
-                        st.rerun()
+                    st.balloons()
+                    st.success("✅ Jawaban Anda berhasil dikumpulkan!")
+                    st.session_state["active_quiz_id"] = None
+                    for k in [
+                        f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
+                        f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
+                        f"draft_hydrated_{tg_id}"
+                    ]:
+                        st.session_state.pop(k, None)
+                    st.rerun()
         return
 
     tugas_sub_map = my_subs
@@ -1646,9 +1559,8 @@ def render_siswa():
                     st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | {len(tg.get('soal', []))} Soal")
                     
                     if st.button("🚀 Mulai Kerjakan", key=f"start_{tg['id']}", type="primary"):
-                        if check_click_cooldown(1.5, f"start_quiz_{tg['id']}"):
-                            st.session_state["active_quiz_id"] = tg["id"]
-                            st.rerun()
+                        st.session_state["active_quiz_id"] = tg["id"]
+                        st.rerun()
 
         if tugas_sudah_list:
             st.divider()
@@ -1690,7 +1602,7 @@ def render_siswa():
             st.dataframe(pd.DataFrame(riwayat_rows), use_container_width=True)
 
 # ==========================================
-# 10. MAIN ROUTER
+# 9. MAIN ROUTER
 # ==========================================
 if role == "superadmin":
     render_superadmin()
@@ -1698,4 +1610,3 @@ elif role == "guru":
     render_guru()
 elif role == "siswa":
     render_siswa()
-
