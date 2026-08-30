@@ -66,6 +66,19 @@ st.markdown("""
         cursor: not-allowed !important;
         opacity: 0.65 !important;
     }
+
+    /* Styling khusus Banner Cooldown & Status Izin Guru */
+    .cooldown-banner {
+        background-color: #fff3cd;
+        color: #856404;
+        border: 1px solid #ffeeba;
+        padding: 12px 16px;
+        border-radius: 10px;
+        margin-top: 10px;
+        margin-bottom: 10px;
+        font-weight: 500;
+        text-align: center;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -1494,15 +1507,59 @@ def render_siswa():
 
         if is_locked:
             st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda telah mencapai **{violation_count}/10 kali** (atau Anda berpindah layar/tab). Silakan hubungi Guru untuk membuka izin.")
-            if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
-                if not check_click_cooldown(1.5, f"check_perm_{tg_id}"):
-                    st.warning("⚠️ Mohon tunggu sejenak sebelum mengecek kembali.")
-                else:
+            
+            # -------------------------------------------------------------
+            # INTEGRASI VISUAL TOMBOL CEK DENGAN COOLDOWN & COUNTDOWN 10 DETIK
+            # -------------------------------------------------------------
+            last_chk_key = f"_last_check_perm_{tg_id}"
+            last_chk_time = st.session_state.get(last_chk_key, 0.0)
+            now_time = time.time()
+            elapsed = now_time - last_chk_time
+            remaining = max(0, int(10 - elapsed))
+
+            if remaining > 0:
+                # Banner penjelas jeda waktu
+                st.markdown(
+                    f'<div class="cooldown-banner">⏳ **Harap tunggu {remaining} detik lagi** sebelum dapat mengecek status izin kembali ke server.</div>', 
+                    unsafe_allow_html=True
+                )
+                
+                # Tombol dalam keadaan disabled
+                st.button("🔄 Cek Status Izin Guru (Mohon Tunggu...)", key=f"btn_check_permission_{tg_id}", type="primary", disabled=True, use_container_width=True)
+
+                # Script Countdown Visual Real-Time
+                components.html(f"""
+                    <script>
+                    (function() {{
+                        let timeLeft = {remaining};
+                        const interval = setInterval(function() {{
+                            timeLeft--;
+                            if (timeLeft <= 0) {{
+                                clearInterval(interval);
+                                window.parent.location.reload();
+                            }}
+                        }}, 1000);
+                    }})();
+                    </script>
+                """, height=0)
+
+            else:
+                st.caption("💡 Tekan tombol di bawah untuk memeriksa apakah Guru telah memberikan izin akses:")
+                if st.button("🔄 Cek Status Izin Guru Sekarang", key=f"btn_check_permission_{tg_id}", type="primary", use_container_width=True):
+                    # Set cooldown timestamp
+                    st.session_state[last_chk_key] = time.time()
+
                     status_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
                     status_doc = status_ref.get()
                     if status_doc.exists:
                         ijin_val = status_doc.to_dict().get("ijin_guru", False)
                         st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
+                        if ijin_val:
+                            st.success("✅ Izin telah diberikan oleh Guru! Membuka kunci...")
+                        else:
+                            st.warning("⚠️ Status pengerjaan masih terkunci. Guru belum memberikan izin.")
+                    else:
+                        st.info("ℹ️ Data pengerjaan belum tercatat di server.")
                     st.rerun()
 
         elif is_ulangan and violation_count >= 5:
@@ -1518,7 +1575,7 @@ def render_siswa():
         q_options = list(range(total_soal))
         def format_q_num(idx):
             ans = answers[idx]
-            is_filled = ans is not None and (not isinstance(ans, str) or ans.strip() != "")
+            is_filled = ans is not None and (not isinstance(a, str) or a.strip() != "")
             status_str = "🟢 (Terjawab)" if is_filled else "⚪ (Belum)"
             return f"Soal Nomor {idx + 1} {status_str}"
 
