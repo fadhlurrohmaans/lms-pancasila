@@ -1,4 +1,3 @@
-
 import os
 import json
 import io
@@ -1699,7 +1698,4 @@ elif role == "guru":
     render_guru()
 elif role == "siswa":
     render_siswa()
-app.py
-General Info
-TypeText
-Displaying app.py.
+
