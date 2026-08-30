@@ -1795,7 +1795,3 @@ elif role == "guru":
     render_guru()
 elif role == "siswa":
     render_siswa()
-app.py
-Info Umum
-JenisTeks
-Menampilkan app.py.
