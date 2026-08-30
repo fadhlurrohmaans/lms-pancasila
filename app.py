@@ -16,7 +16,7 @@ import pandas as pd
 import google.generativeai as genai
 
 # ==========================================
-# 1. CONFIG & STYLING (Termasuk CSS Opacity & Overlay Anti-Cheat Buttons)
+# 1. CONFIG & STYLING
 # ==========================================
 st.set_page_config(
     page_title="LMS Pendidikan Pancasila",
@@ -52,12 +52,10 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 20px; font-weight: 600; }
     .stTabs [aria-selected="true"] { background-color: #1e3c72 !important; color: white !important; }
     
-    /* Hide localStorage bridge input element */
     div[data-testid="stTextInput"]:has(input[aria-label="Draft Bridge Input"]) {
         display: none !important;
     }
 
-    /* Melarang interaksi kursor secara instan pada tombol yang sedang diproses atau di-disable */
     .stButton > button:disabled,
     .stDownloadButton > button:disabled,
     button:disabled,
@@ -67,7 +65,6 @@ st.markdown("""
         opacity: 0.65 !important;
     }
 
-    /* Styling khusus Banner Cooldown & Status Izin Guru */
     .cooldown-banner {
         background-color: #fff3cd;
         color: #856404;
@@ -80,7 +77,6 @@ st.markdown("""
         text-align: center;
     }
 
-    /* Target CSS Khusus Tombol Pelanggaran & Auto-Rerun */
     .hidden-trigger-container {
         display: none !important;
         visibility: hidden !important;
@@ -97,7 +93,6 @@ st.markdown("""
 # 2. CLICK COOLDOWN HELPER
 # ==========================================
 def check_click_cooldown(cooldown_seconds=1.5, key="global"):
-    """Mencatat timestamp klik terakhir dan menolak aksi yang terlalu cepat (kurang dari cooldown_seconds)"""
     now = time.time()
     state_key = f"_last_click_{key}"
     last_click = st.session_state.get(state_key, 0.0)
@@ -127,7 +122,7 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
-# --- FIRESTORE AGGREGATION QUERY HELPERS (.count()) HEBAT KUOTA ---
+# --- FIRESTORE AGGREGATION QUERY HELPERS (.count()) ---
 @st.cache_data(ttl=60)
 def count_siswa_by_kelas(kelas):
     try:
@@ -186,7 +181,7 @@ def get_guru_dashboard_stats(pilihan_kelas_tuple):
         "total_submitted": total_submitted
     }
 
-# --- OPTIMIZED CACHED READ FUNCTIONS (HIGH TTL) ---
+# --- OPTIMIZED CACHED READ FUNCTIONS ---
 @st.cache_data(ttl=86400)
 def ensure_default_admin_created():
     admin_ref = db.collection("users").document("admin")
@@ -230,9 +225,6 @@ def get_all_materi_cached():
 
 # --- HYBRID READ (CACHE LOKAL + THRESHOLD BYPASS) ---
 def get_student_exam_status(username, tg_id, bypass_firestore=False, violation_threshold=5):
-    """
-    Membaca status ujian siswa menggunakan pendekatan Hybrid.
-    """
     cache_key_state = f"local_exam_status_{username}_{tg_id}"
     local_data = st.session_state.get(cache_key_state)
     
@@ -400,7 +392,7 @@ def delete_tugas_and_submissions(tugas_id):
     clear_pengerjaan_cache()
 
 # ==========================================
-# 4. AI EVALUATION HELPER (FAST & LIGHTWEIGHT)
+# 4. AI EVALUATION HELPER
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -1280,9 +1272,6 @@ def render_guru():
                 else:
                     st.write(f"⚠️ Terdeteksi **{len(locked_students)} siswa** sedang terkunci / membutuhkan izin.")
                     
-                    # -------------------------------------------------------------
-                    # PERBAIKAN: Reset violation_count jika >= 10 agar bisa lanjut
-                    # -------------------------------------------------------------
                     if st.button("🔓 Beri Izin ke SEMUA Siswa Terkunci", type="primary", use_container_width=True):
                         if check_click_cooldown(1.5, f"grant_all_{selected_tugas_id}"):
                             batch = db.batch()
@@ -1437,12 +1426,10 @@ def render_siswa():
         soal_list = st.session_state[f"quiz_soal_{tg_id}"]
         total_soal = len(soal_list)
 
-        # Selalu bypass Firestore jika terjadi masalah penguncian agar real-time mendapatkan izin guru
         server_status = get_student_exam_status(username_s, tg_id, bypass_firestore=True)
         violation_count = server_status["violation_count"]
         ijin_guru = server_status["ijin_guru"]
         
-        # Logika terkunci: Terkunci jika tidak dapat izin guru ATAU pelanggaran di atas sama dengan 10
         is_locked = (not ijin_guru or violation_count >= 10) if is_ulangan else False
 
         draft_bridge_val = st.text_input(
@@ -1504,11 +1491,6 @@ def render_siswa():
             </script>
         """, height=0)
 
-        # -------------------------------------------------------------
-        # PERBAIKAN 1: Tombol Trigger Ditaruh Dalam Div Sembunyi
-        # HTML + CSS inline kelas hidden-trigger-container menjamin
-        # tombol sepenuhnya tersembunyi dari antarmuka pengguna
-        # -------------------------------------------------------------
         if is_ulangan:
             st.markdown('<div class="hidden-trigger-container">', unsafe_allow_html=True)
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}"):
@@ -1542,9 +1524,6 @@ def render_siswa():
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # -------------------------------------------------------------
-        # DETEKSI PENGALIHAN TAB / LAYAR (JAVASCRIPT)
-        # -------------------------------------------------------------
         if not is_locked and is_ulangan:
             components.html(f"""
                 <script>
@@ -1576,16 +1555,12 @@ def render_siswa():
                 </script>
             """, height=0)
 
-        # -------------------------------------------------------------
-        # TAMPILAN JIKA STATUS TERKUNCI (LOCKDOWN DISPLAY)
-        # -------------------------------------------------------------
         if is_locked:
             st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda tersimpan di server sebanyak **{violation_count}/10 kali** (terdeteksi berpindah tab/layar). Halaman ini terkunci dan tidak bisa diakali dengan refresh browser. Silakan hubungi Guru untuk membuka izin.")
             
             st.caption("💡 Tekan tombol di bawah untuk memeriksa apakah Guru telah memberikan izin akses:")
             
             if st.button("🔄 Cek Status Izin Guru Sekarang", key=f"btn_check_permission_{tg_id}", type="primary", use_container_width=True):
-                # Bersihkan cache lokal pengerjaan untuk langsung mengambil status izin terbaru dari server
                 st.session_state.pop(f"local_exam_status_{username_s}_{tg_id}", None)
                 status = get_student_exam_status(username_s, tg_id, bypass_firestore=True)
                 if status["ijin_guru"] and status["violation_count"] < 10:
