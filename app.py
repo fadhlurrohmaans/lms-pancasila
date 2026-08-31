@@ -255,7 +255,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     total_soal = len(soal_list)
     
     if is_violation:
-        catatan = "⚠️ Submit Otomatis (Mencapai Limit Maksimal Pelanggaran 10x)"
+        catatan = "⚠️ Submit Otomatis (Mencapai Limit Maksimal Pelanggaran)"
     elif is_forced:
         catatan = "Di-submit Paksa oleh Guru"
     else:
@@ -1274,10 +1274,14 @@ def render_siswa():
             if f"quiz_answers_{tg_id}" not in st.session_state:
                 st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
 
+            # Ambil riwayat pelanggaran dan izin dari database jika ada
+            existing_sub = my_subs.get(tg_id, {})
             if f"violation_count_{tg_id}" not in st.session_state:
-                st.session_state[f"violation_count_{tg_id}"] = 0
+                st.session_state[f"violation_count_{tg_id}"] = existing_sub.get("violation_count", 0)
 
-            st.session_state[f"ijin_guru_{tg_id}"] = True
+            if f"ijin_guru_{tg_id}" not in st.session_state:
+                st.session_state[f"ijin_guru_{tg_id}"] = existing_sub.get("ijin_guru", True)
+
             st.session_state[f"quiz_page_{tg_id}"] = 0
             st.session_state[f"quiz_loaded_{tg_id}"] = True
             
@@ -1326,7 +1330,7 @@ def render_siswa():
             """, height=0)
 
         if is_ulangan:
-            if violation_count >= 10 and not ijin_guru:
+            if violation_count > 0 and violation_count % 10 == 0 and not ijin_guru:
                 is_locked = True
 
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
@@ -1334,7 +1338,8 @@ def render_siswa():
                     st.session_state[f"violation_count_{tg_id}"] += 1
                     new_v = st.session_state[f"violation_count_{tg_id}"]
 
-                    if new_v >= 10:
+                    # Setiap kelipatan 10 kali pelanggaran, kuis akan terkunci
+                    if new_v % 10 == 0:
                         st.session_state[f"ijin_guru_{tg_id}"] = False
                         
                         db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}").set({
@@ -1346,9 +1351,16 @@ def render_siswa():
                             "updated_at": firestore.SERVER_TIMESTAMP
                         }, merge=True)
                         
-                        st.error("🚨 Anda telah melakukan kecurangan 10 kali! Kuis terkunci hingga Guru memberikan izin.")
+                        st.error(f"🚨 Anda telah melakukan {new_v} kali pelanggaran! Kuis terkunci hingga Guru memberikan izin.")
                         st.rerun()
                     else:
+                        db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}").set({
+                            "username_siswa": username_s, 
+                            "id_tugas": tg_id, 
+                            "violation_count": new_v,
+                            "status": "in_progress", 
+                            "updated_at": firestore.SERVER_TIMESTAMP
+                        }, merge=True)
                         st.rerun()
 
         if not is_locked and is_ulangan:
@@ -1399,18 +1411,20 @@ def render_siswa():
             """, height=0)
 
         if is_locked:
-            st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda telah mencapai **{violation_count}/10 kali** (atau Anda berpindah halaman). Silakan hubungi Guru untuk membuka kunci.")
+            st.error(f"🔒 **ULANGAN HARIAN TERKUNCI**: Pelanggaran Anda telah mencapai **{violation_count} kali** (atau Anda berpindah halaman). Silakan hubungi Guru untuk membuka kunci.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
                 status_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
                 status_doc = status_ref.get()
                 if status_doc.exists:
-                    ijin_val = status_doc.to_dict().get("ijin_guru", False)
+                    doc_data = status_doc.to_dict()
+                    ijin_val = doc_data.get("ijin_guru", False)
                     st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
-                    if ijin_val:
-                        st.session_state[f"violation_count_{tg_id}"] = 0
+                    # Pertahankan hitungan pelanggaran eksisting tanpa reset ke 0
+                    if "violation_count" in doc_data:
+                        st.session_state[f"violation_count_{tg_id}"] = doc_data["violation_count"]
                 st.rerun()
-        elif is_ulangan and violation_count >= 5:
-            st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/10)**: Terdeteksi keluar dari layar kuis!")
+        elif is_ulangan and violation_count > 0:
+            st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}x)**: Terdeteksi keluar dari layar kuis!")
 
         st.markdown(f"### 📝 {tg.get('judul')}")
         info_sub = f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Jenis: **{jenis_tugas}** | Terjawab: **{terjawab_count}/{total_soal}**"
