@@ -961,7 +961,6 @@ def render_guru():
             selected_tugas_id = st.selectbox("📝 Pilih Tugas", list(tg_options.keys()), format_func=lambda x: tg_options[x])
             selected_tugas = next(t for t in tugas_kelas if t["id"] == selected_tugas_id)
 
-        # MENGGUNAKAN FIRESTORE AGGREGATION COUNT .count() UNTUK STATISTIK REKAP KELAS
         total_siswa_k = count_siswa_by_kelas(selected_kelas)
         total_submitted_k = count_submitted_by_tugas_kelas(selected_tugas_id, selected_kelas)
         total_belum_k = max(0, total_siswa_k - total_submitted_k)
@@ -1039,7 +1038,6 @@ def render_guru():
                             else:
                                 st.info(a or "(Kosong)")
 
-                        # INTEGRASI AUTO KOREKSI AI
                         if selected_tugas.get("tipe") == "essay" and st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}"):
                             with st.spinner("Menganalisis jawaban dengan AI..."):
                                 val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
@@ -1248,6 +1246,7 @@ def render_siswa():
         jenis_tugas = tg.get("jenis_tugas", "Ulangan Harian")
         is_ulangan = (jenis_tugas == "Ulangan Harian")
         storage_key = f"lms_draft_{username_s}_{tg_id}"
+        violation_storage_key = f"lms_vcount_{username_s}_{tg_id}"
 
         if f"quiz_soal_{tg_id}" not in st.session_state:
             st.session_state[f"quiz_soal_{tg_id}"] = tg.get("soal", [])
@@ -1270,22 +1269,22 @@ def render_siswa():
                     st.rerun()
             except Exception:
                 pass
-if f"quiz_loaded_{tg_id}" not in st.session_state:
-    if f"quiz_answers_{tg_id}" not in st.session_state:
-        st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
 
-    if f"violation_count_{tg_id}" not in st.session_state:
-        st.session_state[f"violation_count_{tg_id}"] = 0
+        if f"quiz_loaded_{tg_id}" not in st.session_state:
+            if f"quiz_answers_{tg_id}" not in st.session_state:
+                st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
 
-    st.session_state[f"ijin_guru_{tg_id}"] = True
-    st.session_state[f"quiz_page_{tg_id}"] = 0
-    st.session_state[f"quiz_loaded_{tg_id}"] = True
-    
-    # Jika tidak ada bridge input (kuis baru dimulai dari awal), tandai hydration selesai
-    if not draft_bridge_val:
-        st.session_state[f"draft_hydrated_{tg_id}"] = True
-        
-            if not st.session_state.get(f"draft_hydrated_{tg_id}"):
+            if f"violation_count_{tg_id}" not in st.session_state:
+                st.session_state[f"violation_count_{tg_id}"] = 0
+
+            st.session_state[f"ijin_guru_{tg_id}"] = True
+            st.session_state[f"quiz_page_{tg_id}"] = 0
+            st.session_state[f"quiz_loaded_{tg_id}"] = True
+            
+            if not draft_bridge_val:
+                st.session_state[f"draft_hydrated_{tg_id}"] = True
+
+        if not st.session_state.get(f"draft_hydrated_{tg_id}"):
             components.html(f"""
                 <script>
                 (function() {{
@@ -1313,21 +1312,19 @@ if f"quiz_loaded_{tg_id}" not in st.session_state:
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
         is_locked = (not ijin_guru) if is_ulangan else False
 
-        # HANYA simpan ke localStorage JIKA draf lama sudah selesai dibaca/dipulihkan
-if st.session_state.get(f"draft_hydrated_{tg_id}", False):
-    answers_json_str = json.dumps(answers)
-    components.html(f"""
-        <script>
-        (function() {{
-            const key = "{storage_key}";
-            const data = {answers_json_str};
-            window.parent.localStorage.setItem(key, JSON.stringify(data));
-            window.parent.localStorage.setItem("{violation_storage_key}", "{violation_count}");
-        }})();
-        </script>
-    """, height=0)
-    
-        # LOGIKA ANTI-CHEAT BEBAS KUOTA FIREBASE
+        if st.session_state.get(f"draft_hydrated_{tg_id}", False):
+            answers_json_str = json.dumps(answers)
+            components.html(f"""
+                <script>
+                (function() {{
+                    const key = "{storage_key}";
+                    const data = {answers_json_str};
+                    window.parent.localStorage.setItem(key, JSON.stringify(data));
+                    window.parent.localStorage.setItem("{violation_storage_key}", "{violation_count}");
+                }})();
+                </script>
+            """, height=0)
+
         if is_ulangan:
             if violation_count >= 10 and not ijin_guru:
                 is_locked = True
@@ -1407,16 +1404,14 @@ if st.session_state.get(f"draft_hydrated_{tg_id}", False):
                 status_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
                 status_doc = status_ref.get()
                 if status_doc.exists:
-    ijin_val = status_doc.to_dict().get("ijin_guru", False)
-    st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
-    if ijin_val:
-        # Reset hitungan pelanggaran agar kuis tidak langsung terkunci lagi
-        st.session_state[f"violation_count_{tg_id}"] = 0
-st.rerun()
+                    ijin_val = status_doc.to_dict().get("ijin_guru", False)
+                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
+                    if ijin_val:
+                        st.session_state[f"violation_count_{tg_id}"] = 0
+                st.rerun()
         elif is_ulangan and violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/10)**: Terdeteksi keluar dari layar kuis!")
 
-        # HEADER KUIS (Tombol Keluar/Kembali Dihapus)
         st.markdown(f"### 📝 {tg.get('judul')}")
         info_sub = f"Tipe: **{tg.get('tipe', 'pg').upper()}** | Jenis: **{jenis_tugas}** | Terjawab: **{terjawab_count}/{total_soal}**"
         if is_ulangan: info_sub += f" | Pelanggaran: **{violation_count}x**"
@@ -1486,7 +1481,6 @@ st.rerun()
 
         st.divider()
 
-        # TOMBOL KUMPULKAN (Hanya Muncul Jika Berada di Soal Terakhir)
         if not is_locked and curr_page == total_soal - 1:
             is_submitting = st.session_state.get(f"is_submitting_{tg_id}", False)
             if st.button("🚀 Kumpulkan Semua Jawaban", key=f"bot_submit_{tg_id}", type="primary", use_container_width=True, disabled=is_submitting):
