@@ -1270,39 +1270,22 @@ def render_siswa():
                     st.rerun()
             except Exception:
                 pass
+if f"quiz_loaded_{tg_id}" not in st.session_state:
+    if f"quiz_answers_{tg_id}" not in st.session_state:
+        st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
 
-        if f"quiz_loaded_{tg_id}" not in st.session_state:
-            status_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
-            status_doc = status_ref.get()
-            status_data = status_doc.to_dict() if status_doc.exists else {}
+    if f"violation_count_{tg_id}" not in st.session_state:
+        st.session_state[f"violation_count_{tg_id}"] = 0
 
-            if f"quiz_answers_{tg_id}" not in st.session_state:
-                st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
-
-            if is_ulangan:
-                if not status_doc.exists:
-                    status_ref.set({
-                        "username_siswa": username_s, "nama_siswa": nama_s, "kelas_siswa": kelas_s,
-                        "id_tugas": tg_id, "status": "in_progress", "ijin_guru": False,
-                        "violation_count": 0, "updated_at": firestore.SERVER_TIMESTAMP
-                    }, merge=True)
-                    st.session_state[f"ijin_guru_{tg_id}"] = True
-                elif status_data.get("status") == "in_progress":
-                    ijin_db = status_data.get("ijin_guru", False)
-                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_db
-                    if ijin_db:
-                        status_ref.set({"ijin_guru": False}, merge=True)
-                else:
-                    st.session_state[f"ijin_guru_{tg_id}"] = status_data.get("ijin_guru", False)
-                st.session_state[f"violation_count_{tg_id}"] = status_data.get("violation_count", 0)
-            else:
-                st.session_state[f"ijin_guru_{tg_id}"] = True
-                st.session_state[f"violation_count_{tg_id}"] = 0
-
-            st.session_state[f"quiz_page_{tg_id}"] = 0
-            st.session_state[f"quiz_loaded_{tg_id}"] = True
-
-        if not st.session_state.get(f"draft_hydrated_{tg_id}"):
+    st.session_state[f"ijin_guru_{tg_id}"] = True
+    st.session_state[f"quiz_page_{tg_id}"] = 0
+    st.session_state[f"quiz_loaded_{tg_id}"] = True
+    
+    # Jika tidak ada bridge input (kuis baru dimulai dari awal), tandai hydration selesai
+    if not draft_bridge_val:
+        st.session_state[f"draft_hydrated_{tg_id}"] = True
+        
+            if not st.session_state.get(f"draft_hydrated_{tg_id}"):
             components.html(f"""
                 <script>
                 (function() {{
@@ -1330,17 +1313,20 @@ def render_siswa():
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
         is_locked = (not ijin_guru) if is_ulangan else False
 
-        answers_json_str = json.dumps(answers)
-        components.html(f"""
-            <script>
-            (function() {{
-                const key = "{storage_key}";
-                const data = {answers_json_str};
-                window.parent.localStorage.setItem(key, JSON.stringify(data));
-            }})();
-            </script>
-        """, height=0)
-
+        # HANYA simpan ke localStorage JIKA draf lama sudah selesai dibaca/dipulihkan
+if st.session_state.get(f"draft_hydrated_{tg_id}", False):
+    answers_json_str = json.dumps(answers)
+    components.html(f"""
+        <script>
+        (function() {{
+            const key = "{storage_key}";
+            const data = {answers_json_str};
+            window.parent.localStorage.setItem(key, JSON.stringify(data));
+            window.parent.localStorage.setItem("{violation_storage_key}", "{violation_count}");
+        }})();
+        </script>
+    """, height=0)
+    
         # LOGIKA ANTI-CHEAT BEBAS KUOTA FIREBASE
         if is_ulangan:
             if violation_count >= 10 and not ijin_guru:
@@ -1421,12 +1407,12 @@ def render_siswa():
                 status_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
                 status_doc = status_ref.get()
                 if status_doc.exists:
-                    ijin_val = status_doc.to_dict().get("ijin_guru", False)
-                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
-                    if ijin_val:
-                        status_ref.set({"ijin_guru": False}, merge=True)
-                st.rerun()
-
+    ijin_val = status_doc.to_dict().get("ijin_guru", False)
+    st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
+    if ijin_val:
+        # Reset hitungan pelanggaran agar kuis tidak langsung terkunci lagi
+        st.session_state[f"violation_count_{tg_id}"] = 0
+st.rerun()
         elif is_ulangan and violation_count >= 5:
             st.warning(f"⚠️ **PERINGATAN PELANGGARAN ({violation_count}/10)**: Terdeteksi keluar dari layar kuis!")
 
