@@ -1352,16 +1352,20 @@ def render_siswa():
             # Deteksi Refresh atau Keluar Halaman (Sesudah Pengerjaan Dimulai)
             if f"quiz_session_active_{tg_id}" not in st.session_state:
                 if existing_sub.get("status") == "in_progress":
-                    # Terdeteksi Refresh / Keluar Halaman -> Kunci Kuis & minta izin Guru
+                    # Terdeteksi Refresh / Keluar Halaman -> Tambah hitungan pelanggaran
                     v_count += 1
-                    ijin_val = False
+                    
+                    # Kunci HANYA jika jumlah pelanggaran telah mencapai 10x atau lebih
+                    if v_count >= 10:
+                        ijin_val = False
+                    
                     doc_ref.set({
                         "username_siswa": username_s,
                         "nama_siswa": nama_s,
                         "kelas_siswa": kelas_s,
                         "id_tugas": tg_id,
                         "status": "in_progress",
-                        "ijin_guru": False,
+                        "ijin_guru": ijin_val,
                         "violation_count": v_count,
                         "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
                         "updated_at": firestore.SERVER_TIMESTAMP
@@ -1402,14 +1406,18 @@ def render_siswa():
                 if not is_locked:
                     st.session_state[f"violation_count_{tg_id}"] += 1
                     new_v = st.session_state[f"violation_count_{tg_id}"]
-                    st.session_state[f"ijin_guru_{tg_id}"] = False
                     
+                    # Kunci HANYA jika jumlah pelanggaran telah mencapai 10x atau lebih
+                    should_lock = new_v >= 10
+                    ijin_status = False if should_lock else st.session_state.get(f"ijin_guru_{tg_id}", True)
+                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_status
+
                     doc_ref.set({
                         "username_siswa": username_s, 
                         "id_tugas": tg_id, 
                         "violation_count": new_v,
                         "status": "in_progress", 
-                        "ijin_guru": False,
+                        "ijin_guru": ijin_status,
                         "jawaban": answers,
                         "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
@@ -1459,9 +1467,9 @@ def render_siswa():
                     </script>
                 """, height=0)
 
-        # Tampilan jika soal terkunci (Kena Refresh / Keluar / Pelanggaran)
+        # Tampilan jika soal terkunci (Mencapai Limit Pelanggaran 10x)
         if is_locked:
-            st.error(f"🔒 **SOAL TERKUNCI**: Anda terdeteksi melakukan **refresh / keluar dari halaman** atau berpindah layar! Jawaban yang sudah terisi telah tersimpan aman. Silakan hubungi Guru untuk meminta izin melanjutkan mengerjakan soal.")
+            st.error(f"🔒 **SOAL TERKUNCI**: Anda telah mencapai limit **10x pelanggaran** (pindah tab, refresh, atau keluar dari halaman)! Jawaban yang sudah terisi telah tersimpan aman. Silakan hubungi Guru untuk meminta izin membuka kunci.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
                 status_doc = doc_ref.get()
                 if status_doc.exists:
@@ -1572,7 +1580,7 @@ def render_siswa():
                 tg_submit = dict(tg)
                 tg_submit["soal"] = soal_list
                 
-                with st.spinner("Memproses pengumpulan jawaban..."):
+                with st.spinner("Memproses pengumpulkan jawaban..."):
                     success = submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_forced=False)
                 
                 if success:
