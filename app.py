@@ -1324,16 +1324,28 @@ def render_siswa():
             # Deteksi Refresh / Keluar Halaman (Sesi Browser Ter-reset)
             if f"quiz_session_active_{tg_id}" not in st.session_state:
                 if existing_sub.get("status") == "in_progress":
-                    # Terdeteksi Refresh / Keluar Halaman -> Kunci Kuis & Minta Izin Guru
                     v_count += 1
-                    ijin_val = False
+                    
+                    # 1. Cek jika total pelanggaran mencapai/melewati 15 (Submit Otomatis)
+                    if v_count >= 15:
+                        tg_submit = dict(tg)
+                        tg_submit["soal"] = soal_list
+                        submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, st.session_state[f"quiz_answers_{tg_id}"], is_violation=True)
+                        st.session_state["active_quiz_id"] = None
+                        clear_pengerjaan_cache()
+                        st.rerun()
+                    
+                    # 2. Cek jika pelanggaran mencapai 10x (Kunci sampai diizinkan guru)
+                    elif v_count >= 10:
+                        ijin_val = False
+
                     doc_ref.set({
                         "username_siswa": username_s,
                         "nama_siswa": nama_s,
                         "kelas_siswa": kelas_s,
                         "id_tugas": tg_id,
                         "status": "in_progress",
-                        "ijin_guru": False,
+                        "ijin_guru": ijin_val,
                         "violation_count": v_count,
                         "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
                         "updated_at": firestore.SERVER_TIMESTAMP
@@ -1368,24 +1380,55 @@ def render_siswa():
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
         is_locked = not ijin_guru
 
-        # Deteksi otomatis Pindah Tab / Layar Blur (Menambah Pelanggaran TANPA Mengunci Soal)
+        # Deteksi otomatis Pindah Tab / Layar Blur (Menambah Pelanggaran)
         if is_ulangan:
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
                 if not is_locked:
-                    # Tambah jumlah pelanggaran tanpa mengunci soal (ijin_guru tetap True)
                     st.session_state[f"violation_count_{tg_id}"] += 1
                     new_v = st.session_state[f"violation_count_{tg_id}"]
                     
-                    doc_ref.set({
-                        "username_siswa": username_s, 
-                        "id_tugas": tg_id, 
-                        "violation_count": new_v,
-                        "status": "in_progress", 
-                        "jawaban": answers,
-                        "updated_at": firestore.SERVER_TIMESTAMP
-                    }, merge=True)
-                    clear_pengerjaan_cache()
-                    st.rerun()
+                    # LOGIKA UTAMA PELANGGARAN:
+                    # A. Total 15 Pelanggaran (10 awal + 5 setelah diizinkan Guru) -> Submit Otomatis
+                    if new_v >= 15:
+                        tg_submit = dict(tg)
+                        tg_submit["soal"] = soal_list
+                        submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_violation=True)
+                        st.session_state["active_quiz_id"] = None
+                        for k in [
+                            f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
+                            f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
+                            f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}"
+                        ]:
+                            st.session_state.pop(k, None)
+                        st.rerun()
+
+                    # B. Mencapai 10 Pelanggaran -> Kunci Soal & Perlu Izin Guru
+                    elif new_v >= 10 and st.session_state.get(f"ijin_guru_{tg_id}", True):
+                        st.session_state[f"ijin_guru_{tg_id}"] = False
+                        doc_ref.set({
+                            "username_siswa": username_s, 
+                            "id_tugas": tg_id, 
+                            "violation_count": new_v,
+                            "status": "in_progress", 
+                            "ijin_guru": False,
+                            "jawaban": answers,
+                            "updated_at": firestore.SERVER_TIMESTAMP
+                        }, merge=True)
+                        clear_pengerjaan_cache()
+                        st.rerun()
+
+                    # C. Pelanggaran standar di bawah batas terkunci
+                    else:
+                        doc_ref.set({
+                            "username_siswa": username_s, 
+                            "id_tugas": tg_id, 
+                            "violation_count": new_v,
+                            "status": "in_progress", 
+                            "jawaban": answers,
+                            "updated_at": firestore.SERVER_TIMESTAMP
+                        }, merge=True)
+                        clear_pengerjaan_cache()
+                        st.rerun()
 
             if not is_locked:
                 components.html(f"""
@@ -1430,9 +1473,9 @@ def render_siswa():
                     </script>
                 """, height=0)
 
-        # Tampilan jika soal terkunci akibat Refresh / Keluar Halaman
+        # Tampilan jika soal terkunci akibat mencapai 10x Pelanggaran atau Refresh Halaman
         if is_locked:
-            st.error(f"🔒 **SOAL TERKUNCI**: Anda terdeteksi melakukan **refresh / keluar dari halaman**! Jawaban yang sudah terisi telah tersimpan aman. Silakan hubungi Guru untuk meminta izin melanjutkan mengerjakan soal.")
+            st.error(f"🔒 **SOAL TERKUNCI**: Anda telah melakukan **{violation_count}x pelanggaran/refresh** (Batas terkunci: 10x)! Jawaban yang sudah terisi telah tersimpan aman. Silakan hubungi Guru untuk meminta izin melanjutkan mengerjakan soal.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
                 status_doc = doc_ref.get()
                 if status_doc.exists:
