@@ -1185,23 +1185,23 @@ def render_guru():
             else:
                 col_all, col_sel = st.columns(2)
 
-                # 1. Beri Izin ke Semua Siswa Terkunci Sekaligus (Tanpa Reset Pelanggaran)
+                # 1. Beri Izin ke Semua Siswa Terkunci Sekaligus (Reset Pelanggaran -> 0)
                 with col_all:
                     st.markdown("**1️⃣ Beri Izin Semua Siswa**")
-                    st.caption("Membuka kunci pengerjaan tanpa mereset hitungan pelanggaran untuk seluruh siswa terkunci.")
+                    st.caption("Membuka kunci pengerjaan & mereset hitungan pelanggaran menjadi 0 untuk seluruh siswa terkunci.")
                     if st.button("🔓 Beri Izin Semua Siswa Terkunci", type="primary", use_container_width=True):
                         operations = []
                         for ls in locked_students:
                             un_l = ls["username"]
                             doc_ref_l = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
-                            operations.append(('set', doc_ref_l, {"ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP}, True))
+                            operations.append(('set', doc_ref_l, {"ijin_guru": True, "violation_count": 0, "updated_at": firestore.SERVER_TIMESTAMP}, True))
                         
                         commit_in_chunks(operations)
                         clear_pengerjaan_cache()
-                        st.success(f"✅ Berhasil memberikan izin untuk seluruh ({len(locked_students)}) siswa!")
+                        st.success(f"✅ Berhasil memberikan izin & mereset pelanggaran untuk seluruh ({len(locked_students)}) siswa!")
                         st.rerun()
 
-                # 2. Beri Izin ke Beberapa Siswa Terpilih (Multiselect) (Tanpa Reset Pelanggaran)
+                # 2. Beri Izin ke Beberapa Siswa Terpilih (Multiselect) (Reset Pelanggaran -> 0)
                 with col_sel:
                     st.markdown("**2️⃣ Beri Izin Beberapa Siswa**")
                     options_map = {ls["username"]: f"{ls.get('nama', ls['username'])} (@{ls['username']})" for ls in locked_students}
@@ -1216,18 +1216,18 @@ def render_guru():
                             operations = []
                             for un_l in selected_unames:
                                 doc_ref_l = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
-                                operations.append(('set', doc_ref_l, {"ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP}, True))
+                                operations.append(('set', doc_ref_l, {"ijin_guru": True, "violation_count": 0, "updated_at": firestore.SERVER_TIMESTAMP}, True))
                             
                             commit_in_chunks(operations)
                             clear_pengerjaan_cache()
-                            st.success(f"✅ Berhasil memberikan izin untuk {len(selected_unames)} siswa terpilih!")
+                            st.success(f"✅ Berhasil memberikan izin & mereset pelanggaran untuk {len(selected_unames)} siswa terpilih!")
                             st.rerun()
                         else:
                             st.warning("⚠️ Silakan pilih minimal satu siswa terlebih dahulu.")
 
                 st.divider()
 
-                # 3. Beri Izin Satu per Satu Siswa (Tanpa Reset Pelanggaran)
+                # 3. Beri Izin Satu per Satu Siswa (Reset Pelanggaran -> 0)
                 st.markdown("**3️⃣ Beri Izin Satu per Satu Siswa**")
                 for ls in locked_students:
                     un_l = ls["username"]
@@ -1239,10 +1239,10 @@ def render_guru():
                     c_info.write(f"👤 **{nm_l}** (@{un_l}) — Pelanggaran / Refresh: **{v_c}x**")
                     if c_act.button("🔓 Beri Izin", key=f"btn_grant_{un_l}"):
                         db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}").set({
-                            "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
+                            "ijin_guru": True, "violation_count": 0, "updated_at": firestore.SERVER_TIMESTAMP
                         }, merge=True)
                         clear_pengerjaan_cache()
-                        st.success(f"✅ Izin berhasil diberikan untuk {nm_l}!")
+                        st.success(f"✅ Izin berhasil diberikan & pelanggaran di-reset untuk {nm_l}!")
                         st.rerun()
 
         with t_reset:
