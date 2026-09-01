@@ -51,11 +51,6 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 6px; overflow-x: auto; white-space: nowrap; border-bottom: 2px solid #eaeaea; padding-bottom: 4px; }
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 20px; font-weight: 600; }
     .stTabs [aria-selected="true"] { background-color: #1e3c72 !important; color: white !important; }
-    
-    /* Hide localStorage bridge input element */
-    div[data-testid="stTextInput"]:has(input[aria-label="Draft Bridge Input"]) {
-        display: none !important;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -1327,7 +1322,7 @@ def render_guru():
             st.download_button("💾 Unduh Rekap Transkrip Nilai (.csv)", csv_data, f"rekap_nilai_kelas_{selected_kelas}.csv", "text/csv", use_container_width=True)
 
 # ==========================================
-# 8. PANEL SISWA
+# 8. PANEL SISWA (LANGSUNG FIRESTORE)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
@@ -1359,85 +1354,41 @@ def render_siswa():
 
         doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
 
-        # Inisialisasi awal & Pemulihan status dari Database
-        if f"quiz_loaded_{tg_id}" not in st.session_state:
-            doc_snap = doc_ref.get()
-            existing_sub = doc_snap.to_dict() if doc_snap.exists else {}
+        # Stream Firestore langsung sebagai Single Source of Truth
+        doc_snap = doc_ref.get()
+        existing_sub = doc_snap.to_dict() if doc_snap.exists else {}
 
+        # Ambil langsung jumlah pelanggaran & izin dari Firestore
+        violation_count = existing_sub.get("violation_count", 0)
+        ijin_guru = existing_sub.get("ijin_guru", True)
+        
+        # Penguncian otomatis jika pelanggaran >= 10
+        if violation_count >= 10:
+            ijin_guru = False
+
+        # Inisialisasi awal pengerjaan langsung ke Firestore
+        if f"quiz_loaded_{tg_id}" not in st.session_state:
             saved_ans = existing_sub.get("jawaban")
             if isinstance(saved_ans, list) and len(saved_ans) == total_soal:
                 st.session_state[f"quiz_answers_{tg_id}"] = saved_ans
             else:
                 st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
 
-            v_count = existing_sub.get("violation_count", 0)
-            ijin_val = existing_sub.get("ijin_guru", True)
+            doc_ref.set({
+                "username_siswa": username_s,
+                "nama_siswa": nama_s,
+                "kelas_siswa": kelas_s,
+                "id_tugas": tg_id,
+                "status": "in_progress",
+                "ijin_guru": ijin_guru,
+                "violation_count": violation_count,
+                "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
+                "updated_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
 
-            if f"quiz_session_active_{tg_id}" not in st.session_state:
-                if existing_sub.get("status") == "in_progress":
-                    if v_count >= 10:
-                        ijin_val = False
-                    
-                    doc_ref.set({
-                        "username_siswa": username_s,
-                        "nama_siswa": nama_s,
-                        "kelas_siswa": kelas_s,
-                        "id_tugas": tg_id,
-                        "status": "in_progress",
-                        "ijin_guru": ijin_val,
-                        "violation_count": v_count,
-                        "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
-                        "updated_at": firestore.SERVER_TIMESTAMP
-                    }, merge=True)
-                else:
-                    doc_ref.set({
-                        "username_siswa": username_s,
-                        "nama_siswa": nama_s,
-                        "kelas_siswa": kelas_s,
-                        "id_tugas": tg_id,
-                        "status": "in_progress",
-                        "ijin_guru": True,
-                        "violation_count": v_count,
-                        "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
-                        "updated_at": firestore.SERVER_TIMESTAMP
-                    }, merge=True)
-
-            st.session_state[f"violation_count_{tg_id}"] = v_count
-            st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
-            st.session_state[f"quiz_session_active_{tg_id}"] = True
             st.session_state[f"quiz_page_{tg_id}"] = 0
             st.session_state[f"last_sync_time_{tg_id}"] = time.time()
             st.session_state[f"quiz_loaded_{tg_id}"] = True
-
-        # Input tersembunyi sebagai bridge sinkronisasi dari JS
-        v_bridge_val = st.text_input(
-            "Draft Bridge Input",
-            value=str(st.session_state.get(f"violation_count_{tg_id}", 0)),
-            key=f"violation_bridge_input_{tg_id}"
-        )
-
-        # Proses pembaruan dari bridge input jika JS mengirim angka terbaru
-        if v_bridge_val:
-            try:
-                new_v_bridge = int(v_bridge_val)
-                curr_v = st.session_state.get(f"violation_count_{tg_id}", 0)
-                if new_v_bridge > curr_v:
-                    st.session_state[f"violation_count_{tg_id}"] = new_v_bridge
-                    should_lock = new_v_bridge >= 10
-                    ijin_status = False if should_lock else st.session_state.get(f"ijin_guru_{tg_id}", True)
-                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_status
-
-                    doc_ref.set({
-                        "username_siswa": username_s,
-                        "id_tugas": tg_id,
-                        "violation_count": new_v_bridge,
-                        "status": "in_progress",
-                        "ijin_guru": ijin_status,
-                        "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
-                        "updated_at": firestore.SERVER_TIMESTAMP
-                    }, merge=True)
-            except ValueError:
-                pass
 
         def sync_progress_if_needed(force=False):
             now = time.time()
@@ -1456,92 +1407,45 @@ def render_siswa():
 
         answers = st.session_state[f"quiz_answers_{tg_id}"]
         curr_page = st.session_state[f"quiz_page_{tg_id}"]
-        violation_count = st.session_state.get(f"violation_count_{tg_id}", 0)
-        ijin_guru = st.session_state.get(f"ijin_guru_{tg_id}", True)
-
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
         is_locked = not ijin_guru
 
-        # Tombol Pemicu Sync Pelanggaran (Menerima parameter sync dari JS)
+        # Tombol Pemicu yang dipanggil JS secara langsung untuk update Firestore
         if is_ulangan:
-            if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
+            if st.button("⚠️ Catat Pelanggaran Langsung", key=f"btn_record_violation_{tg_id}", type="secondary"):
                 if not is_locked:
-                    try:
-                        bridge_count = int(st.session_state.get(f"violation_bridge_input_{tg_id}", 0))
-                    except (ValueError, TypeError):
-                        bridge_count = 0
-
-                    curr_count = st.session_state.get(f"violation_count_{tg_id}", 0)
-                    new_v = max(curr_count + 1, bridge_count)
-                    
-                    st.session_state[f"violation_count_{tg_id}"] = new_v
+                    new_v = violation_count + 1
                     should_lock = new_v >= 10
-                    ijin_status = False if should_lock else st.session_state.get(f"ijin_guru_{tg_id}", True)
-                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_status
+                    ijin_status = False if should_lock else ijin_guru
 
+                    # LANGSUNG UPDATE DATABASE FIRESTORE
                     doc_ref.set({
                         "username_siswa": username_s, 
                         "id_tugas": tg_id, 
-                        "violation_count": new_v,
+                        "violation_count": firestore.Increment(1),
                         "status": "in_progress", 
                         "ijin_guru": ijin_status,
                         "jawaban": answers,
                         "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
-                    st.session_state[f"last_sync_time_{tg_id}"] = time.time()
+                    
+                    clear_pengerjaan_cache()
                     st.rerun()
 
             if not is_locked:
-                # Skrip JS Anti-Cheat (Langsung sync per 1 pelanggaran & aman saat F5)
+                # Script JS ringkas tanpa localStorage: Triggers langsung ke Firestore via backend Streamlit
                 components.html(f"""
                     <script>
                     (function() {{
-                        const storageKey = 'v_count_{username_s}_{tg_id}';
-                        const serverCount = {violation_count};
                         const parentDoc = window.parent.document;
 
-                        // Ambil nilai terbesar antara localStorage dan Server Count
-                        let localVal = parseInt(localStorage.getItem(storageKey) || '0', 10);
-                        if (isNaN(localVal)) localVal = 0;
-
-                        if (serverCount === 0 && localVal === 0) {{
-                            localStorage.setItem(storageKey, '0');
-                        }}
-
-                        let currentCount = Math.max(serverCount, localVal);
-                        localStorage.setItem(storageKey, currentCount.toString());
-
-                        function getBtnByText(text) {{
+                        function getTriggerBtn() {{
                             const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                            return buttons.find(b => b.innerText.includes(text));
-                        }}
-
-                        function getBridgeInput() {{
-                            return parentDoc.querySelector('input[aria-label="Draft Bridge Input"]');
-                        }}
-
-                        function syncToStreamlit(count) {{
-                            const bridgeInput = getBridgeInput();
-                            if (bridgeInput) {{
-                                const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                                nativeSetter.call(bridgeInput, count.toString());
-                                bridgeInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                bridgeInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            }}
-                            
-                            const triggerBtn = getBtnByText('Catat Pelanggaran');
-                            if (triggerBtn) {{
-                                triggerBtn.click();
-                            }}
-                        }}
-
-                        // Restorasi pasca F5 jika nilai di localStorage lebih tinggi dari server
-                        if (localVal > serverCount) {{
-                            setTimeout(function() {{ syncToStreamlit(localVal); }}, 300);
+                            return buttons.find(b => b.innerText.includes('Catat Pelanggaran Langsung'));
                         }}
 
                         function hideActionButtons() {{
-                            const btn = getBtnByText('Catat Pelanggaran');
+                            const btn = getTriggerBtn();
                             if (btn && btn.parentElement) {{
                                 const container = btn.closest('[data-testid="stElementContainer"]') || btn.parentElement;
                                 if (container && container.style.display !== 'none') {{
@@ -1550,23 +1454,22 @@ def render_siswa():
                             }}
                         }}
 
-                        setInterval(hideActionButtons, 500);
+                        setInterval(hideActionButtons, 300);
 
-                        if (window.parent.__antiCheatLoaded_{tg_id}) return;
-                        window.parent.__antiCheatLoaded_{tg_id} = true;
+                        if (window.parent.__antiCheatDirect_{tg_id}) return;
+                        window.parent.__antiCheatDirect_{tg_id} = true;
 
                         let lastTriggerTime = 0;
 
                         function recordViolation() {{
                             const now = Date.now();
-                            if (now - lastTriggerTime < 2000) return; // Debounce 2 detik
+                            if (now - lastTriggerTime < 2500) return; // Debounce
                             lastTriggerTime = now;
 
-                            currentCount++;
-                            localStorage.setItem(storageKey, currentCount.toString());
-                            
-                            // Pengiriman instan per 1 kali pelanggaran
-                            syncToStreamlit(currentCount);
+                            const triggerBtn = getTriggerBtn();
+                            if (triggerBtn) {{
+                                triggerBtn.click();
+                            }}
                         }}
 
                         window.parent.__antiCheatHandler_{tg_id} = function(e) {{
@@ -1585,17 +1488,9 @@ def render_siswa():
 
         # Tampilan jika soal terkunci (Mencapai Limit Pelanggaran 10x)
         if is_locked:
-            st.error(f"🔒 **SOAL TERKUNCI**: Anda telah mencapai limit **10x pelanggaran** (pindah tab, refresh, atau keluar dari halaman)! Jawaban yang sudah terisi telah tersimpan aman. Silakan hubungi Guru untuk meminta izin membuka kunci.")
-            if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
-                status_doc = doc_ref.get()
-                if status_doc.exists:
-                    doc_data = status_doc.to_dict()
-                    ijin_val = doc_data.get("ijin_guru", False)
-                    v_c = doc_data.get("violation_count", 0)
-                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
-                    st.session_state[f"violation_count_{tg_id}"] = v_c
-                    if "jawaban" in doc_data and isinstance(doc_data["jawaban"], list):
-                        st.session_state[f"quiz_answers_{tg_id}"] = doc_data["jawaban"]
+            st.error(f"🔒 **SOAL TERKUNCI**: Anda telah mencapai limit **10x pelanggaran** (pindah tab atau keluar dari halaman)! Jawaban yang sudah terisi telah tersimpan aman di Firestore. Silakan hubungi Guru untuk meminta izin membuka kunci.")
+            if st.button("🔄 Cek Status Izin Guru (Sync Firestore)", key=f"btn_check_permission_{tg_id}", type="primary"):
+                clear_pengerjaan_cache()
                 st.rerun()
 
         st.markdown(f"### 📝 {tg.get('judul')}")
@@ -1687,9 +1582,7 @@ def render_siswa():
                     st.session_state["active_quiz_id"] = None
                     for k in [
                         f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
-                        f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                        f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}",
-                        f"last_sync_time_{tg_id}", f"violation_bridge_input_{tg_id}"
+                        f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}"
                     ]:
                         st.session_state.pop(k, None)
                     st.rerun()
@@ -1760,9 +1653,7 @@ def render_siswa():
                             if st.button("🚀 Mulai Kerjakan", key=f"btn_start_{tg_id}", type="primary", use_container_width=True):
                                 for k in [
                                     f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", 
-                                    f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}", f"quiz_session_active_{tg_id}", 
-                                    f"ijin_guru_{tg_id}", f"violation_count_{tg_id}", f"last_sync_time_{tg_id}", 
-                                    f"violation_bridge_input_{tg_id}"
+                                    f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}"
                                 ]:
                                     st.session_state.pop(k, None)
                                 st.session_state["active_quiz_id"] = tg_id
