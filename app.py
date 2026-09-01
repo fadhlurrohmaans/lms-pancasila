@@ -1185,10 +1185,10 @@ def render_guru():
             else:
                 col_all, col_sel = st.columns(2)
 
-                # 1. Beri Izin ke Semua Siswa Terkunci Sekaligus
+                # 1. Beri Izin ke Semua Siswa Terkunci Sekaligus (Tanpa Reset Pelanggaran)
                 with col_all:
                     st.markdown("**1️⃣ Beri Izin Semua Siswa**")
-                    st.caption("Membuka kunci pengerjaan untuk seluruh siswa yang terkunci secara otomatis.")
+                    st.caption("Membuka kunci pengerjaan tanpa mereset hitungan pelanggaran untuk seluruh siswa terkunci.")
                     if st.button("🔓 Beri Izin Semua Siswa Terkunci", type="primary", use_container_width=True):
                         operations = []
                         for ls in locked_students:
@@ -1198,10 +1198,10 @@ def render_guru():
                         
                         commit_in_chunks(operations)
                         clear_pengerjaan_cache()
-                        st.success(f"✅ Berhasil memberikan izin kepada seluruh ({len(locked_students)}) siswa!")
+                        st.success(f"✅ Berhasil memberikan izin untuk seluruh ({len(locked_students)}) siswa!")
                         st.rerun()
 
-                # 2. Beri Izin ke Beberapa Siswa Terpilih (Multiselect)
+                # 2. Beri Izin ke Beberapa Siswa Terpilih (Multiselect) (Tanpa Reset Pelanggaran)
                 with col_sel:
                     st.markdown("**2️⃣ Beri Izin Beberapa Siswa**")
                     options_map = {ls["username"]: f"{ls.get('nama', ls['username'])} (@{ls['username']})" for ls in locked_students}
@@ -1220,14 +1220,14 @@ def render_guru():
                             
                             commit_in_chunks(operations)
                             clear_pengerjaan_cache()
-                            st.success(f"✅ Berhasil memberikan izin kepada {len(selected_unames)} siswa terpilih!")
+                            st.success(f"✅ Berhasil memberikan izin untuk {len(selected_unames)} siswa terpilih!")
                             st.rerun()
                         else:
                             st.warning("⚠️ Silakan pilih minimal satu siswa terlebih dahulu.")
 
                 st.divider()
 
-                # 3. Beri Izin Satu per Satu Siswa
+                # 3. Beri Izin Satu per Satu Siswa (Tanpa Reset Pelanggaran)
                 st.markdown("**3️⃣ Beri Izin Satu per Satu Siswa**")
                 for ls in locked_students:
                     un_l = ls["username"]
@@ -1242,12 +1242,12 @@ def render_guru():
                             "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
                         }, merge=True)
                         clear_pengerjaan_cache()
-                        st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
+                        st.success(f"✅ Izin berhasil diberikan untuk {nm_l}!")
                         st.rerun()
 
         with t_reset:
             st.subheader("🔄 Reset Pengerjaan Tugas Siswa")
-            st.caption("Mereset status pengerjaan agar siswa dapat mengerjakan ulang tugas dari awal.")
+            st.caption("Mereset status pengerjaan & menghapus seluruh catatan pelanggaran (menjadi 0) agar siswa dapat mengerjakan ulang tugas dari awal.")
 
             if not sub_map:
                 st.info("ℹ️ Belum ada data pengerjaan siswa untuk tugas ini di kelas yang dipilih.")
@@ -1270,12 +1270,12 @@ def render_guru():
                         
                         commit_in_chunks(operations)
                         clear_pengerjaan_cache()
-                        st.success(f"✅ Berhasil mereset pengerjaan {len(target_siswa_reset)} siswa!")
+                        st.success(f"✅ Berhasil mereset pengerjaan & pelanggaran {len(target_siswa_reset)} siswa!")
                         st.rerun()
 
                 with c_reset_all:
                     st.markdown("### ⚠️ Reset Semua Siswa")
-                    st.warning("Tindakan ini akan menghapus **SELURUH** riwayat & nilai pengerjaan tugas ini untuk seluruh siswa di kelas ini!")
+                    st.warning("Tindakan ini akan menghapus **SELURUH** riwayat pengerjaan, nilai, & catatan pelanggaran tugas ini untuk seluruh siswa di kelas ini!")
                     
                     if st.button("🚨 Reset Semua Pengerjaan Kelas Ini", type="primary", use_container_width=True):
                         operations = []
@@ -1285,7 +1285,7 @@ def render_guru():
                         
                         commit_in_chunks(operations)
                         clear_pengerjaan_cache()
-                        st.success("✅ Seluruh pengerjaan siswa untuk tugas ini berhasil di-reset!")
+                        st.success("✅ Seluruh pengerjaan & pelanggaran siswa untuk tugas ini berhasil di-reset ke 0!")
                         st.rerun()
 
     elif menu == "📜 Daftar Nilai":
@@ -1502,7 +1502,7 @@ def render_siswa():
                     st.rerun()
 
             if not is_locked:
-                # Skrip JS Anti-Cheat dengan Throttling & Backup localStorage
+                # Skrip JS Anti-Cheat dengan Throttling & Backup localStorage + Autosync Reset
                 components.html(f"""
                     <script>
                     (function() {{
@@ -1516,6 +1516,15 @@ def render_siswa():
                         // 1. Baca localStorage & Sinkronkan dengan serverCount
                         let localVal = parseInt(localStorage.getItem(storageKey) || '0', 10);
                         if (isNaN(localVal)) localVal = 0;
+
+                        // PENTING: Jika serverCount = 0 (misal setelah Guru mereset pengerjaan), paksa reset localStorage ke 0
+                        if (serverCount === 0) {{
+                            localVal = 0;
+                            localStorage.setItem(storageKey, '0');
+                            if (window.parent.__lastSyncedCount_{tg_id}) {{
+                                window.parent.__lastSyncedCount_{tg_id} = 0;
+                            }}
+                        }}
 
                         // Ambil nilai tertinggi antara localStorage dan Server
                         let currentCount = Math.max(serverCount, localVal);
@@ -1550,7 +1559,7 @@ def render_siswa():
                             }}
                         }}
 
-                        // Restorasi pasca F5: Jika nilai di localStorage lebih tinggi dari server (akibat belum sempat sync sebelum refresh)
+                        // Restorasi pasca F5: Jika nilai di localStorage lebih tinggi dari server
                         if (currentCount > lastSyncedCount && (currentCount - lastSyncedCount >= syncThreshold || currentCount >= maxLimit)) {{
                             window.parent.__lastSyncedCount_{tg_id} = currentCount;
                             setTimeout(function() {{ syncToStreamlit(currentCount); }}, 600);
@@ -1610,9 +1619,9 @@ def render_siswa():
                 if status_doc.exists:
                     doc_data = status_doc.to_dict()
                     ijin_val = doc_data.get("ijin_guru", False)
+                    v_c = doc_data.get("violation_count", 0)
                     st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
-                    if "violation_count" in doc_data:
-                        st.session_state[f"violation_count_{tg_id}"] = doc_data["violation_count"]
+                    st.session_state[f"violation_count_{tg_id}"] = v_c
                     if "jawaban" in doc_data and isinstance(doc_data["jawaban"], list):
                         st.session_state[f"quiz_answers_{tg_id}"] = doc_data["jawaban"]
                 st.rerun()
