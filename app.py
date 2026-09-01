@@ -1003,8 +1003,8 @@ def render_guru():
                 "Catatan Guru": sub.get("catatan_guru", "-") if st_ujian == "submitted" else "-"
             })
 
-        t_rekap, t_koreksi, t_analisis, t_kontrol = st.tabs([
-            "📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "📈 Analisis & Validitas PG", "🔓 Kontrol Izin & Buka Kunci"
+        t_rekap, t_koreksi, t_analisis, t_kontrol, t_reset = st.tabs([
+            "📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "📈 Analisis & Validitas PG", "🔓 Kontrol Izin & Buka Kunci", "🔄 Reset Pengerjaan"
         ])
 
         with t_rekap:
@@ -1169,6 +1169,47 @@ def render_guru():
                         st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
                         st.rerun()
 
+        with t_reset:
+            st.subheader("🔄 Reset Pengerjaan Tugas Siswa")
+            st.caption("Mereset status pengerjaan agar siswa dapat mengerjakan ulang tugas dari awal.")
+
+            if not sub_map:
+                st.info("ℹ️ Belum ada data pengerjaan siswa untuk tugas ini di kelas yang dipilih.")
+            else:
+                c_reset_sel, c_reset_all = st.columns(2)
+
+                with c_reset_sel:
+                    st.markdown("### 🎯 Reset Siswa Pilihan")
+                    target_siswa_reset = st.multiselect(
+                        "Pilih Siswa yang Akan Di-reset:",
+                        options=list(sub_map.keys()),
+                        format_func=lambda x: f"{sub_map[x].get('nama_siswa', x)} (@{x})"
+                    )
+
+                    if target_siswa_reset and st.button("🔄 Reset Siswa Terpilih", type="primary", use_container_width=True):
+                        batch = db.batch()
+                        for un in target_siswa_reset:
+                            doc_ref = db.collection("pengerjaan_siswa").document(f"{un}_{selected_tugas_id}")
+                            batch.delete(doc_ref)
+                        batch.commit()
+                        clear_pengerjaan_cache()
+                        st.success(f"✅ Berhasil mereset pengerjaan {len(target_siswa_reset)} siswa!")
+                        st.rerun()
+
+                with c_reset_all:
+                    st.markdown("### ⚠️ Reset Semua Siswa")
+                    st.warning("Tindakan ini akan menghapus **SELURUH** riwayat & nilai pengerjaan tugas ini untuk seluruh siswa di kelas ini!")
+                    
+                    if st.button("🚨 Reset Semua Pengerjaan Kelas Ini", type="primary", use_container_width=True):
+                        batch = db.batch()
+                        for un in sub_map.keys():
+                            doc_ref = db.collection("pengerjaan_siswa").document(f"{un}_{selected_tugas_id}")
+                            batch.delete(doc_ref)
+                        batch.commit()
+                        clear_pengerjaan_cache()
+                        st.success("✅ Seluruh pengerjaan siswa untuk tugas ini berhasil di-reset!")
+                        st.rerun()
+
     elif menu == "📜 Daftar Nilai":
         st.header("📜 Transkrip & Daftar Nilai Siswa")
         if not pilihan_kelas: st.warning("⚠️ Anda belum ditugaskan mengajar."); st.stop()
@@ -1264,10 +1305,10 @@ def render_siswa():
             v_count = existing_sub.get("violation_count", 0)
             ijin_val = existing_sub.get("ijin_guru", True)
 
-            # Deteksi Refresh / Keluar Halaman (Sesi Browser Ter-reset)
+            # Deteksi Refresh atau Keluar Halaman (Sesudah Pengerjaan Dimulai)
             if f"quiz_session_active_{tg_id}" not in st.session_state:
                 if existing_sub.get("status") == "in_progress":
-                    # Terdeteksi Refresh / Keluar Halaman -> Kunci Kuis & Minta Izin Guru
+                    # Terdeteksi Refresh / Keluar Halaman -> Kunci Kuis & minta izin Guru
                     v_count += 1
                     ijin_val = False
                     doc_ref.set({
@@ -1311,19 +1352,20 @@ def render_siswa():
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
         is_locked = not ijin_guru
 
-        # Deteksi otomatis Pindah Tab / Layar Blur (Menambah Pelanggaran TANPA Mengunci Soal)
+        # Deteksi otomatis Pindah Tab / Layar Blur untuk Ulangan Harian
         if is_ulangan:
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
                 if not is_locked:
-                    # Tambah jumlah pelanggaran tanpa mengunci soal (ijin_guru tetap True)
                     st.session_state[f"violation_count_{tg_id}"] += 1
                     new_v = st.session_state[f"violation_count_{tg_id}"]
+                    st.session_state[f"ijin_guru_{tg_id}"] = False
                     
                     doc_ref.set({
                         "username_siswa": username_s, 
                         "id_tugas": tg_id, 
                         "violation_count": new_v,
                         "status": "in_progress", 
+                        "ijin_guru": False,
                         "jawaban": answers,
                         "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
@@ -1373,9 +1415,9 @@ def render_siswa():
                     </script>
                 """, height=0)
 
-        # Tampilan jika soal terkunci akibat Refresh / Keluar Halaman
+        # Tampilan jika soal terkunci (Kena Refresh / Keluar / Pelanggaran)
         if is_locked:
-            st.error(f"🔒 **SOAL TERKUNCI**: Anda terdeteksi melakukan **refresh / keluar dari halaman**! Jawaban yang sudah terisi telah tersimpan aman. Silakan hubungi Guru untuk meminta izin melanjutkan mengerjakan soal.")
+            st.error(f"🔒 **SOAL TERKUNCI**: Anda terdeteksi melakukan **refresh / keluar dari halaman** atau berpindah layar! Jawaban yang sudah terisi telah tersimpan aman. Silakan hubungi Guru untuk meminta izin melanjutkan mengerjakan soal.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
                 status_doc = doc_ref.get()
                 if status_doc.exists:
