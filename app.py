@@ -304,6 +304,13 @@ def delete_tugas_and_submissions(tugas_id):
     clear_tugas_cache()
     clear_pengerjaan_cache()
 
+def reset_pengerjaan_siswa(username_siswa, tugas_id):
+    """Mereset/menghapus riwayat pengerjaan siswa untuk tugas tertentu"""
+    doc_ref = db.collection("pengerjaan_siswa").document(f"{username_siswa}_{tugas_id}")
+    doc_ref.delete()
+    clear_pengerjaan_cache()
+    return True
+
 # ==========================================
 # 3. AI EVALUATION HELPER (FAST & LIGHTWEIGHT)
 # ==========================================
@@ -1003,8 +1010,8 @@ def render_guru():
                 "Catatan Guru": sub.get("catatan_guru", "-") if st_ujian == "submitted" else "-"
             })
 
-        t_rekap, t_koreksi, t_analisis, t_kontrol = st.tabs([
-            "📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "📈 Analisis & Validitas PG", "🔓 Kontrol Izin & Buka Kunci"
+        t_rekap, t_koreksi, t_analisis, t_kontrol, t_reset = st.tabs([
+            "📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "📈 Analisis & Validitas PG", "🔓 Kontrol Izin & Buka Kunci", "🔄 Reset Pengerjaan"
         ])
 
         with t_rekap:
@@ -1063,6 +1070,12 @@ def render_guru():
                                 clear_pengerjaan_cache()
                                 st.success("✅ Tersimpan!")
                                 st.rerun()
+                        
+                        st.divider()
+                        if st.button("🔄 Reset Pengerjaan Siswa Ini", key=f"btn_reset_kor_{sub_id}", type="secondary"):
+                            reset_pengerjaan_siswa(sub.get("username_siswa"), selected_tugas_id)
+                            st.success(f"✅ Pengerjaan tugas untuk siswa '{sub.get('nama_siswa')}' berhasil di-reset!")
+                            st.rerun()
 
         with t_analisis:
             st.subheader("📈 Analisis Butir Soal & Uji Validitas (PG)")
@@ -1168,6 +1181,50 @@ def render_guru():
                         clear_pengerjaan_cache()
                         st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
                         st.rerun()
+
+        with t_reset:
+            st.subheader("🔄 Reset Pengerjaan Soal Siswa")
+            st.caption("Fitur ini akan menghapus dokumen pengerjaan siswa pada tugas terpilih agar siswa dapat mengerjakan ulang dari awal.")
+            
+            siswa_pengerjaan = [
+                s for s in siswa_list 
+                if s["username"] in sub_map and sub_map[s["username"]].get("status") in ["submitted", "in_progress"]
+            ]
+            
+            if not siswa_pengerjaan:
+                st.info("ℹ️ Belum ada siswa yang mengerjakan atau mengumpulkan tugas ini.")
+            else:
+                col_r1, col_r2 = st.columns(2)
+                
+                with col_r1:
+                    st.markdown("### 👤 Reset Individual")
+                    list_options_indiv = {
+                        s["username"]: f"{s.get('nama', s['username'])} (@{s['username']}) - [{sub_map[s['username']].get('status').upper()}]" 
+                        for s in siswa_pengerjaan
+                    }
+                    selected_indiv = st.selectbox("Pilih Siswa", options=list(list_options_indiv.keys()), format_func=lambda x: list_options_indiv[x], key="sb_reset_indiv")
+                    
+                    if st.button("🗑️ Reset Pengerjaan Siswa Ini", type="primary", key="btn_reset_indiv"):
+                        reset_pengerjaan_siswa(selected_indiv, selected_tugas_id)
+                        st.success(f"✅ Pengerjaan tugas untuk siswa @{selected_indiv} berhasil di-reset!")
+                        st.rerun()
+
+                with col_r2:
+                    st.markdown("### 👥 Reset Siswa Tertentu (Multiple)")
+                    list_options_multi = {
+                        s["username"]: f"{s.get('nama', s['username'])} (@{s['username']})" 
+                        for s in siswa_pengerjaan
+                    }
+                    selected_multi = st.multiselect("Pilih Satu atau Beberapa Siswa", options=list(list_options_multi.keys()), format_func=lambda x: list_options_multi[x], key="ms_reset_multi")
+                    
+                    if st.button("🗑️ Reset Pengerjaan Siswa Terpilih", type="primary", key="btn_reset_multi"):
+                        if selected_multi:
+                            for un in selected_multi:
+                                reset_pengerjaan_siswa(un, selected_tugas_id)
+                            st.success(f"✅ Berhasil mereset pengerjaan {len(selected_multi)} siswa terpilih!")
+                            st.rerun()
+                        else:
+                            st.warning("Pilih minimal satu siswa untuk di-reset.")
 
     elif menu == "📜 Daftar Nilai":
         st.header("📜 Transkrip & Daftar Nilai Siswa")
