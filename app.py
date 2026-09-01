@@ -78,16 +78,11 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
-# --- FIRESTORE BATCH CHUNKING HELPER (SKALABILITAS BATCH) ---
+# --- FIRESTORE BATCH CHUNKING HELPER ---
 def commit_in_chunks(operations, chunk_size=450):
     """
     Eksekusi operasi Firestore Batch secara bertahap (chunking) maksimal 450 item per commit
     untuk mencegah error Firestore limit 500 dokumen.
-    
-    Format operations list:
-    - ('delete', doc_ref)
-    - ('set', doc_ref, data_dict, merge_bool)
-    - ('update', doc_ref, data_dict)
     """
     if not operations:
         return
@@ -109,7 +104,7 @@ def commit_in_chunks(operations, chunk_size=450):
                 batch.update(ref, data)
         batch.commit()
 
-# --- FIRESTORE AGGREGATION QUERY HELPERS (.count()) HEBAT KUOTA ---
+# --- FIRESTORE AGGREGATION QUERY HELPERS ---
 @st.cache_data(ttl=60)
 def count_siswa_by_kelas(kelas):
     try:
@@ -130,7 +125,6 @@ def count_submitted_by_tugas_kelas(tugas_id, kelas):
 
 @st.cache_data(ttl=60)
 def get_guru_dashboard_stats(pilihan_kelas_tuple):
-    """Menghitung ringkasan statistik Guru menggunakan Aggregation Queries count()"""
     try:
         total_materi = db.collection("materi_pancasila").count().get()[0][0].value
     except Exception:
@@ -160,8 +154,8 @@ def get_guru_dashboard_stats(pilihan_kelas_tuple):
         "total_submitted": total_submitted
     }
 
-# --- OPTIMIZED CACHED READ FUNCTIONS (HIGH TTL) ---
-@st.cache_data(ttl=86400)  # 24 Jam
+# --- OPTIMIZED CACHED READ FUNCTIONS ---
+@st.cache_data(ttl=86400)
 def ensure_default_admin_created():
     admin_ref = db.collection("users").document("admin")
     if not admin_ref.get().exists:
@@ -175,29 +169,29 @@ def ensure_default_admin_created():
         return True
     return False
 
-@st.cache_data(ttl=86400)  # 24 Jam
+@st.cache_data(ttl=86400)
 def get_all_kelas():
     doc = db.collection("config").document("master_kelas").get()
     if doc.exists:
         return sorted(doc.to_dict().get("daftar", []))
     return []
 
-@st.cache_data(ttl=600)  # 10 Menit
+@st.cache_data(ttl=600)
 def get_all_users_cached():
     docs = db.collection("users").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=600)  # 10 Menit
+@st.cache_data(ttl=600)
 def get_siswa_by_kelas_cached(kelas):
     docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", kelas).stream()
     return [{"username": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=300)  # 5 Menit
+@st.cache_data(ttl=300)
 def get_all_tugas_cached():
     docs = db.collection("tugas_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=300)  # 5 Menit
+@st.cache_data(ttl=300)
 def get_all_materi_cached():
     docs = db.collection("materi_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
@@ -324,23 +318,19 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
 
 def delete_tugas_and_submissions(tugas_id):
     operations = []
-    
-    # 1. Hapus Dokumen Utama Tugas
     tugas_ref = db.collection("tugas_pancasila").document(tugas_id)
     operations.append(('delete', tugas_ref))
     
-    # 2. Hapus Seluruh Dokumen Pengerjaan Siswa Terkait
     p_docs = db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).stream()
     for doc in p_docs:
         operations.append(('delete', doc.reference))
         
-    # Commit seluruh operasi batch menggunakan chunking aman
     commit_in_chunks(operations)
     clear_tugas_cache()
     clear_pengerjaan_cache()
 
 # ==========================================
-# 3. AI EVALUATION HELPER (FAST & LIGHTWEIGHT)
+# 3. AI EVALUATION HELPER
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -372,7 +362,6 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
         )
 
         candidate_models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest']
-
         response = None
         last_error = None
 
@@ -565,7 +554,6 @@ def render_superadmin():
 
     with t_imp:
         st.subheader("📥 Import User & 📤 Export Data")
-        
         st.markdown("### 📄 Unduh Template Import")
         st.caption("Gunakan template di bawah ini agar format data sesuai saat melakukan upload.")
         
@@ -1199,8 +1187,15 @@ def render_guru():
                         operations = []
                         for ls in locked_students:
                             un_l = ls["username"]
+                            st_l = sub_map.get(un_l, {})
+                            v_c = st_l.get("violation_count", 0)
+                            new_limit = max(v_c + 10, 10)
                             doc_ref_l = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
-                            operations.append(('set', doc_ref_l, {"ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP}, True))
+                            operations.append(('set', doc_ref_l, {
+                                "ijin_guru": True, 
+                                "max_violation_limit": new_limit,
+                                "updated_at": firestore.SERVER_TIMESTAMP
+                            }, True))
                         
                         commit_in_chunks(operations)
                         clear_pengerjaan_cache()
@@ -1221,8 +1216,15 @@ def render_guru():
                         if selected_unames:
                             operations = []
                             for un_l in selected_unames:
+                                st_l = sub_map.get(un_l, {})
+                                v_c = st_l.get("violation_count", 0)
+                                new_limit = max(v_c + 10, 10)
                                 doc_ref_l = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
-                                operations.append(('set', doc_ref_l, {"ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP}, True))
+                                operations.append(('set', doc_ref_l, {
+                                    "ijin_guru": True, 
+                                    "max_violation_limit": new_limit,
+                                    "updated_at": firestore.SERVER_TIMESTAMP
+                                }, True))
                             
                             commit_in_chunks(operations)
                             clear_pengerjaan_cache()
@@ -1240,16 +1242,20 @@ def render_guru():
                     nm_l = ls.get("nama", un_l)
                     st_l = sub_map.get(un_l, {})
                     v_c = st_l.get("violation_count", 0)
+                    new_limit = max(v_c + 10, 10)
                     
                     c_info, c_act = st.columns([3, 1])
                     c_info.write(f"👤 **{nm_l}** (@{un_l}) — Pelanggaran / Refresh: **{v_c}x**")
                     if c_act.button("🔓 Beri Izin", key=f"btn_grant_{un_l}"):
                         db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}").set({
-                            "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
+                            "ijin_guru": True, 
+                            "max_violation_limit": new_limit,
+                            "updated_at": firestore.SERVER_TIMESTAMP
                         }, merge=True)
                         clear_pengerjaan_cache()
                         st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
                         st.rerun()
+
         with t_reset:
             st.subheader("🔄 Reset Pengerjaan Tugas Siswa")
             st.caption("Mereset status pengerjaan agar siswa dapat mengerjakan ulang tugas dari awal.")
@@ -1378,7 +1384,6 @@ def render_siswa():
             doc_snap = doc_ref.get()
             existing_sub = doc_snap.to_dict() if doc_snap.exists else {}
 
-            # Restore Jawaban tersimpan dari Firestore jika ada
             saved_ans = existing_sub.get("jawaban")
             if isinstance(saved_ans, list) and len(saved_ans) == total_soal:
                 st.session_state[f"quiz_answers_{tg_id}"] = saved_ans
@@ -1386,16 +1391,16 @@ def render_siswa():
                 st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
 
             v_count = existing_sub.get("violation_count", 0)
+            limit_v = existing_sub.get("max_violation_limit", 10)
             ijin_val = existing_sub.get("ijin_guru", True)
 
             # Deteksi Refresh atau Keluar Halaman (Sesudah Pengerjaan Dimulai)
             if f"quiz_session_active_{tg_id}" not in st.session_state:
                 if existing_sub.get("status") == "in_progress":
-                    # Terdeteksi Refresh / Keluar Halaman -> Tambah hitungan pelanggaran
                     v_count += 1
                     
-                    # Kunci HANYA jika jumlah pelanggaran telah mencapai 10x atau lebih
-                    if v_count >= 10:
+                    # Kunci HANYA jika jumlah pelanggaran telah mencapai limit dinamis
+                    if v_count >= limit_v:
                         ijin_val = False
                     
                     doc_ref.set({
@@ -1405,13 +1410,13 @@ def render_siswa():
                         "id_tugas": tg_id,
                         "status": "in_progress",
                         "ijin_guru": ijin_val,
+                        "max_violation_limit": limit_v,
                         "violation_count": v_count,
                         "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
                         "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
                     clear_pengerjaan_cache()
                 else:
-                    # Pertama kali pengerjaan dimulai
                     doc_ref.set({
                         "username_siswa": username_s,
                         "nama_siswa": nama_s,
@@ -1419,6 +1424,7 @@ def render_siswa():
                         "id_tugas": tg_id,
                         "status": "in_progress",
                         "ijin_guru": True,
+                        "max_violation_limit": limit_v,
                         "violation_count": v_count,
                         "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
                         "updated_at": firestore.SERVER_TIMESTAMP
@@ -1426,6 +1432,7 @@ def render_siswa():
                     clear_pengerjaan_cache()
 
             st.session_state[f"violation_count_{tg_id}"] = v_count
+            st.session_state[f"max_violation_limit_{tg_id}"] = limit_v
             st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
             st.session_state[f"quiz_session_active_{tg_id}"] = True
             st.session_state[f"quiz_page_{tg_id}"] = 0
@@ -1445,9 +1452,10 @@ def render_siswa():
                 if not is_locked:
                     st.session_state[f"violation_count_{tg_id}"] += 1
                     new_v = st.session_state[f"violation_count_{tg_id}"]
+                    limit_v = st.session_state.get(f"max_violation_limit_{tg_id}", 10)
                     
-                    # Kunci HANYA jika jumlah pelanggaran telah mencapai 10x atau lebih
-                    should_lock = new_v >= 10
+                    # Kunci jika jumlah pelanggaran telah mencapai limit dinamis
+                    should_lock = new_v >= limit_v
                     ijin_status = False if should_lock else st.session_state.get(f"ijin_guru_{tg_id}", True)
                     st.session_state[f"ijin_guru_{tg_id}"] = ijin_status
 
@@ -1455,6 +1463,7 @@ def render_siswa():
                         "username_siswa": username_s, 
                         "id_tugas": tg_id, 
                         "violation_count": new_v,
+                        "max_violation_limit": limit_v,
                         "status": "in_progress", 
                         "ijin_guru": ijin_status,
                         "jawaban": answers,
@@ -1510,9 +1519,10 @@ def render_siswa():
                     </script>
                 """, height=0)
 
-        # Tampilan jika soal terkunci (Mencapai Limit Pelanggaran 10x)
+        # Tampilan jika soal terkunci
         if is_locked:
-            st.error(f"🔒 **SOAL TERKUNCI**: Anda telah mencapai limit **10x pelanggaran** (pindah tab, refresh, atau keluar dari halaman)! Jawaban yang sudah terisi telah tersimpan aman. Silakan hubungi Guru untuk meminta izin membuka kunci.")
+            limit_curr = st.session_state.get(f"max_violation_limit_{tg_id}", 10)
+            st.error(f"🔒 **SOAL TERKUNCI**: Anda telah mencapai limit **{limit_curr}x pelanggaran**! Silakan hubungi Guru untuk meminta izin membuka kunci.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
                 status_doc = doc_ref.get()
                 if status_doc.exists:
@@ -1521,6 +1531,8 @@ def render_siswa():
                     st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
                     if "violation_count" in doc_data:
                         st.session_state[f"violation_count_{tg_id}"] = doc_data["violation_count"]
+                    if "max_violation_limit" in doc_data:
+                        st.session_state[f"max_violation_limit_{tg_id}"] = doc_data["max_violation_limit"]
                     if "jawaban" in doc_data and isinstance(doc_data["jawaban"], list):
                         st.session_state[f"quiz_answers_{tg_id}"] = doc_data["jawaban"]
                 st.rerun()
@@ -1548,7 +1560,6 @@ def render_siswa():
             disabled=is_locked
         )
 
-        # Update ke Firestore HANYA saat siswa berpindah nomor dari dropdown navigasi
         if selected_page != curr_page:
             doc_ref.set({
                 "username_siswa": username_s,
@@ -1564,7 +1575,6 @@ def render_siswa():
 
         c_top_prev, c_top_next = st.columns(2)
         with c_top_prev:
-            # Update ke Firestore HANYA saat tombol "Soal Sebelumnya" ditekan
             if curr_page > 0 and st.button("⬅️ Soal Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
                 doc_ref.set({
                     "username_siswa": username_s,
@@ -1578,7 +1588,6 @@ def render_siswa():
                 st.session_state[f"quiz_page_{tg_id}"] -= 1
                 st.rerun()
         with c_top_next:
-            # Update ke Firestore HANYA saat tombol "Soal Selanjutnya" ditekan
             if curr_page < total_soal - 1 and st.button("Soal Selanjutnya ➡️", key=f"top_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
                 doc_ref.set({
                     "username_siswa": username_s,
@@ -1611,14 +1620,12 @@ def render_siswa():
                     key=f"radio_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
-                # Cukup update session state lokal, tanpa rerun, tanpa Firestore call, tanpa clear_pengerjaan_cache
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
             else:
                 saved_text = answers[curr_page] or ""
                 essay_text = st.text_area("Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}", disabled=is_locked)
-                # Cukup update session state lokal, tanpa rerun, tanpa Firestore call, tanpa clear_pengerjaan_cache
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
@@ -1642,7 +1649,8 @@ def render_siswa():
                     for k in [
                         f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
                         f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                        f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}"
+                        f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}",
+                        f"max_violation_limit_{tg_id}"
                     ]:
                         st.session_state.pop(k, None)
                     st.rerun()
