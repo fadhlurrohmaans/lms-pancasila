@@ -83,11 +83,6 @@ def commit_in_chunks(operations, chunk_size=450):
     """
     Eksekusi operasi Firestore Batch secara bertahap (chunking) maksimal 450 item per commit
     untuk mencegah error Firestore limit 500 dokumen.
-    
-    Format operations list:
-    - ('delete', doc_ref)
-    - ('set', doc_ref, data_dict, merge_bool)
-    - ('update', doc_ref, data_dict)
     """
     if not operations:
         return
@@ -202,18 +197,18 @@ def get_all_materi_cached():
     docs = db.collection("materi_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-# --- CACHE DATA PENGERJAAN SISWA ---
-@st.cache_data(ttl=30)
+# --- CACHE DATA PENGERJAAN SISWA (TTL Pendek 5 detik tanpa perlunya pemanggilan clear() manual di tengah ujian) ---
+@st.cache_data(ttl=5)
 def get_user_pengerjaan_cached(username):
     docs = db.collection("pengerjaan_siswa").where("username_siswa", "==", username).stream()
     return {d.to_dict().get("id_tugas"): {"id": d.id, **d.to_dict()} for d in docs}
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=5)
 def get_pengerjaan_by_tugas_kelas_cached(tugas_id, kelas):
     docs = db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).where("kelas_siswa", "==", kelas).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=5)
 def get_all_pengerjaan_by_kelas_cached(kelas):
     docs = db.collection("pengerjaan_siswa").where("kelas_siswa", "==", kelas).stream()
     return [d.to_dict() for d in docs]
@@ -1250,6 +1245,7 @@ def render_guru():
                         clear_pengerjaan_cache()
                         st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
                         st.rerun()
+
         with t_reset:
             st.subheader("🔄 Reset Pengerjaan Tugas Siswa")
             st.caption("Mereset status pengerjaan agar siswa dapat mengerjakan ulang tugas dari awal.")
@@ -1352,6 +1348,7 @@ def render_siswa():
     my_subs = get_user_pengerjaan_cached(username_s)
     active_quiz_id = st.session_state.get("active_quiz_id")
 
+    # Mode Pengerjaan Ujian / Kuis
     if active_quiz_id:
         if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
             all_t = get_all_tugas_cached()
@@ -1409,7 +1406,6 @@ def render_siswa():
                         "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
                         "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
-                    clear_pengerjaan_cache()
                 else:
                     # Pertama kali pengerjaan dimulai
                     doc_ref.set({
@@ -1423,13 +1419,29 @@ def render_siswa():
                         "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
                         "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
-                    clear_pengerjaan_cache()
 
             st.session_state[f"violation_count_{tg_id}"] = v_count
             st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
             st.session_state[f"quiz_session_active_{tg_id}"] = True
             st.session_state[f"quiz_page_{tg_id}"] = 0
+            st.session_state[f"last_sync_time_{tg_id}"] = time.time()
             st.session_state[f"quiz_loaded_{tg_id}"] = True
+
+        # Helper penjelajah background sync per 3 menit (180 detik) atau saat dipanggil paksa
+        def sync_progress_if_needed(force=False):
+            now = time.time()
+            last_sync = st.session_state.get(f"last_sync_time_{tg_id}", 0)
+            if force or (now - last_sync >= 180):
+                doc_ref.set({
+                    "username_siswa": username_s,
+                    "nama_siswa": nama_s,
+                    "kelas_siswa": kelas_s,
+                    "id_tugas": tg_id,
+                    "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
+                    "status": "in_progress",
+                    "updated_at": firestore.SERVER_TIMESTAMP
+                }, merge=True)
+                st.session_state[f"last_sync_time_{tg_id}"] = now
 
         answers = st.session_state[f"quiz_answers_{tg_id}"]
         curr_page = st.session_state[f"quiz_page_{tg_id}"]
@@ -1460,7 +1472,7 @@ def render_siswa():
                         "jawaban": answers,
                         "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
-                    clear_pengerjaan_cache()
+                    st.session_state[f"last_sync_time_{tg_id}"] = time.time()
                     st.rerun()
 
             if not is_locked:
@@ -1548,48 +1560,22 @@ def render_siswa():
             disabled=is_locked
         )
 
-        # Update ke Firestore HANYA saat siswa berpindah nomor dari dropdown navigasi
+        # Update navigasi murni di session state & sync background jika sudah 3 menit
         if selected_page != curr_page:
-            doc_ref.set({
-                "username_siswa": username_s,
-                "nama_siswa": nama_s,
-                "kelas_siswa": kelas_s,
-                "id_tugas": tg_id,
-                "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
-                "status": "in_progress",
-                "updated_at": firestore.SERVER_TIMESTAMP
-            }, merge=True)
             st.session_state[f"quiz_page_{tg_id}"] = selected_page
+            sync_progress_if_needed(force=False)
             st.rerun()
 
         c_top_prev, c_top_next = st.columns(2)
         with c_top_prev:
-            # Update ke Firestore HANYA saat tombol "Soal Sebelumnya" ditekan
             if curr_page > 0 and st.button("⬅️ Soal Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
-                doc_ref.set({
-                    "username_siswa": username_s,
-                    "nama_siswa": nama_s,
-                    "kelas_siswa": kelas_s,
-                    "id_tugas": tg_id,
-                    "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
-                    "status": "in_progress",
-                    "updated_at": firestore.SERVER_TIMESTAMP
-                }, merge=True)
                 st.session_state[f"quiz_page_{tg_id}"] -= 1
+                sync_progress_if_needed(force=False)
                 st.rerun()
         with c_top_next:
-            # Update ke Firestore HANYA saat tombol "Soal Selanjutnya" ditekan
             if curr_page < total_soal - 1 and st.button("Soal Selanjutnya ➡️", key=f"top_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
-                doc_ref.set({
-                    "username_siswa": username_s,
-                    "nama_siswa": nama_s,
-                    "kelas_siswa": kelas_s,
-                    "id_tugas": tg_id,
-                    "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
-                    "status": "in_progress",
-                    "updated_at": firestore.SERVER_TIMESTAMP
-                }, merge=True)
                 st.session_state[f"quiz_page_{tg_id}"] += 1
+                sync_progress_if_needed(force=False)
                 st.rerun()
 
         st.divider()
@@ -1611,17 +1597,17 @@ def render_siswa():
                     key=f"radio_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
-                # Cukup update session state lokal, tanpa rerun, tanpa Firestore call, tanpa clear_pengerjaan_cache
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
+                    sync_progress_if_needed(force=False)
             else:
                 saved_text = answers[curr_page] or ""
                 essay_text = st.text_area("Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}", disabled=is_locked)
-                # Cukup update session state lokal, tanpa rerun, tanpa Firestore call, tanpa clear_pengerjaan_cache
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
+                    sync_progress_if_needed(force=False)
 
         st.divider()
 
@@ -1642,82 +1628,97 @@ def render_siswa():
                     for k in [
                         f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
                         f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                        f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}"
+                        f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}",
+                        f"last_sync_time_{tg_id}"
                     ]:
                         st.session_state.pop(k, None)
                     st.rerun()
         return
 
-    tugas_sub_map = my_subs
-    all_tugas = [t for t in get_all_tugas_cached() if is_target_sesuai_kelas(t, kelas_s) and t.get("status", "terbit") == "terbit"]
-    existing_tugas_dict = {t["id"]: t for t in all_tugas}
-
+    # Dashboard Utama Siswa (Saat tidak sedang kuis)
     st.markdown(f"""
         <div class="student-header">
-            <div style="font-size: 0.85rem; opacity: 0.9;">🏫 Kelas {kelas_s}</div>
-            <div style="font-size: 1.4rem; font-weight: bold;">Halo, {nama_s}! 👋</div>
+            <h2>🇮🇩 Selamat Datang, {nama_s}!</h2>
+            <p style="margin-bottom:0px; opacity: 0.9;">Kelas: <b>{kelas_s}</b> | LMS Pendidikan Pancasila</p>
         </div>
     """, unsafe_allow_html=True)
 
-    tab_tugas, tab_materi, tab_nilai = st.tabs(["✍️ Tugas Saya", "📚 Modul Materi", "📊 Riwayat Nilai"])
+    t_materi, t_tugas, t_riwayat = st.tabs(["📖 Materi Pembelajaran", "📝 Daftar Tugas / Ujian", "📜 Riwayat & Nilai"])
 
-    with tab_tugas:
-        tugas_belum_list = [t for t in all_tugas if tugas_sub_map.get(t["id"], {}).get("status") != "submitted"]
-        tugas_sudah_list = [t for t in all_tugas if tugas_sub_map.get(t["id"], {}).get("status") == "submitted"]
+    with t_materi:
+        st.subheader("📖 Materi Pembelajaran Tersedia")
+        all_materi = get_all_materi_cached()
+        materi_siswa = [m for m in all_materi if is_target_sesuai_kelas(m, kelas_s)]
 
-        st.subheader("🔴 Tugas Belum Dikerjakan")
-        if not tugas_belum_list:
-            st.success("✨ Semua tugas telah dikumpulkan!")
+        if not materi_siswa:
+            st.info("Belum ada materi pembelajaran untuk kelas Anda.")
         else:
-            for tg in tugas_belum_list:
+            for m in materi_siswa:
                 with st.container(border=True):
-                    jenis_t = tg.get("jenis_tugas", "Ulangan Harian")
-                    tag_color = "🔴 Ulangan Harian" if jenis_t == "Ulangan Harian" else "🟢 Tugas Biasa"
-                    st.markdown(f"### 📝 {tg.get('judul')} [{tag_color}]")
-                    st.caption(f"Tipe: **{tg.get('tipe', 'pg').upper()}** | {len(tg.get('soal', []))} Soal")
-                    
-                    if st.button("🚀 Mulai Kerjakan", key=f"start_{tg['id']}", type="primary"):
-                        st.session_state["active_quiz_id"] = tg["id"]
-                        st.rerun()
-
-        if tugas_sudah_list:
-            st.divider()
-            st.subheader("🟢 Tugas Sudah Dikerjakan")
-            for tg in tugas_sudah_list:
-                sub_data = tugas_sub_map.get(tg["id"], {})
-                val = sub_data.get("nilai")
-                catatan = sub_data.get("catatan_guru", "")
-                st.write(f"- **{tg.get('judul')}** | Nilai: **{val if val is not None else 'Menunggu Koreksi'}** {f'({catatan})' if catatan else ''}")
-
-    with tab_materi:
-        materi_docs = [m for m in get_all_materi_cached() if is_target_sesuai_kelas(m, kelas_s)]
-        if not materi_docs:
-            st.info("Belum ada materi untuk kelas Anda.")
-        else:
-            for m in materi_docs:
-                with st.container(border=True):
-                    st.markdown(f"#### 📘 [{m.get('bab')}] {m.get('judul')}")
+                    st.markdown(f"### 📘 [{m.get('bab')}] {m.get('judul')}")
                     if m.get("konten"): st.write(m.get("konten"))
-                    if m.get("file_url"): st.link_button("📎 Buka Dokumen", m.get("file_url"))
+                    if m.get("file_url"): st.link_button("📎 Buka / Unduh Lampiran File", m.get("file_url"))
 
-    with tab_nilai:
-        st.subheader("📊 Riwayat Nilai & Feedback")
-        valid_subs = {tg_id: sub for tg_id, sub in tugas_sub_map.items() if tg_id in existing_tugas_dict and sub.get("status") == "submitted"}
+    with t_tugas:
+        st.subheader("📝 Daftar Tugas & Ujian Aktif")
+        all_tugas = get_all_tugas_cached()
+        tugas_siswa = [
+            t for t in all_tugas 
+            if is_target_sesuai_kelas(t, kelas_s) and t.get("status", "terbit") == "terbit"
+        ]
 
-        if not valid_subs:
-            st.info("Belum ada riwayat nilai untuk tugas yang aktif.")
+        if not tugas_siswa:
+            st.info("Belum ada tugas atau ujian aktif untuk kelas Anda.")
         else:
-            riwayat_rows = []
-            for tg_id, sub_info in valid_subs.items():
-                tg_obj = existing_tugas_dict.get(tg_id, {})
-                val = sub_info.get("nilai")
-                riwayat_rows.append({
-                    "Judul Tugas": tg_obj.get("judul", sub_info.get("judul_tugas", "-")),
-                    "Tipe Soal": sub_info.get("tipe", "-").upper(),
-                    "Nilai": val if val is not None else "Menunggu Koreksi",
-                    "Catatan Guru": sub_info.get("catatan_guru", "-")
-                })
-            st.dataframe(pd.DataFrame(riwayat_rows), use_container_width=True)
+            for tg in tugas_siswa:
+                tg_id = tg["id"]
+                sub_info = my_subs.get(tg_id, {})
+                status_sub = sub_info.get("status")
+                jenis_tugas = tg.get("jenis_tugas", "Ulangan Harian")
+                tipe_str = tg.get("tipe", "pg").upper()
+
+                with st.container(border=True):
+                    col_t_info, col_t_act = st.columns([3, 1])
+                    with col_t_info:
+                        st.markdown(f"### 📝 [{tipe_str}] {tg.get('judul')}")
+                        st.caption(f"📌 **Jenis:** {jenis_tugas} | **Jumlah Soal:** {len(tg.get('soal', []))} Nomor")
+                        if tg.get("instruksi"): st.write(f"**Instruksi:** {tg.get('instruksi')}")
+
+                    with col_t_act:
+                        if status_sub == "submitted":
+                            st.success("✅ Sudah Dikerjakan")
+                            if sub_info.get("nilai") is not None:
+                                st.metric("Nilai Anda", f"{sub_info.get('nilai')}")
+                            else:
+                                st.info("⏳ Menunggu Penilaian Guru")
+                        elif status_sub == "in_progress":
+                            st.warning("⏳ Sedang Dikerjakan")
+                            if st.button("▶️ Lanjutkan Pengerjaan", key=f"btn_resume_{tg_id}", type="primary", use_container_width=True):
+                                st.session_state["active_quiz_id"] = tg_id
+                                st.rerun()
+                        else:
+                            if st.button("🚀 Mulai Kerjakan", key=f"btn_start_{tg_id}", type="primary", use_container_width=True):
+                                st.session_state["active_quiz_id"] = tg_id
+                                st.rerun()
+
+    with t_riwayat:
+        st.subheader("📜 Riwayat Hasil & Penilaian")
+        if not my_subs:
+            st.info("Belum ada riwayat pengerjaan tugas.")
+        else:
+            riwayat_data = []
+            for t_id, s_data in my_subs.items():
+                if s_data.get("status") == "submitted":
+                    riwayat_data.append({
+                        "Judul Tugas": s_data.get("judul_tugas", t_id),
+                        "Tipe Soal": str(s_data.get("tipe", "")).upper(),
+                        "Nilai": s_data.get("nilai") if s_data.get("nilai") is not None else "Belum Dinilai",
+                        "Catatan Guru": s_data.get("catatan_guru", "-")
+                    })
+            if riwayat_data:
+                st.dataframe(pd.DataFrame(riwayat_data), use_container_width=True)
+            else:
+                st.info("Belum ada tugas yang selesai dikumpulkan.")
 
 # ==========================================
 # 9. MAIN ROUTER
