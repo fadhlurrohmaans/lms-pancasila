@@ -1150,9 +1150,54 @@ def render_guru():
                 if sub_map.get(s["username"], {}).get("status") == "in_progress" 
                 and not sub_map.get(s["username"], {}).get("ijin_guru", True)
             ]
+            
             if not locked_students:
                 st.info("ℹ️ Tidak ada siswa yang sedang terkunci.")
             else:
+                col_all, col_sel = st.columns(2)
+
+                # 1. Beri Izin ke Semua Siswa Terkunci Sekaligus
+                with col_all:
+                    st.markdown("**1️⃣ Beri Izin Semua Siswa**")
+                    st.caption("Membuka kunci pengerjaan untuk seluruh siswa yang terkunci secara otomatis.")
+                    if st.button("🔓 Beri Izin Semua Siswa Terkunci", type="primary", use_container_width=True):
+                        batch = db.batch()
+                        for ls in locked_students:
+                            un_l = ls["username"]
+                            doc_ref_l = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
+                            batch.set(doc_ref_l, {"ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
+                        batch.commit()
+                        clear_pengerjaan_cache()
+                        st.success(f"✅ Berhasil memberikan izin kepada seluruh ({len(locked_students)}) siswa!")
+                        st.rerun()
+
+                # 2. Beri Izin ke Beberapa Siswa Terpilih (Multiselect)
+                with col_sel:
+                    st.markdown("**2️⃣ Beri Izin Beberapa Siswa**")
+                    options_map = {ls["username"]: f"{ls.get('nama', ls['username'])} (@{ls['username']})" for ls in locked_students}
+                    selected_unames = st.multiselect(
+                        "Pilih siswa yang ingin diberi izin:",
+                        options=list(options_map.keys()),
+                        format_func=lambda x: options_map[x],
+                        key="ms_grant_ijin"
+                    )
+                    if st.button("🔓 Beri Izin Siswa Terpilih", use_container_width=True):
+                        if selected_unames:
+                            batch = db.batch()
+                            for un_l in selected_unames:
+                                doc_ref_l = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
+                                batch.set(doc_ref_l, {"ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
+                            batch.commit()
+                            clear_pengerjaan_cache()
+                            st.success(f"✅ Berhasil memberikan izin kepada {len(selected_unames)} siswa terpilih!")
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ Silakan pilih minimal satu siswa terlebih dahulu.")
+
+                st.divider()
+
+                # 3. Beri Izin Satu per Satu Siswa
+                st.markdown("**3️⃣ Beri Izin Satu per Satu Siswa**")
                 for ls in locked_students:
                     un_l = ls["username"]
                     nm_l = ls.get("nama", un_l)
@@ -1161,14 +1206,13 @@ def render_guru():
                     
                     c_info, c_act = st.columns([3, 1])
                     c_info.write(f"👤 **{nm_l}** (@{un_l}) — Pelanggaran / Refresh: **{v_c}x**")
-                    if c_act.button("🔓 Beri Izin Mengerjakan", key=f"btn_grant_{un_l}"):
+                    if c_act.button("🔓 Beri Izin", key=f"btn_grant_{un_l}"):
                         db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}").set({
                             "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
                         }, merge=True)
                         clear_pengerjaan_cache()
                         st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
                         st.rerun()
-
         with t_reset:
             st.subheader("🔄 Reset Pengerjaan Tugas Siswa")
             st.caption("Mereset status pengerjaan agar siswa dapat mengerjakan ulang tugas dari awal.")
