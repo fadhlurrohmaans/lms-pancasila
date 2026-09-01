@@ -1326,7 +1326,7 @@ def render_siswa():
                 if existing_sub.get("status") == "in_progress":
                     v_count += 1
                     
-                    # 1. Cek jika total pelanggaran mencapai/melewati 15 (Submit Otomatis)
+                    # 1. Pelanggaran ke-15 -> Submit Otomatis
                     if v_count >= 15:
                         tg_submit = dict(tg)
                         tg_submit["soal"] = soal_list
@@ -1335,8 +1335,8 @@ def render_siswa():
                         clear_pengerjaan_cache()
                         st.rerun()
                     
-                    # 2. Cek jika pelanggaran mencapai 10x (Kunci sampai diizinkan guru)
-                    elif v_count >= 10:
+                    # 2. Pelanggaran tepat ke-10 -> Kunci Soal sampai diizinkan guru
+                    elif v_count == 10:
                         ijin_val = False
 
                     doc_ref.set({
@@ -1387,8 +1387,8 @@ def render_siswa():
                     st.session_state[f"violation_count_{tg_id}"] += 1
                     new_v = st.session_state[f"violation_count_{tg_id}"]
                     
-                    # LOGIKA UTAMA PELANGGARAN:
-                    # A. Total 15 Pelanggaran (10 awal + 5 setelah diizinkan Guru) -> Submit Otomatis
+                    # LOGIKA PELANGGARAN:
+                    # A. Pelanggaran ke-15 -> Submit Otomatis
                     if new_v >= 15:
                         tg_submit = dict(tg)
                         tg_submit["soal"] = soal_list
@@ -1402,8 +1402,8 @@ def render_siswa():
                             st.session_state.pop(k, None)
                         st.rerun()
 
-                    # B. Mencapai 10 Pelanggaran -> Kunci Soal & Perlu Izin Guru
-                    elif new_v >= 10 and st.session_state.get(f"ijin_guru_{tg_id}", True):
+                    # B. Pelanggaran tepat ke-10 -> Kunci Soal & Perlu Izin Guru
+                    elif new_v == 10:
                         st.session_state[f"ijin_guru_{tg_id}"] = False
                         doc_ref.set({
                             "username_siswa": username_s, 
@@ -1417,7 +1417,7 @@ def render_siswa():
                         clear_pengerjaan_cache()
                         st.rerun()
 
-                    # C. Pelanggaran standar di bawah batas terkunci
+                    # C. Pelanggaran standar (termasuk 11-14) -> Tidak mengunci soal (mengerjakan normal)
                     else:
                         doc_ref.set({
                             "username_siswa": username_s, 
@@ -1473,9 +1473,9 @@ def render_siswa():
                     </script>
                 """, height=0)
 
-        # Tampilan jika soal terkunci akibat mencapai 10x Pelanggaran atau Refresh Halaman
+        # Tampilan jika soal terkunci akibat mencapai 10x Pelanggaran
         if is_locked:
-            st.error(f"🔒 **SOAL TERKUNCI**: Anda telah melakukan **{violation_count}x pelanggaran/refresh** (Batas terkunci: 10x)! Jawaban yang sudah terisi telah tersimpan aman. Silakan hubungi Guru untuk meminta izin melanjutkan mengerjakan soal.")
+            st.error(f"🔒 **SOAL TERKUNCI**: Anda telah mencapai **{violation_count}x pelanggaran/refresh** (Terkunci pada pelanggaran ke-10)! Jawaban yang sudah terisi telah tersimpan aman. Silakan hubungi Guru untuk meminta izin melanjutkan mengerjakan soal.")
             if st.button("🔄 Cek Status Izin Guru", key=f"btn_check_permission_{tg_id}", type="primary"):
                 status_doc = doc_ref.get()
                 if status_doc.exists:
@@ -1586,7 +1586,7 @@ def render_siswa():
                 tg_submit = dict(tg)
                 tg_submit["soal"] = soal_list
                 
-                with st.spinner("Memproses pengumpulan jawaban..."):
+                with st.spinner("Memproses pengumpulkan jawaban..."):
                     success = submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_forced=False)
                 
                 if success:
