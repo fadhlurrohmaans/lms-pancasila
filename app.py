@@ -1467,6 +1467,10 @@ def render_siswa():
                 components.html(f"""
                     <script>
                     (function() {{
+                        // Flag penanda agar script hanya diinisialisasi 1 kali di browser siswa
+                        if (window.parent.__antiCheatLoaded) return;
+                        window.parent.__antiCheatLoaded = true;
+
                         const parentDoc = window.parent.document;
                         let lastTriggerViolation = 0;
 
@@ -1544,17 +1548,47 @@ def render_siswa():
             disabled=is_locked
         )
 
+        # Update ke Firestore HANYA saat siswa berpindah nomor dari dropdown navigasi
         if selected_page != curr_page:
+            doc_ref.set({
+                "username_siswa": username_s,
+                "nama_siswa": nama_s,
+                "kelas_siswa": kelas_s,
+                "id_tugas": tg_id,
+                "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
+                "status": "in_progress",
+                "updated_at": firestore.SERVER_TIMESTAMP
+            }, merge=True)
             st.session_state[f"quiz_page_{tg_id}"] = selected_page
             st.rerun()
 
         c_top_prev, c_top_next = st.columns(2)
         with c_top_prev:
+            # Update ke Firestore HANYA saat tombol "Soal Sebelumnya" ditekan
             if curr_page > 0 and st.button("⬅️ Soal Sebelumnya", key=f"top_prev_{tg_id}", use_container_width=True, disabled=is_locked):
+                doc_ref.set({
+                    "username_siswa": username_s,
+                    "nama_siswa": nama_s,
+                    "kelas_siswa": kelas_s,
+                    "id_tugas": tg_id,
+                    "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
+                    "status": "in_progress",
+                    "updated_at": firestore.SERVER_TIMESTAMP
+                }, merge=True)
                 st.session_state[f"quiz_page_{tg_id}"] -= 1
                 st.rerun()
         with c_top_next:
+            # Update ke Firestore HANYA saat tombol "Soal Selanjutnya" ditekan
             if curr_page < total_soal - 1 and st.button("Soal Selanjutnya ➡️", key=f"top_next_{tg_id}", type="primary", use_container_width=True, disabled=is_locked):
+                doc_ref.set({
+                    "username_siswa": username_s,
+                    "nama_siswa": nama_s,
+                    "kelas_siswa": kelas_s,
+                    "id_tugas": tg_id,
+                    "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
+                    "status": "in_progress",
+                    "updated_at": firestore.SERVER_TIMESTAMP
+                }, merge=True)
                 st.session_state[f"quiz_page_{tg_id}"] += 1
                 st.rerun()
 
@@ -1577,38 +1611,17 @@ def render_siswa():
                     key=f"radio_q_{tg_id}_{curr_page}",
                     disabled=is_locked
                 )
+                # Cukup update session state lokal, tanpa rerun, tanpa Firestore call, tanpa clear_pengerjaan_cache
                 if not is_locked and selected_opt != saved_ans:
                     answers[curr_page] = selected_opt
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
-                    # Simpan draft jawaban langsung ke Firestore
-                    doc_ref.set({
-                        "username_siswa": username_s,
-                        "nama_siswa": nama_s,
-                        "kelas_siswa": kelas_s,
-                        "id_tugas": tg_id,
-                        "jawaban": answers,
-                        "status": "in_progress",
-                        "updated_at": firestore.SERVER_TIMESTAMP
-                    }, merge=True)
-                    clear_pengerjaan_cache()
-                    st.rerun()
             else:
                 saved_text = answers[curr_page] or ""
                 essay_text = st.text_area("Jawaban Anda:", value=saved_text, height=140, key=f"essay_q_{tg_id}_{curr_page}", disabled=is_locked)
+                # Cukup update session state lokal, tanpa rerun, tanpa Firestore call, tanpa clear_pengerjaan_cache
                 if not is_locked and essay_text != saved_text:
                     answers[curr_page] = essay_text if essay_text.strip() else None
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
-                    # Simpan draft jawaban langsung ke Firestore
-                    doc_ref.set({
-                        "username_siswa": username_s,
-                        "nama_siswa": nama_s,
-                        "kelas_siswa": kelas_s,
-                        "id_tugas": tg_id,
-                        "jawaban": answers,
-                        "status": "in_progress",
-                        "updated_at": firestore.SERVER_TIMESTAMP
-                    }, merge=True)
-                    clear_pengerjaan_cache()
 
         st.divider()
 
