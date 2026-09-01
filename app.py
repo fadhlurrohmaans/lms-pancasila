@@ -197,7 +197,7 @@ def get_all_materi_cached():
     docs = db.collection("materi_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-# --- CACHE DATA PENGERJAAN SISWA (TTL Pendek 5 detik tanpa perlunya pemanggilan clear() manual di tengah ujian) ---
+# --- CACHE DATA PENGERJAAN SISWA ---
 @st.cache_data(ttl=5)
 def get_user_pengerjaan_cached(username):
     docs = db.collection("pengerjaan_siswa").where("username_siswa", "==", username).stream()
@@ -329,13 +329,12 @@ def delete_tugas_and_submissions(tugas_id):
     for doc in p_docs:
         operations.append(('delete', doc.reference))
         
-    # Commit seluruh operasi batch menggunakan chunking aman
     commit_in_chunks(operations)
     clear_tugas_cache()
     clear_pengerjaan_cache()
 
 # ==========================================
-# 3. AI EVALUATION HELPER (FAST & LIGHTWEIGHT)
+# 3. AI EVALUATION HELPER
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
@@ -1375,7 +1374,6 @@ def render_siswa():
             doc_snap = doc_ref.get()
             existing_sub = doc_snap.to_dict() if doc_snap.exists else {}
 
-            # Restore Jawaban tersimpan dari Firestore jika ada
             saved_ans = existing_sub.get("jawaban")
             if isinstance(saved_ans, list) and len(saved_ans) == total_soal:
                 st.session_state[f"quiz_answers_{tg_id}"] = saved_ans
@@ -1385,13 +1383,8 @@ def render_siswa():
             v_count = existing_sub.get("violation_count", 0)
             ijin_val = existing_sub.get("ijin_guru", True)
 
-            # Deteksi Refresh atau Keluar Halaman (Sesudah Pengerjaan Dimulai)
             if f"quiz_session_active_{tg_id}" not in st.session_state:
                 if existing_sub.get("status") == "in_progress":
-                    # Terdeteksi Refresh / Keluar Halaman -> Tambah hitungan pelanggaran
-                    v_count += 1
-                    
-                    # Kunci HANYA jika jumlah pelanggaran telah mencapai 10x atau lebih
                     if v_count >= 10:
                         ijin_val = False
                     
@@ -1407,7 +1400,6 @@ def render_siswa():
                         "updated_at": firestore.SERVER_TIMESTAMP
                     }, merge=True)
                 else:
-                    # Pertama kali pengerjaan dimulai
                     doc_ref.set({
                         "username_siswa": username_s,
                         "nama_siswa": nama_s,
@@ -1427,7 +1419,36 @@ def render_siswa():
             st.session_state[f"last_sync_time_{tg_id}"] = time.time()
             st.session_state[f"quiz_loaded_{tg_id}"] = True
 
-        # Helper penjelajah background sync per 3 menit (180 detik) atau saat dipanggil paksa
+        # Input tersembunyi sebagai bridge sinkronisasi dari JS
+        v_bridge_val = st.text_input(
+            "Draft Bridge Input",
+            value=str(st.session_state.get(f"violation_count_{tg_id}", 0)),
+            key=f"violation_bridge_input_{tg_id}"
+        )
+
+        # Proses pembaruan dari bridge input jika JS mengirim angka terbaru
+        if v_bridge_val:
+            try:
+                new_v_bridge = int(v_bridge_val)
+                curr_v = st.session_state.get(f"violation_count_{tg_id}", 0)
+                if new_v_bridge > curr_v:
+                    st.session_state[f"violation_count_{tg_id}"] = new_v_bridge
+                    should_lock = new_v_bridge >= 10
+                    ijin_status = False if should_lock else st.session_state.get(f"ijin_guru_{tg_id}", True)
+                    st.session_state[f"ijin_guru_{tg_id}"] = ijin_status
+
+                    doc_ref.set({
+                        "username_siswa": username_s,
+                        "id_tugas": tg_id,
+                        "violation_count": new_v_bridge,
+                        "status": "in_progress",
+                        "ijin_guru": ijin_status,
+                        "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
+                        "updated_at": firestore.SERVER_TIMESTAMP
+                    }, merge=True)
+            except ValueError:
+                pass
+
         def sync_progress_if_needed(force=False):
             now = time.time()
             last_sync = st.session_state.get(f"last_sync_time_{tg_id}", 0)
@@ -1451,14 +1472,19 @@ def render_siswa():
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
         is_locked = not ijin_guru
 
-        # Deteksi otomatis Pindah Tab / Layar Blur untuk Ulangan Harian
+        # Tombol Pemicu Sync Pelanggaran (Menerima parameter sync dari JS)
         if is_ulangan:
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
                 if not is_locked:
-                    st.session_state[f"violation_count_{tg_id}"] += 1
-                    new_v = st.session_state[f"violation_count_{tg_id}"]
+                    try:
+                        bridge_count = int(st.session_state.get(f"violation_bridge_input_{tg_id}", 0))
+                    except (ValueError, TypeError):
+                        bridge_count = 0
+
+                    curr_count = st.session_state.get(f"violation_count_{tg_id}", 0)
+                    new_v = max(curr_count + 1, bridge_count)
                     
-                    # Kunci HANYA jika jumlah pelanggaran telah mencapai 10x atau lebih
+                    st.session_state[f"violation_count_{tg_id}"] = new_v
                     should_lock = new_v >= 10
                     ijin_status = False if should_lock else st.session_state.get(f"ijin_guru_{tg_id}", True)
                     st.session_state[f"ijin_guru_{tg_id}"] = ijin_status
@@ -1476,19 +1502,58 @@ def render_siswa():
                     st.rerun()
 
             if not is_locked:
+                # Skrip JS Anti-Cheat dengan Throttling & Backup localStorage
                 components.html(f"""
                     <script>
                     (function() {{
-                        // Flag penanda agar script hanya diinisialisasi 1 kali di browser siswa
-                        if (window.parent.__antiCheatLoaded) return;
-                        window.parent.__antiCheatLoaded = true;
-
+                        const storageKey = 'v_count_{username_s}_{tg_id}';
+                        const serverCount = {violation_count};
+                        const syncThreshold = 2; // Sync bertahap per 2 pelanggaran
+                        const maxLimit = 10;
+                        
                         const parentDoc = window.parent.document;
-                        let lastTriggerViolation = 0;
+                        
+                        // 1. Baca localStorage & Sinkronkan dengan serverCount
+                        let localVal = parseInt(localStorage.getItem(storageKey) || '0', 10);
+                        if (isNaN(localVal)) localVal = 0;
+
+                        // Ambil nilai tertinggi antara localStorage dan Server
+                        let currentCount = Math.max(serverCount, localVal);
+                        localStorage.setItem(storageKey, currentCount.toString());
+
+                        // Melacak hitungan yang sudah tersinkronkan
+                        if (!window.parent.__lastSyncedCount_{tg_id}) {{
+                            window.parent.__lastSyncedCount_{tg_id} = serverCount;
+                        }}
+                        let lastSyncedCount = Math.max(window.parent.__lastSyncedCount_{tg_id}, serverCount);
 
                         function getBtnByText(text) {{
                             const buttons = Array.from(parentDoc.querySelectorAll('button'));
                             return buttons.find(b => b.innerText.includes(text));
+                        }}
+
+                        function getBridgeInput() {{
+                            return parentDoc.querySelector('input[aria-label="Draft Bridge Input"]');
+                        }}
+
+                        function syncToStreamlit(count) {{
+                            const bridgeInput = getBridgeInput();
+                            if (bridgeInput) {{
+                                const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+                                nativeSetter.call(bridgeInput, count.toString());
+                                bridgeInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            }}
+                            
+                            const triggerBtn = getBtnByText('Catat Pelanggaran');
+                            if (triggerBtn) {{
+                                triggerBtn.click();
+                            }}
+                        }}
+
+                        // Restorasi pasca F5: Jika nilai di localStorage lebih tinggi dari server (akibat belum sempat sync sebelum refresh)
+                        if (currentCount > lastSyncedCount && (currentCount - lastSyncedCount >= syncThreshold || currentCount >= maxLimit)) {{
+                            window.parent.__lastSyncedCount_{tg_id} = currentCount;
+                            setTimeout(function() {{ syncToStreamlit(currentCount); }}, 600);
                         }}
 
                         function hideActionButtons() {{
@@ -1503,20 +1568,35 @@ def render_siswa():
 
                         setInterval(hideActionButtons, 500);
 
-                        function triggerViolation() {{
+                        // Mencegah duplicate event listener pada iframe rerun
+                        if (window.parent.__antiCheatLoaded_{tg_id}) return;
+                        window.parent.__antiCheatLoaded_{tg_id} = true;
+
+                        let lastTriggerTime = 0;
+
+                        function recordViolation() {{
                             const now = Date.now();
-                            if (now - lastTriggerViolation < 3000) return;
-                            lastTriggerViolation = now;
-                            const triggerBtn = getBtnByText('Catat Pelanggaran');
-                            if (triggerBtn) triggerBtn.click();
+                            if (now - lastTriggerTime < 2500) return; // Debounce 2.5 detik
+                            lastTriggerTime = now;
+
+                            currentCount++;
+                            localStorage.setItem(storageKey, currentCount.toString());
+
+                            const unsyncedCount = currentCount - window.parent.__lastSyncedCount_{tg_id};
+
+                            // Syarat Sync: Setiap 2 kali pelanggaran ATAU jika mencapai limit maksimal (10x)
+                            if (unsyncedCount >= syncThreshold || currentCount >= maxLimit) {{
+                                window.parent.__lastSyncedCount_{tg_id} = currentCount;
+                                syncToStreamlit(currentCount);
+                            }}
                         }}
 
                         parentDoc.addEventListener('visibilitychange', function() {{
-                            if (parentDoc.hidden) {{ triggerViolation(); }}
+                            if (parentDoc.hidden) {{ recordViolation(); }}
                         }});
 
                         window.parent.addEventListener('blur', function() {{
-                            triggerViolation();
+                            recordViolation();
                         }});
                     }})();
                     </script>
@@ -1560,7 +1640,6 @@ def render_siswa():
             disabled=is_locked
         )
 
-        # Update navigasi murni di session state & sync background jika sudah 3 menit
         if selected_page != curr_page:
             st.session_state[f"quiz_page_{tg_id}"] = selected_page
             sync_progress_if_needed(force=False)
@@ -1629,13 +1708,13 @@ def render_siswa():
                         f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
                         f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
                         f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}",
-                        f"last_sync_time_{tg_id}"
+                        f"last_sync_time_{tg_id}", f"violation_bridge_input_{tg_id}"
                     ]:
                         st.session_state.pop(k, None)
                     st.rerun()
         return
 
-    # Dashboard Utama Siswa (Saat tidak sedang kuis)
+    # Dashboard Utama Siswa
     st.markdown(f"""
         <div class="student-header">
             <h2>🇮🇩 Selamat Datang, {nama_s}!</h2>
