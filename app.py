@@ -78,6 +78,37 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
+# --- FIRESTORE BATCH CHUNKING HELPER (SKALABILITAS BATCH) ---
+def commit_in_chunks(operations, chunk_size=450):
+    """
+    Eksekusi operasi Firestore Batch secara bertahap (chunking) maksimal 450 item per commit
+    untuk mencegah error Firestore limit 500 dokumen.
+    
+    Format operations list:
+    - ('delete', doc_ref)
+    - ('set', doc_ref, data_dict, merge_bool)
+    - ('update', doc_ref, data_dict)
+    """
+    if not operations:
+        return
+        
+    for i in range(0, len(operations), chunk_size):
+        batch = db.batch()
+        chunk = operations[i:i + chunk_size]
+        for op in chunk:
+            action_type = op[0]
+            ref = op[1]
+            if action_type == 'delete':
+                batch.delete(ref)
+            elif action_type == 'set':
+                data = op[2]
+                merge = op[3] if len(op) > 3 else False
+                batch.set(ref, data, merge=merge)
+            elif action_type == 'update':
+                data = op[2]
+                batch.update(ref, data)
+        batch.commit()
+
 # --- FIRESTORE AGGREGATION QUERY HELPERS (.count()) HEBAT KUOTA ---
 @st.cache_data(ttl=60)
 def count_siswa_by_kelas(kelas):
@@ -292,15 +323,19 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     return True
 
 def delete_tugas_and_submissions(tugas_id):
-    batch = db.batch()
-    tugas_ref = db.collection("tugas_pancasila").document(tugas_id)
-    batch.delete(tugas_ref)
+    operations = []
     
+    # 1. Hapus Dokumen Utama Tugas
+    tugas_ref = db.collection("tugas_pancasila").document(tugas_id)
+    operations.append(('delete', tugas_ref))
+    
+    # 2. Hapus Seluruh Dokumen Pengerjaan Siswa Terkait
     p_docs = db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).stream()
     for doc in p_docs:
-        batch.delete(doc.reference)
+        operations.append(('delete', doc.reference))
         
-    batch.commit()
+    # Commit seluruh operasi batch menggunakan chunking aman
+    commit_in_chunks(operations)
     clear_tugas_cache()
     clear_pengerjaan_cache()
 
@@ -1161,12 +1196,13 @@ def render_guru():
                     st.markdown("**1️⃣ Beri Izin Semua Siswa**")
                     st.caption("Membuka kunci pengerjaan untuk seluruh siswa yang terkunci secara otomatis.")
                     if st.button("🔓 Beri Izin Semua Siswa Terkunci", type="primary", use_container_width=True):
-                        batch = db.batch()
+                        operations = []
                         for ls in locked_students:
                             un_l = ls["username"]
                             doc_ref_l = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
-                            batch.set(doc_ref_l, {"ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
-                        batch.commit()
+                            operations.append(('set', doc_ref_l, {"ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP}, True))
+                        
+                        commit_in_chunks(operations)
                         clear_pengerjaan_cache()
                         st.success(f"✅ Berhasil memberikan izin kepada seluruh ({len(locked_students)}) siswa!")
                         st.rerun()
@@ -1183,11 +1219,12 @@ def render_guru():
                     )
                     if st.button("🔓 Beri Izin Siswa Terpilih", use_container_width=True):
                         if selected_unames:
-                            batch = db.batch()
+                            operations = []
                             for un_l in selected_unames:
                                 doc_ref_l = db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}")
-                                batch.set(doc_ref_l, {"ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
-                            batch.commit()
+                                operations.append(('set', doc_ref_l, {"ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP}, True))
+                            
+                            commit_in_chunks(operations)
                             clear_pengerjaan_cache()
                             st.success(f"✅ Berhasil memberikan izin kepada {len(selected_unames)} siswa terpilih!")
                             st.rerun()
@@ -1231,11 +1268,12 @@ def render_guru():
                     )
 
                     if target_siswa_reset and st.button("🔄 Reset Siswa Terpilih", type="primary", use_container_width=True):
-                        batch = db.batch()
+                        operations = []
                         for un in target_siswa_reset:
                             doc_ref = db.collection("pengerjaan_siswa").document(f"{un}_{selected_tugas_id}")
-                            batch.delete(doc_ref)
-                        batch.commit()
+                            operations.append(('delete', doc_ref))
+                        
+                        commit_in_chunks(operations)
                         clear_pengerjaan_cache()
                         st.success(f"✅ Berhasil mereset pengerjaan {len(target_siswa_reset)} siswa!")
                         st.rerun()
@@ -1245,11 +1283,12 @@ def render_guru():
                     st.warning("Tindakan ini akan menghapus **SELURUH** riwayat & nilai pengerjaan tugas ini untuk seluruh siswa di kelas ini!")
                     
                     if st.button("🚨 Reset Semua Pengerjaan Kelas Ini", type="primary", use_container_width=True):
-                        batch = db.batch()
+                        operations = []
                         for un in sub_map.keys():
                             doc_ref = db.collection("pengerjaan_siswa").document(f"{un}_{selected_tugas_id}")
-                            batch.delete(doc_ref)
-                        batch.commit()
+                            operations.append(('delete', doc_ref))
+                        
+                        commit_in_chunks(operations)
                         clear_pengerjaan_cache()
                         st.success("✅ Seluruh pengerjaan siswa untuk tugas ini berhasil di-reset!")
                         st.rerun()
