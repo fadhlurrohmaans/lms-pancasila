@@ -78,12 +78,8 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
-# --- FIRESTORE BATCH CHUNKING HELPER (SKALABILITAS BATCH) ---
+# --- FIRESTORE BATCH CHUNKING HELPER ---
 def commit_in_chunks(operations, chunk_size=450):
-    """
-    Eksekusi operasi Firestore Batch secara bertahap (chunking) maksimal 450 item per commit
-    untuk mencegah error Firestore limit 500 dokumen.
-    """
     if not operations:
         return
         
@@ -104,7 +100,7 @@ def commit_in_chunks(operations, chunk_size=450):
                 batch.update(ref, data)
         batch.commit()
 
-# --- FIRESTORE AGGREGATION QUERY HELPERS (.count()) HEBAT KUOTA ---
+# --- FIRESTORE AGGREGATION QUERY HELPERS ---
 @st.cache_data(ttl=60)
 def count_siswa_by_kelas(kelas):
     try:
@@ -125,7 +121,6 @@ def count_submitted_by_tugas_kelas(tugas_id, kelas):
 
 @st.cache_data(ttl=60)
 def get_guru_dashboard_stats(pilihan_kelas_tuple):
-    """Menghitung ringkasan statistik Guru menggunakan Aggregation Queries count()"""
     try:
         total_materi = db.collection("materi_pancasila").count().get()[0][0].value
     except Exception:
@@ -155,8 +150,8 @@ def get_guru_dashboard_stats(pilihan_kelas_tuple):
         "total_submitted": total_submitted
     }
 
-# --- OPTIMIZED CACHED READ FUNCTIONS (HIGH TTL) ---
-@st.cache_data(ttl=86400)  # 24 Jam
+# --- OPTIMIZED CACHED READ FUNCTIONS ---
+@st.cache_data(ttl=86400)
 def ensure_default_admin_created():
     admin_ref = db.collection("users").document("admin")
     if not admin_ref.get().exists:
@@ -170,29 +165,29 @@ def ensure_default_admin_created():
         return True
     return False
 
-@st.cache_data(ttl=86400)  # 24 Jam
+@st.cache_data(ttl=86400)
 def get_all_kelas():
     doc = db.collection("config").document("master_kelas").get()
     if doc.exists:
         return sorted(doc.to_dict().get("daftar", []))
     return []
 
-@st.cache_data(ttl=600)  # 10 Menit
+@st.cache_data(ttl=600)
 def get_all_users_cached():
     docs = db.collection("users").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=600)  # 10 Menit
+@st.cache_data(ttl=600)
 def get_siswa_by_kelas_cached(kelas):
     docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", kelas).stream()
     return [{"username": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=300)  # 5 Menit
+@st.cache_data(ttl=300)
 def get_all_tugas_cached():
     docs = db.collection("tugas_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=300)  # 5 Menit
+@st.cache_data(ttl=300)
 def get_all_materi_cached():
     docs = db.collection("materi_pancasila").stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
@@ -320,11 +315,9 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
 def delete_tugas_and_submissions(tugas_id):
     operations = []
     
-    # 1. Hapus Dokumen Utama Tugas
     tugas_ref = db.collection("tugas_pancasila").document(tugas_id)
     operations.append(('delete', tugas_ref))
     
-    # 2. Hapus Seluruh Dokumen Pengerjaan Siswa Terkait
     p_docs = db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).stream()
     for doc in p_docs:
         operations.append(('delete', doc.reference))
@@ -1185,7 +1178,6 @@ def render_guru():
             else:
                 col_all, col_sel = st.columns(2)
 
-                # 1. Beri Izin ke Semua Siswa Terkunci Sekaligus (Reset Pelanggaran -> 0)
                 with col_all:
                     st.markdown("**1️⃣ Beri Izin Semua Siswa**")
                     st.caption("Membuka kunci pengerjaan & mereset hitungan pelanggaran menjadi 0 untuk seluruh siswa terkunci.")
@@ -1201,7 +1193,6 @@ def render_guru():
                         st.success(f"✅ Berhasil memberikan izin & mereset pelanggaran untuk seluruh ({len(locked_students)}) siswa!")
                         st.rerun()
 
-                # 2. Beri Izin ke Beberapa Siswa Terpilih (Multiselect) (Reset Pelanggaran -> 0)
                 with col_sel:
                     st.markdown("**2️⃣ Beri Izin Beberapa Siswa**")
                     options_map = {ls["username"]: f"{ls.get('nama', ls['username'])} (@{ls['username']})" for ls in locked_students}
@@ -1227,7 +1218,6 @@ def render_guru():
 
                 st.divider()
 
-                # 3. Beri Izin Satu per Satu Siswa (Reset Pelanggaran -> 0)
                 st.markdown("**3️⃣ Beri Izin Satu per Satu Siswa**")
                 for ls in locked_students:
                     un_l = ls["username"]
@@ -1502,47 +1492,24 @@ def render_siswa():
                     st.rerun()
 
             if not is_locked:
-                # Skrip JS Anti-Cheat dengan Auto-Reset Pasca Guru Reset / Beri Izin
+                # Skrip JS Anti-Cheat (Langsung sync per 1 pelanggaran & aman saat F5)
                 components.html(f"""
                     <script>
                     (function() {{
                         const storageKey = 'v_count_{username_s}_{tg_id}';
                         const serverCount = {violation_count};
-                        const syncThreshold = 2; // Sync bertahap per 2 pelanggaran
-                        const maxLimit = 10;
-                        
                         const parentDoc = window.parent.document;
 
-                        // 1. Reset otomatis jika serverCount === 0 (setelah Guru reset / beri izin)
-                        if (serverCount === 0) {{
-                            localStorage.setItem(storageKey, '0');
-                            if (window.parent.__lastSyncedCount_{tg_id}) {{
-                                window.parent.__lastSyncedCount_{tg_id} = 0;
-                            }}
-                            if (window.parent.__antiCheatHandler_{tg_id}) {{
-                                try {{
-                                    parentDoc.removeEventListener('visibilitychange', window.parent.__antiCheatHandler_{tg_id});
-                                    window.parent.removeEventListener('blur', window.parent.__antiCheatHandler_{tg_id});
-                                }} catch(e) {{}}
-                                delete window.parent.__antiCheatHandler_{tg_id};
-                            }}
-                            window.parent.__antiCheatLoaded_{tg_id} = false;
-                        }}
-                        
-                        // 2. Baca localStorage & Sinkronkan dengan serverCount
+                        // Ambil nilai terbesar antara localStorage dan Server Count
                         let localVal = parseInt(localStorage.getItem(storageKey) || '0', 10);
                         if (isNaN(localVal)) localVal = 0;
-                        if (serverCount === 0) localVal = 0;
 
-                        // Ambil nilai tertinggi antara localStorage dan Server
+                        if (serverCount === 0 && localVal === 0) {{
+                            localStorage.setItem(storageKey, '0');
+                        }}
+
                         let currentCount = Math.max(serverCount, localVal);
                         localStorage.setItem(storageKey, currentCount.toString());
-
-                        // Melacak hitungan yang sudah tersinkronkan
-                        if (window.parent.__lastSyncedCount_{tg_id} === undefined) {{
-                            window.parent.__lastSyncedCount_{tg_id} = serverCount;
-                        }}
-                        let lastSyncedCount = Math.max(window.parent.__lastSyncedCount_{tg_id}, serverCount);
 
                         function getBtnByText(text) {{
                             const buttons = Array.from(parentDoc.querySelectorAll('button'));
@@ -1559,6 +1526,7 @@ def render_siswa():
                                 const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
                                 nativeSetter.call(bridgeInput, count.toString());
                                 bridgeInput.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                bridgeInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
                             }}
                             
                             const triggerBtn = getBtnByText('Catat Pelanggaran');
@@ -1567,10 +1535,9 @@ def render_siswa():
                             }}
                         }}
 
-                        // Restorasi pasca F5: Jika nilai di localStorage lebih tinggi dari server (dan server != 0)
-                        if (currentCount > lastSyncedCount && (currentCount - lastSyncedCount >= syncThreshold || currentCount >= maxLimit)) {{
-                            window.parent.__lastSyncedCount_{tg_id} = currentCount;
-                            setTimeout(function() {{ syncToStreamlit(currentCount); }}, 600);
+                        // Restorasi pasca F5 jika nilai di localStorage lebih tinggi dari server
+                        if (localVal > serverCount) {{
+                            setTimeout(function() {{ syncToStreamlit(localVal); }}, 300);
                         }}
 
                         function hideActionButtons() {{
@@ -1585,7 +1552,6 @@ def render_siswa():
 
                         setInterval(hideActionButtons, 500);
 
-                        // Mencegah duplicate event listener pada iframe rerun jika belum di-reset
                         if (window.parent.__antiCheatLoaded_{tg_id}) return;
                         window.parent.__antiCheatLoaded_{tg_id} = true;
 
@@ -1593,19 +1559,14 @@ def render_siswa():
 
                         function recordViolation() {{
                             const now = Date.now();
-                            if (now - lastTriggerTime < 2500) return; // Debounce 2.5 detik
+                            if (now - lastTriggerTime < 2000) return; // Debounce 2 detik
                             lastTriggerTime = now;
 
                             currentCount++;
                             localStorage.setItem(storageKey, currentCount.toString());
-
-                            const unsyncedCount = currentCount - (window.parent.__lastSyncedCount_{tg_id} || 0);
-
-                            // Syarat Sync: Setiap 2 kali pelanggaran ATAU jika mencapai limit maksimal (10x)
-                            if (unsyncedCount >= syncThreshold || currentCount >= maxLimit) {{
-                                window.parent.__lastSyncedCount_{tg_id} = currentCount;
-                                syncToStreamlit(currentCount);
-                            }}
+                            
+                            // Pengiriman instan per 1 kali pelanggaran
+                            syncToStreamlit(currentCount);
                         }}
 
                         window.parent.__antiCheatHandler_{tg_id} = function(e) {{
@@ -1797,7 +1758,6 @@ def render_siswa():
                                 st.rerun()
                         else:
                             if st.button("🚀 Mulai Kerjakan", key=f"btn_start_{tg_id}", type="primary", use_container_width=True):
-                                # Bersihkan session state lama untuk tugas ini jika ada reset dari guru
                                 for k in [
                                     f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", 
                                     f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}", f"quiz_session_active_{tg_id}", 
