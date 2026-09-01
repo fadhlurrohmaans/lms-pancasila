@@ -1502,7 +1502,7 @@ def render_siswa():
                     st.rerun()
 
             if not is_locked:
-                # Skrip JS Anti-Cheat dengan Throttling & Backup localStorage + Autosync Reset
+                # Skrip JS Anti-Cheat dengan Auto-Reset Pasca Guru Reset / Beri Izin
                 components.html(f"""
                     <script>
                     (function() {{
@@ -1512,26 +1512,34 @@ def render_siswa():
                         const maxLimit = 10;
                         
                         const parentDoc = window.parent.document;
-                        
-                        // 1. Baca localStorage & Sinkronkan dengan serverCount
-                        let localVal = parseInt(localStorage.getItem(storageKey) || '0', 10);
-                        if (isNaN(localVal)) localVal = 0;
 
-                        // PENTING: Jika serverCount = 0 (misal setelah Guru mereset pengerjaan), paksa reset localStorage ke 0
+                        // 1. Reset otomatis jika serverCount === 0 (setelah Guru reset / beri izin)
                         if (serverCount === 0) {{
-                            localVal = 0;
                             localStorage.setItem(storageKey, '0');
                             if (window.parent.__lastSyncedCount_{tg_id}) {{
                                 window.parent.__lastSyncedCount_{tg_id} = 0;
                             }}
+                            if (window.parent.__antiCheatHandler_{tg_id}) {{
+                                try {{
+                                    parentDoc.removeEventListener('visibilitychange', window.parent.__antiCheatHandler_{tg_id});
+                                    window.parent.removeEventListener('blur', window.parent.__antiCheatHandler_{tg_id});
+                                }} catch(e) {{}}
+                                delete window.parent.__antiCheatHandler_{tg_id};
+                            }}
+                            window.parent.__antiCheatLoaded_{tg_id} = false;
                         }}
+                        
+                        // 2. Baca localStorage & Sinkronkan dengan serverCount
+                        let localVal = parseInt(localStorage.getItem(storageKey) || '0', 10);
+                        if (isNaN(localVal)) localVal = 0;
+                        if (serverCount === 0) localVal = 0;
 
                         // Ambil nilai tertinggi antara localStorage dan Server
                         let currentCount = Math.max(serverCount, localVal);
                         localStorage.setItem(storageKey, currentCount.toString());
 
                         // Melacak hitungan yang sudah tersinkronkan
-                        if (!window.parent.__lastSyncedCount_{tg_id}) {{
+                        if (window.parent.__lastSyncedCount_{tg_id} === undefined) {{
                             window.parent.__lastSyncedCount_{tg_id} = serverCount;
                         }}
                         let lastSyncedCount = Math.max(window.parent.__lastSyncedCount_{tg_id}, serverCount);
@@ -1559,7 +1567,7 @@ def render_siswa():
                             }}
                         }}
 
-                        // Restorasi pasca F5: Jika nilai di localStorage lebih tinggi dari server
+                        // Restorasi pasca F5: Jika nilai di localStorage lebih tinggi dari server (dan server != 0)
                         if (currentCount > lastSyncedCount && (currentCount - lastSyncedCount >= syncThreshold || currentCount >= maxLimit)) {{
                             window.parent.__lastSyncedCount_{tg_id} = currentCount;
                             setTimeout(function() {{ syncToStreamlit(currentCount); }}, 600);
@@ -1577,7 +1585,7 @@ def render_siswa():
 
                         setInterval(hideActionButtons, 500);
 
-                        // Mencegah duplicate event listener pada iframe rerun
+                        // Mencegah duplicate event listener pada iframe rerun jika belum di-reset
                         if (window.parent.__antiCheatLoaded_{tg_id}) return;
                         window.parent.__antiCheatLoaded_{tg_id} = true;
 
@@ -1591,7 +1599,7 @@ def render_siswa():
                             currentCount++;
                             localStorage.setItem(storageKey, currentCount.toString());
 
-                            const unsyncedCount = currentCount - window.parent.__lastSyncedCount_{tg_id};
+                            const unsyncedCount = currentCount - (window.parent.__lastSyncedCount_{tg_id} || 0);
 
                             // Syarat Sync: Setiap 2 kali pelanggaran ATAU jika mencapai limit maksimal (10x)
                             if (unsyncedCount >= syncThreshold || currentCount >= maxLimit) {{
@@ -1600,13 +1608,16 @@ def render_siswa():
                             }}
                         }}
 
-                        parentDoc.addEventListener('visibilitychange', function() {{
-                            if (parentDoc.hidden) {{ recordViolation(); }}
-                        }});
+                        window.parent.__antiCheatHandler_{tg_id} = function(e) {{
+                            if (e.type === 'visibilitychange') {{
+                                if (parentDoc.hidden) recordViolation();
+                            }} else if (e.type === 'blur') {{
+                                recordViolation();
+                            }}
+                        }};
 
-                        window.parent.addEventListener('blur', function() {{
-                            recordViolation();
-                        }});
+                        parentDoc.addEventListener('visibilitychange', window.parent.__antiCheatHandler_{tg_id});
+                        window.parent.addEventListener('blur', window.parent.__antiCheatHandler_{tg_id});
                     }})();
                     </script>
                 """, height=0)
@@ -1786,6 +1797,14 @@ def render_siswa():
                                 st.rerun()
                         else:
                             if st.button("🚀 Mulai Kerjakan", key=f"btn_start_{tg_id}", type="primary", use_container_width=True):
+                                # Bersihkan session state lama untuk tugas ini jika ada reset dari guru
+                                for k in [
+                                    f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", f"quiz_soal_{tg_id}", 
+                                    f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}", f"quiz_session_active_{tg_id}", 
+                                    f"ijin_guru_{tg_id}", f"violation_count_{tg_id}", f"last_sync_time_{tg_id}", 
+                                    f"violation_bridge_input_{tg_id}"
+                                ]:
+                                    st.session_state.pop(k, None)
                                 st.session_state["active_quiz_id"] = tg_id
                                 st.rerun()
 
