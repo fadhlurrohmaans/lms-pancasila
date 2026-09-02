@@ -1636,7 +1636,29 @@ def render_siswa():
             st.stop()
 
         st.progress((curr_page + 1) / max(1, total_soal))
-        st.write(f"Soal **{curr_page + 1}** dari **{total_soal}** | Terjawab: **{terjawab_count}/{total_soal}**")
+        
+        # Fitur Pindah Nomor Soal (Dropdown) & Status Jawaban
+        col_info_soal, col_select_soal = st.columns([2, 1])
+        with col_info_soal:
+            st.write(f"Soal **{curr_page + 1}** dari **{total_soal}** | Terjawab: **{terjawab_count}/{total_soal}**")
+        with col_select_soal:
+            options_soal = list(range(total_soal))
+            def label_soal(i):
+                ans = answers[i]
+                filled = ans is not None and (not isinstance(ans, str) or ans.strip() != "")
+                icon = "✅" if filled else "⚪"
+                return f"{icon} Soal {i + 1}"
+
+            jump_page = st.selectbox(
+                "Pindah Nomor Soal",
+                options=options_soal,
+                index=curr_page,
+                format_func=label_soal,
+                key=f"jump_soal_{tg_id}_{curr_page}"
+            )
+            if jump_page != curr_page:
+                st.session_state[f"quiz_page_{tg_id}"] = jump_page
+                st.rerun()
 
         if 0 <= curr_page < total_soal:
             sq = soal_list[curr_page]
