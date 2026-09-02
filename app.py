@@ -87,7 +87,7 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
-# --- FIRESTORE AGGREGATION QUERY HELPERS (.count()) HEBAT KUOTA ---
+# --- FIRESTORE AGGREGATION & IN-QUERY HELPERS (MENGURANGI ROUND-TRIP & PAYLOAD) ---
 @st.cache_data(ttl=60)
 def count_siswa_by_kelas(kelas):
     try:
@@ -119,7 +119,7 @@ def count_submitted_by_tugas_kelas(tugas_id, kelas):
 
 @st.cache_data(ttl=60)
 def get_guru_dashboard_stats(pilihan_kelas_tuple):
-    """Menghitung ringkasan statistik Guru menggunakan Aggregation Queries count()"""
+    """Menghitung ringkasan statistik Guru menggunakan Query 'in' dan Aggregation count()"""
     try:
         total_materi = db.collection("materi_pancasila").count().get()[0][0].value
     except Exception:
@@ -131,16 +131,24 @@ def get_guru_dashboard_stats(pilihan_kelas_tuple):
         total_tugas = 0
 
     total_siswa = 0
-    for k in pilihan_kelas_tuple:
-        total_siswa += count_siswa_by_kelas(k)
-
     total_submitted = 0
-    for k in pilihan_kelas_tuple:
-        try:
-            q_sub = db.collection("pengerjaan_siswa").where("kelas_siswa", "==", k).where("status", "==", "submitted")
-            total_submitted += q_sub.count().get()[0][0].value
-        except Exception:
-            pass
+    kelas_list = list(pilihan_kelas_tuple)
+
+    if kelas_list:
+        # Poin 3: Memanfaat query operator 'in' (di-chunk per 30 sesuai limit Firestore)
+        for i in range(0, len(kelas_list), 30):
+            chunk = kelas_list[i:i+30]
+            try:
+                q_siswa = db.collection("users").where("role", "==", "siswa").where("kelas", "in", chunk)
+                total_siswa += q_siswa.count().get()[0][0].value
+            except Exception:
+                pass
+
+            try:
+                q_sub = db.collection("pengerjaan_siswa").where("kelas_siswa", "in", chunk).where("status", "==", "submitted")
+                total_submitted += q_sub.count().get()[0][0].value
+            except Exception:
+                pass
 
     return {
         "total_siswa": total_siswa,
@@ -149,8 +157,8 @@ def get_guru_dashboard_stats(pilihan_kelas_tuple):
         "total_submitted": total_submitted
     }
 
-# --- OPTIMIZED CACHED READ FUNCTIONS DENGAN LIMIT QUERY & PAGINATION ---
-@st.cache_data(ttl=86400)  # 24 Jam
+# --- OPTIMIZED CACHED READ FUNCTIONS & SERVER-SIDE FILTERS ---
+@st.cache_data(ttl=86400)
 def ensure_default_admin_created():
     admin_ref = db.collection("users").document("admin")
     if not admin_ref.get().exists:
@@ -164,7 +172,7 @@ def ensure_default_admin_created():
         return True
     return False
 
-@st.cache_data(ttl=86400)  # 24 Jam
+@st.cache_data(ttl=86400)
 def get_all_kelas():
     doc = db.collection("config").document("master_kelas").get()
     if doc.exists:
@@ -173,7 +181,6 @@ def get_all_kelas():
 
 @st.cache_data(ttl=300)
 def get_users_paginated(limit=10, offset=0, role_filter=None):
-    """Membaca data user dengan Limit Query dan Offset (Pagination)"""
     query = db.collection("users")
     if role_filter and role_filter != "semua":
         query = query.where("role", "==", role_filter)
@@ -181,7 +188,7 @@ def get_users_paginated(limit=10, offset=0, role_filter=None):
     docs = query.stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=600)  # 10 Menit (Dengan Limit 500 sebagai batas atas pengamanan)
+@st.cache_data(ttl=600)
 def get_all_users_cached(limit=500):
     docs = db.collection("users").limit(limit).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
@@ -191,17 +198,30 @@ def get_siswa_by_kelas_cached(kelas, limit=100, offset=0):
     docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", kelas).limit(limit).offset(offset).stream()
     return [{"username": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=300)  # 5 Menit (Limit Query Max 100)
+@st.cache_data(ttl=300)
 def get_all_tugas_cached(limit=100, offset=0):
     docs = db.collection("tugas_pancasila").limit(limit).offset(offset).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=300)  # 5 Menit (Limit Query Max 100)
+@st.cache_data(ttl=300)
 def get_all_materi_cached(limit=100, offset=0):
     docs = db.collection("materi_pancasila").limit(limit).offset(offset).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-# --- CACHE DATA PENGERJAAN SISWA (DENGAN LIMIT QUERY) ---
+# Poin 1: Server-side Filter Firestore .where("target_kelas", "array_contains", kelas_siswa)
+@st.cache_data(ttl=300)
+def get_materi_by_kelas_server_side(kelas_siswa, limit=100):
+    """Memangkas payload data transfer dengan Server-side filter array_contains"""
+    docs = db.collection("materi_pancasila").where("target_kelas", "array_contains", kelas_siswa).limit(limit).stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
+@st.cache_data(ttl=300)
+def get_tugas_by_kelas_server_side(kelas_siswa, limit=100):
+    """Memangkas payload data transfer dengan Server-side filter array_contains"""
+    docs = db.collection("tugas_pancasila").where("target_kelas", "array_contains", kelas_siswa).limit(limit).stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
+# --- CACHE DATA PENGERJAAN SISWA (MENGGUNAKAN OPERATOR IN & LIMIT) ---
 @st.cache_data(ttl=30)
 def get_user_pengerjaan_cached(username, limit=50):
     docs = db.collection("pengerjaan_siswa").where("username_siswa", "==", username).limit(limit).stream()
@@ -211,6 +231,20 @@ def get_user_pengerjaan_cached(username, limit=50):
 def get_pengerjaan_by_tugas_kelas_cached(tugas_id, kelas, limit=150, offset=0):
     docs = db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).where("kelas_siswa", "==", kelas).limit(limit).offset(offset).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
+
+# Poin 3: Gunakan query operator 'in' untuk efisiensi round-trip pengerjaan per kelas
+@st.cache_data(ttl=30)
+def get_pengerjaan_by_kelas_list_cached(pilihan_kelas_tuple, limit=500):
+    if not pilihan_kelas_tuple:
+        return []
+    kelas_list = list(pilihan_kelas_tuple)
+    results = []
+    # Maximum array size for 'in' filter is 30 elements
+    for i in range(0, len(kelas_list), 30):
+        chunk = kelas_list[i:i+30]
+        docs = db.collection("pengerjaan_siswa").where("kelas_siswa", "in", chunk).limit(limit).stream()
+        results.extend([d.to_dict() for d in docs])
+    return results
 
 @st.cache_data(ttl=30)
 def get_all_pengerjaan_by_kelas_cached(kelas, limit=300):
@@ -224,10 +258,12 @@ def clear_kelas_cache():
 
 def clear_tugas_cache(): 
     get_all_tugas_cached.clear()
+    get_tugas_by_kelas_server_side.clear()
     get_guru_dashboard_stats.clear()
 
 def clear_materi_cache(): 
     get_all_materi_cached.clear()
+    get_materi_by_kelas_server_side.clear()
     get_guru_dashboard_stats.clear()
 
 def clear_users_cache(): 
@@ -242,6 +278,7 @@ def clear_pengerjaan_cache():
     get_user_pengerjaan_cached.clear()
     get_pengerjaan_by_tugas_kelas_cached.clear()
     get_all_pengerjaan_by_kelas_cached.clear()
+    get_pengerjaan_by_kelas_list_cached.clear()
     count_submitted_by_tugas_kelas.clear()
     get_guru_dashboard_stats.clear()
 
@@ -250,45 +287,31 @@ def clear_pengerjaan_cache():
 # ==========================================
 @st.cache_data(ttl=3600)
 def generate_firestore_data_bundle():
-    """
-    Membuat Firestore Data Bundle yang membundel data statis/master 
-    (Master Kelas, Materi, dan Tugas) dalam format serialized Firestore Bundle.
-    Menghemat kuota pembacaan Firestore dan mempercepat response.
-    """
     if FirestoreBundle is None:
         return None, "Modul `google.cloud.firestore_bundle` tidak tersedia di lingkungan ini."
 
     try:
         bundle = FirestoreBundle("lms_master_data_bundle")
-
-        # 1. Bundling Dokumen Master Kelas
         kelas_ref = db.collection("config").document("master_kelas")
         kelas_snap = kelas_ref.get()
         if kelas_snap.exists:
             bundle.add_document(kelas_snap)
 
-        # 2. Bundling Query Named 'bundle_all_materi'
         materi_query = db.collection("materi_pancasila").limit(50)._query()
         bundle.add_named_query("bundle_all_materi", materi_query)
 
-        # 3. Bundling Query Named 'bundle_all_tugas'
         tugas_query = db.collection("tugas_pancasila").limit(50)._query()
         bundle.add_named_query("bundle_all_tugas", tugas_query)
 
-        # Serialisasi bundle menjadi format biner/string
         serialized_bundle = bundle.build()
         return serialized_bundle, None
     except Exception as e:
         return None, f"Gagal membuat Data Bundle: {str(e)}"
 
 # ==========================================
-# 4. UTILITY & PAGINATION UI HELPERS
+# 4. UTILITY & ATOMIC BATCH OPERATION HELPERS
 # ==========================================
 def render_pagination_controls(total_items, default_page_size=10, key_prefix="pg"):
-    """
-    Helper UI untuk merender navigasi Pagination di Streamlit.
-    Mengembalikan tuple: (current_page, limit, offset)
-    """
     if total_items <= 0:
         return 1, default_page_size, 0
 
@@ -353,11 +376,6 @@ def generate_username(nama, existing_usernames=None):
 def generate_password(length=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
-def is_target_sesuai_kelas(doc_data, kelas_siswa):
-    target = doc_data.get("target_kelas", [])
-    if not target: return True
-    return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
-
 def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=False, is_violation=False):
     tg_id = tg["id"]
     soal_list = tg.get("soal", [])
@@ -400,25 +418,77 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     clear_pengerjaan_cache()
     return True
 
-def delete_tugas_and_submissions(tugas_id):
-    batch = db.batch()
-    tugas_ref = db.collection("tugas_pancasila").document(tugas_id)
-    batch.delete(tugas_ref)
+# Poin 2: Manfaatkan db.batch() hingga 500 operasi atomic (Submit Paksa Massal)
+def submit_jawaban_bulk(tg, list_siswa_unsub, kelas_s):
+    tg_id = tg["id"]
+    soal_list = tg.get("soal", [])
+    total_soal = len(soal_list)
     
-    p_docs = db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).limit(100).stream()
-    for doc in p_docs:
-        batch.delete(doc.reference)
-        
-    batch.commit()
+    # Chunking per 500 operasi (Batas maksimal db.batch() Firestore)
+    for i in range(0, len(list_siswa_unsub), 500):
+        batch = db.batch()
+        chunk = list_siswa_unsub[i:i+500]
+        for s_unsub in chunk:
+            username_s = s_unsub["username"]
+            nama_s = s_unsub.get("nama", username_s)
+            doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
+
+            if tg.get("tipe") == "pg":
+                formatted_ans = [-1] * total_soal
+                batch.set(doc_ref, {
+                    "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
+                    "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "pg", "jawaban": formatted_ans,
+                    "nilai": 0, "catatan_guru": "Di-submit Paksa oleh Guru", "status": "submitted", "ijin_guru": True,
+                    "submitted_at": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP
+                }, merge=True)
+            else:
+                formatted_ans = [""] * total_soal
+                batch.set(doc_ref, {
+                    "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
+                    "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay", "soal": soal_list,
+                    "jawaban": formatted_ans, "nilai": None, "catatan_guru": "Di-submit Paksa oleh Guru", "status": "submitted", "ijin_guru": True,
+                    "submitted_at": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP
+                }, merge=True)
+        batch.commit()
+    
+    clear_pengerjaan_cache()
+    return True
+
+# Poin 2: Manfaatkan db.batch() hingga 500 operasi atomic (Delete Tugas & Submissions)
+def delete_tugas_and_submissions(tugas_id):
+    p_docs = list(db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).stream())
+    
+    # Batch delete submissions (Chunked per 500)
+    for i in range(0, len(p_docs), 500):
+        batch = db.batch()
+        chunk = p_docs[i:i+500]
+        for doc in chunk:
+            batch.delete(doc.reference)
+        batch.commit()
+    
+    # Delete main task document
+    db.collection("tugas_pancasila").document(tugas_id).delete()
     clear_tugas_cache()
     clear_pengerjaan_cache()
 
-def reset_pengerjaan_siswa(username_siswa, tugas_id):
-    """Mereset/menghapus riwayat pengerjaan siswa untuk tugas tertentu"""
-    doc_ref = db.collection("pengerjaan_siswa").document(f"{username_siswa}_{tugas_id}")
-    doc_ref.delete()
+# Poin 2: Manfaatkan db.batch() hingga 500 operasi atomic (Reset Massal)
+def reset_pengerjaan_siswa_bulk(usernames, tugas_id):
+    if isinstance(usernames, str):
+        usernames = [usernames]
+    
+    for i in range(0, len(usernames), 500):
+        batch = db.batch()
+        chunk = usernames[i:i+500]
+        for un in chunk:
+            doc_ref = db.collection("pengerjaan_siswa").document(f"{un}_{tugas_id}")
+            batch.delete(doc_ref)
+        batch.commit()
+        
     clear_pengerjaan_cache()
     return True
+
+def reset_pengerjaan_siswa(username_siswa, tugas_id):
+    return reset_pengerjaan_siswa_bulk([username_siswa], tugas_id)
 
 # ==========================================
 # 5. AI EVALUATION HELPER (FAST & LIGHTWEIGHT)
@@ -591,14 +661,11 @@ def render_superadmin():
 
     with t_list:
         st.subheader("👥 Daftar Akun (Dengan Pagination & Limit Query)")
-        
-        # Filter Peran User
         role_filter = st.selectbox("Filter Peran User", ["semua", "siswa", "guru", "superadmin"], format_func=lambda x: x.upper(), key="admin_role_filter")
         
         total_users = count_all_users(role_filter)
         curr_page, limit, offset = render_pagination_controls(total_users, default_page_size=10, key_prefix="users_pg")
         
-        # Query Firestore Paginated
         paginated_users_list = get_users_paginated(limit=limit, offset=offset, role_filter=role_filter)
         users = []
         for u in paginated_users_list:
@@ -655,21 +722,13 @@ def render_superadmin():
                         st.rerun()
 
     with t_imp:
-        st.subheader("📥 Import User & 📤 Export Data")
+        st.subheader("📥 Import User & 📤 Export Data (Dengan Batch Commit)")
         
         st.markdown("### 📄 Unduh Template Import")
-        st.caption("Gunakan template di bawah ini agar format data sesuai saat melakukan upload.")
-        
-        df_tpl_siswa = pd.DataFrame([
-            {"nama": "Ahmad Santoso", "kelas": "X-1"},
-            {"nama": "Siti Nurhaliza", "kelas": "X-2"}
-        ])
+        df_tpl_siswa = pd.DataFrame([{"nama": "Ahmad Santoso", "kelas": "X-1"}, {"nama": "Siti Nurhaliza", "kelas": "X-2"}])
         csv_tpl_siswa = df_tpl_siswa.to_csv(index=False).encode('utf-8-sig')
 
-        df_tpl_guru = pd.DataFrame([
-            {"nama": "Budi Gunawan, S.Pd.", "kelas": "X-1, X-2"},
-            {"nama": "Dewi Sartika, M.Pd.", "kelas": "XI-1, XI-2"}
-        ])
+        df_tpl_guru = pd.DataFrame([{"nama": "Budi Gunawan, S.Pd.", "kelas": "X-1, X-2"}, {"nama": "Dewi Sartika, M.Pd.", "kelas": "XI-1, XI-2"}])
         csv_tpl_guru = df_tpl_guru.to_csv(index=False).encode('utf-8-sig')
 
         c_tpl_s, c_tpl_g = st.columns(2)
@@ -681,8 +740,6 @@ def render_superadmin():
         st.divider()
 
         target_role_imp = st.radio("Pilih Peran User yang Akan Di-import:", ["Siswa", "Guru"], horizontal=True)
-        st.info("💡 **Format File Import (.csv / .xlsx)**: Wajib memiliki 2 kolom utama: **`nama`** dan **`kelas`**.")
-        
         col_imp, col_exp = st.columns(2)
         with col_imp:
             up_file = st.file_uploader(f"Unggah File Data {target_role_imp} (.csv / .xlsx)", type=["csv", "xlsx"])
@@ -693,47 +750,60 @@ def render_superadmin():
                 if "nama" in df.columns and "kelas" in df.columns:
                     role_str = target_role_imp.lower()
                     all_cached = get_all_users_cached(limit=500)
-                    exist_map = {
-                        u.get("nama", "").strip().lower(): u["id"] 
-                        for u in all_cached if u.get("role") == role_str
-                    }
+                    exist_map = {u.get("nama", "").strip().lower(): u["id"] for u in all_cached if u.get("role") == role_str}
                     existing_usernames = {u["id"] for u in all_cached}
+                    
+                    # Poin 2: Operasi Write Menggunakan Batch 500 Atomic Request
+                    batch = db.batch()
+                    op_count = 0
                     c_new, c_up = 0, 0
                     
                     for _, r in df.iterrows():
                         n_str = str(r["nama"]).strip()
                         k_str = str(r["kelas"]).strip()
                         if not n_str or pd.isna(r["nama"]): continue
-                        
                         n_key = n_str.lower()
                         
                         if role_str == "guru":
                             list_kelas = [k.strip() for k in k_str.split(",") if k.strip()]
                             if n_key in exist_map:
-                                db.collection("users").document(exist_map[n_key]).update({"kelas_ajar": list_kelas})
+                                doc_ref = db.collection("users").document(exist_map[n_key])
+                                batch.update(doc_ref, {"kelas_ajar": list_kelas})
                                 c_up += 1
                             else:
                                 un = generate_username(n_str, existing_usernames)
                                 existing_usernames.add(un)
                                 pw = generate_password()
-                                db.collection("users").document(un).set({
+                                doc_ref = db.collection("users").document(un)
+                                batch.set(doc_ref, {
                                     "nama": n_str, "password": hash_pass(pw), "password_plain": pw,
                                     "role": "guru", "kelas_ajar": list_kelas, "created_at": firestore.SERVER_TIMESTAMP
                                 })
                                 c_new += 1
                         else:
                             if n_key in exist_map:
-                                db.collection("users").document(exist_map[n_key]).update({"kelas": k_str})
+                                doc_ref = db.collection("users").document(exist_map[n_key])
+                                batch.update(doc_ref, {"kelas": k_str})
                                 c_up += 1
                             else:
                                 un = generate_username(n_str, existing_usernames)
                                 existing_usernames.add(un)
                                 pw = generate_password()
-                                db.collection("users").document(un).set({
+                                doc_ref = db.collection("users").document(un)
+                                batch.set(doc_ref, {
                                     "nama": n_str, "password": hash_pass(pw), "password_plain": pw,
                                     "role": "siswa", "kelas": k_str, "created_at": firestore.SERVER_TIMESTAMP
                                 })
                                 c_new += 1
+                                
+                        op_count += 1
+                        if op_count >= 500:
+                            batch.commit()
+                            batch = db.batch()
+                            op_count = 0
+
+                    if op_count > 0:
+                        batch.commit()
                     
                     clear_users_cache()
                     st.success(f"✅ Selesai: {c_new} akun baru dibuat, {c_up} akun diperbarui.")
@@ -809,18 +879,10 @@ def render_superadmin():
 
     with t_bundle:
         st.subheader("📦 Generator & Pengelola Firestore Data Bundles")
-        st.info(
-            "💡 **Firestore Data Bundles** memungkinkan Anda membundel data statis/master "
-            "(seperti Master Kelas, Modul Materi, dan Daftar Tugas) dalam format file biner terkompresi. "
-            "Data ini dapat di-cache secara efisien di CDN / local cache untuk **menghemat hingga 90% kuota pembacaan Firestore**."
-        )
+        st.info("💡 **Firestore Data Bundles** membundel data statis untuk menghemat kuota pembacaan Firestore.")
 
         col_b1, col_b2 = st.columns([2, 1])
         with col_b1:
-            st.markdown("### 🛠️ Status Data Bundle")
-            st.markdown("- **Nama Bundle:** `lms_master_data_bundle`")
-            st.markdown("- **Terdiri Dari:** Dokumen Master Kelas, Query `bundle_all_materi`, Query `bundle_all_tugas`")
-
             if st.button("🚀 Buat Data Bundle Baru Sekarang", type="primary"):
                 with st.spinner("Membundel data Firestore..."):
                     bundle_bytes, err = generate_firestore_data_bundle()
@@ -828,7 +890,7 @@ def render_superadmin():
                     st.error(f"❌ {err}")
                 else:
                     st.session_state["cached_bundle_bytes"] = bundle_bytes
-                    st.success("✅ Firestore Data Bundle berhasil dibuat dan diperbarui di memori!")
+                    st.success("✅ Firestore Data Bundle berhasil dibuat dan diperbarui!")
 
         with col_b2:
             if "cached_bundle_bytes" in st.session_state and st.session_state["cached_bundle_bytes"]:
@@ -959,6 +1021,7 @@ def render_guru():
                                 clear_tugas_cache()
                                 st.rerun()
                         with col_t2:
+                            # Poin 2: Eksekusi Hapus Menggunakan Atomic db.batch()
                             if st.button(f"🗑️ Hapus Tugas", key=f"del_{tg['id']}", type="primary"):
                                 delete_tugas_and_submissions(tg["id"])
                                 st.success("✅ Berhasil! Tugas beserta seluruh riwayat nilainya telah dihapus.")
@@ -1116,7 +1179,8 @@ def render_guru():
         col_k, col_t = st.columns(2)
         with col_k: selected_kelas = st.selectbox("🏫 Pilih Kelas Ajar", options=pilihan_kelas)
 
-        tugas_kelas = [d for d in get_all_tugas_cached(limit=50) if is_target_sesuai_kelas(d, selected_kelas)]
+        # Poin 1: Menggunakan server-side array_contains
+        tugas_kelas = get_tugas_by_kelas_server_side(selected_kelas, limit=50)
         if not tugas_kelas: st.info(f"Belum ada tugas untuk Kelas **{selected_kelas}**."); st.stop()
 
         with col_t:
@@ -1139,18 +1203,13 @@ def render_guru():
         with col_sub_info:
             st.write(f"👥 Total Siswa: **{total_siswa_k}** | Sudah Submit: **{total_submitted_k}** | Belum Submit: **{total_belum_k}**")
         with col_sub_btn:
+            # Poin 2: Menggunakan Submit Paksa Massal (db.batch)
             if siswa_belum_submit and st.button("⚡ Submit Paksa Semua Siswa Belum", type="primary", use_container_width=True):
-                for s_unsub in siswa_belum_submit:
-                    submit_jawaban_siswa(
-                        selected_tugas, s_unsub["username"], s_unsub.get("nama", s_unsub["username"]), 
-                        selected_kelas, answers=[], is_forced=True
-                    )
+                submit_jawaban_bulk(selected_tugas, siswa_belum_submit, selected_kelas)
                 st.success(f"✅ Berhasil melakukan Submit Paksa untuk {len(siswa_belum_submit)} siswa!")
                 st.rerun()
 
         rekap_rows = []
-        is_ulangan_task = selected_tugas.get("jenis_tugas", "Ulangan Harian") == "Ulangan Harian"
-        
         for s in siswa_list:
             un = s["username"]
             sub = sub_map.get(un, {})
@@ -1367,17 +1426,17 @@ def render_guru():
                         st.rerun()
 
                 with col_r2:
-                    st.markdown("### 👥 Reset Siswa Tertentu (Multiple)")
+                    st.markdown("### 👥 Reset Siswa Tertentu (Multiple via db.batch)")
                     list_options_multi = {
                         s["username"]: f"{s.get('nama', s['username'])} (@{s['username']})" 
                         for s in siswa_pengerjaan
                     }
                     selected_multi = st.multiselect("Pilih Satu atau Beberapa Siswa", options=list(list_options_multi.keys()), format_func=lambda x: list_options_multi[x], key="ms_reset_multi")
                     
+                    # Poin 2: Mereset Banyak Siswa Menggunakan Atomic Batch Delete
                     if st.button("🗑️ Reset Pengerjaan Siswa Terpilih", type="primary", key="btn_reset_multi"):
                         if selected_multi:
-                            for un in selected_multi:
-                                reset_pengerjaan_siswa(un, selected_tugas_id)
+                            reset_pengerjaan_siswa_bulk(selected_multi, selected_tugas_id)
                             st.success(f"✅ Berhasil mereset pengerjaan {len(selected_multi)} siswa terpilih!")
                             st.rerun()
                         else:
@@ -1388,7 +1447,9 @@ def render_guru():
         if not pilihan_kelas: st.warning("⚠️ Anda belum ditugaskan mengajar."); st.stop()
 
         selected_kelas = st.selectbox("🏫 Pilih Kelas Ajar", options=pilihan_kelas, key="sb_dn_kelas")
-        tugas_kelas = [d for d in get_all_tugas_cached(limit=50) if is_target_sesuai_kelas(d, selected_kelas)]
+        
+        # Poin 1: Menggunakan server-side array_contains
+        tugas_kelas = get_tugas_by_kelas_server_side(selected_kelas, limit=50)
         valid_tugas_ids = {tg["id"] for tg in tugas_kelas}
         
         siswa_list = get_siswa_by_kelas_cached(selected_kelas, limit=150)
@@ -1444,8 +1505,9 @@ def render_siswa():
 
     if active_quiz_id:
         if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
-            all_t = get_all_tugas_cached(limit=50)
-            st.session_state["active_quiz_data"] = next((t for t in all_t if t["id"] == active_quiz_id), None)
+            # Poin 1: Menggunakan server-side array_contains
+            tugas_siswa_active = get_tugas_by_kelas_server_side(kelas_s, limit=50)
+            st.session_state["active_quiz_data"] = next((t for t in tugas_siswa_active if t["id"] == active_quiz_id), None)
 
         tg = st.session_state.get("active_quiz_data")
         if not tg:
@@ -1463,12 +1525,10 @@ def render_siswa():
 
         doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
 
-        # Inisialisasi awal & Pemulihan status dari Database
         if f"quiz_loaded_{tg_id}" not in st.session_state:
             doc_snap = doc_ref.get()
             existing_sub = doc_snap.to_dict() if doc_snap.exists else {}
 
-            # Restore Jawaban tersimpan dari Firestore jika ada
             saved_ans = existing_sub.get("jawaban")
             if isinstance(saved_ans, list) and len(saved_ans) == total_soal:
                 st.session_state[f"quiz_answers_{tg_id}"] = saved_ans
@@ -1478,12 +1538,10 @@ def render_siswa():
             v_count = existing_sub.get("violation_count", 0)
             ijin_val = existing_sub.get("ijin_guru", True)
 
-            # Deteksi Refresh / Keluar Halaman (Sesi Browser Ter-reset)
             if f"quiz_session_active_{tg_id}" not in st.session_state:
                 if existing_sub.get("status") == "in_progress":
                     v_count += 1
                     
-                    # 1. Pelanggaran ke-15 -> Submit Otomatis
                     if v_count >= 15:
                         tg_submit = dict(tg)
                         tg_submit["soal"] = soal_list
@@ -1491,8 +1549,6 @@ def render_siswa():
                         st.session_state["active_quiz_id"] = None
                         clear_pengerjaan_cache()
                         st.rerun()
-                    
-                    # 2. Pelanggaran tepat ke-10 -> Kunci Soal sampai diizinkan guru
                     elif v_count == 10:
                         ijin_val = False
 
@@ -1509,7 +1565,6 @@ def render_siswa():
                     }, merge=True)
                     clear_pengerjaan_cache()
                 else:
-                    # Pertama kali pengerjaan dimulai
                     doc_ref.set({
                         "username_siswa": username_s,
                         "nama_siswa": nama_s,
@@ -1537,15 +1592,12 @@ def render_siswa():
         terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
         is_locked = not ijin_guru
 
-        # Deteksi otomatis Pindah Tab / Layar Blur (Menambah Pelanggaran)
         if is_ulangan:
             if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
                 if not is_locked:
                     st.session_state[f"violation_count_{tg_id}"] += 1
                     new_v = st.session_state[f"violation_count_{tg_id}"]
                     
-                    # LOGIKA PELANGGARAN:
-                    # A. Pelanggaran ke-15 -> Submit Otomatis
                     if new_v >= 15:
                         tg_submit = dict(tg)
                         tg_submit["soal"] = soal_list
@@ -1559,7 +1611,6 @@ def render_siswa():
                             st.session_state.pop(k, None)
                         st.rerun()
 
-                    # B. Pelanggaran tepat ke-10 -> Kunci Soal & Perlu Izin Guru
                     elif new_v == 10:
                         st.session_state[f"ijin_guru_{tg_id}"] = False
                         doc_ref.set({
@@ -1574,7 +1625,6 @@ def render_siswa():
                         clear_pengerjaan_cache()
                         st.rerun()
 
-                    # C. Pelanggaran standar (termasuk 11-14) -> Tidak mengunci soal
                     else:
                         doc_ref.set({
                             "username_siswa": username_s, 
@@ -1637,7 +1687,6 @@ def render_siswa():
 
         st.progress((curr_page + 1) / max(1, total_soal))
         
-        # Fitur Pindah Nomor Soal (Dropdown) & Status Jawaban
         col_info_soal, col_select_soal = st.columns([2, 1])
         with col_info_soal:
             st.write(f"Soal **{curr_page + 1}** dari **{total_soal}** | Terjawab: **{terjawab_count}/{total_soal}**")
@@ -1698,7 +1747,6 @@ def render_siswa():
                 st.rerun()
 
         with col_nav3:
-            # HANYA TAMPILKAN TOMBOL SUBMIT DI SOAL TERAKHIR
             if curr_page == total_soal - 1:
                 if st.button("🚀 Selesai & Kirim Jawaban", type="primary"):
                     tg_submit = dict(tg)
@@ -1726,8 +1774,8 @@ def render_siswa():
     t_materi_s, t_tugas_s = st.tabs(["📖 Materi Pembelajaran", "📝 Tugas & Ujian Saya"])
 
     with t_materi_s:
-        materi_docs = get_all_materi_cached(limit=50)
-        materi_siswa = [m for m in materi_docs if is_target_sesuai_kelas(m, kelas_s)]
+        # Poin 1: Memangkas payload transfer data dengan server-side array_contains
+        materi_siswa = get_materi_by_kelas_server_side(kelas_s, limit=50)
         if not materi_siswa:
             st.info("Belum ada materi pembelajaran untuk kelas Anda.")
         else:
@@ -1738,10 +1786,10 @@ def render_siswa():
                     if m.get("file_url"): st.link_button("📎 Buka Lampiran File", m.get("file_url"))
 
     with t_tugas_s:
-        all_tugas = get_all_tugas_cached(limit=50)
+        # Poin 1: Memangkas payload transfer data dengan server-side array_contains
         tugas_siswa = [
-            t for t in all_tugas 
-            if is_target_sesuai_kelas(t, kelas_s) and t.get("status", "terbit") == "terbit"
+            t for t in get_tugas_by_kelas_server_side(kelas_s, limit=50)
+            if t.get("status", "terbit") == "terbit"
         ]
 
         if not tugas_siswa:
