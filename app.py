@@ -1676,19 +1676,21 @@ def render_siswa():
                 st.rerun()
 
         with col_nav3:
-            if st.button("🚀 Selesai & Kirim Jawaban", type="primary"):
-                tg_submit = dict(tg)
-                tg_submit["soal"] = soal_list
-                submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers)
-                st.session_state["active_quiz_id"] = None
-                for k in [
-                    f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
-                    f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                    f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}"
-                ]:
-                    st.session_state.pop(k, None)
-                st.success("✅ Jawaban berhasil dikirim!")
-                st.rerun()
+            # HANYA TAMPILKAN TOMBOL SUBMIT DI SOAL TERAKHIR
+            if curr_page == total_soal - 1:
+                if st.button("🚀 Selesai & Kirim Jawaban", type="primary"):
+                    tg_submit = dict(tg)
+                    tg_submit["soal"] = soal_list
+                    submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers)
+                    st.session_state["active_quiz_id"] = None
+                    for k in [
+                        f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
+                        f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
+                        f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}"
+                    ]:
+                        st.session_state.pop(k, None)
+                    st.success("✅ Jawaban berhasil dikirim!")
+                    st.rerun()
         st.stop()
 
     # --- DASHBOARD UTAMA SISWA ---
