@@ -1670,7 +1670,7 @@ def render_siswa():
                 curr_a = answers[curr_page]
                 curr_idx = curr_a if isinstance(curr_a, int) and 0 <= curr_a <= 3 else None
 
-                sel_o = st.radio("Pilih Jawaban:", opsi, index=curr_idx if curr_idx is not None else 0, key=f"q_rad_{tg_id}_{curr_page}")
+                sel_o = st.radio("Pilih Jawaban:", opsi, index=curr_idx if curr_idx, key=f"q_rad_{tg_id}_{curr_page}")
                 if sel_o in opsi:
                     new_idx = opsi.index(sel_o)
                     if answers[curr_page] != new_idx:
