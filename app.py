@@ -1759,7 +1759,7 @@ def render_siswa():
                     col_info, col_btn = st.columns([3, 1])
                     with col_info:
                         st.markdown(f"### 📝 {tg.get('judul')} [{jenis_badge}]")
-                        st.caption(f"Tipe: **{tg.get('tipe', '').upper()}** | Jumlah Soal: **{len(tg.get('soal', []))}**")
+                        st.caption(f"Tipe: **{tg.get('tipe', '').upper()}** | Jumlah Soal: **-**")
                         if tg.get("instruksi"): st.write(tg.get("instruksi"))
 
                         if status_sub == "submitted":
