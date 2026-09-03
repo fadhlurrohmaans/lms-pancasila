@@ -302,10 +302,6 @@ def generate_firestore_data_bundle():
 # 4. UTILITY & RANDOMIZATION HELPERS
 # ==========================================
 def randomize_soal(soal_master, tipe="pg"):
-    """
-    Mengacak urutan nomor soal dan pilihan jawaban (opsi) untuk setiap soal PG.
-    Memperbarui kunci jawaban secara otomatis agar tetap menunjuk ke opsi yang benar.
-    """
     if not soal_master:
         return []
     
@@ -316,23 +312,20 @@ def randomize_soal(soal_master, tipe="pg"):
             continue
             
         sq_copy = dict(sq)
-        sq_copy["orig_idx"] = idx  # Menyimpan indeks soal asli untuk keperluan rekap/analisis Guru
+        sq_copy["orig_idx"] = idx
         
         if tipe == "pg" and "opsi" in sq_copy and isinstance(sq_copy["opsi"], list):
             orig_opsi = list(sq_copy["opsi"])
             orig_kunci = sq_copy.get("kunci", 0)
             
-            # Ambil teks opsi jawaban yang benar
             if isinstance(orig_kunci, int) and 0 <= orig_kunci < len(orig_opsi):
                 kunci_text = orig_opsi[orig_kunci]
             else:
                 kunci_text = orig_opsi[0] if orig_opsi else ""
             
-            # Acak urutan opsi jawaban
             new_opsi = list(orig_opsi)
             random.shuffle(new_opsi)
             
-            # Cari indeks kunci jawaban yang baru pada opsi teracak
             try:
                 new_kunci = new_opsi.index(kunci_text)
             except ValueError:
@@ -343,15 +336,10 @@ def randomize_soal(soal_master, tipe="pg"):
             
         shuffled_soal.append(sq_copy)
         
-    # Acak urutan nomor soal
     random.shuffle(shuffled_soal)
     return shuffled_soal
 
 def get_student_ans_for_master_q(sub, master_idx, master_q):
-    """
-    Memetakan kembali jawaban teracak siswa ke soal master untuk analisis butir soal Guru.
-    Mengembalikan tuple: (is_correct: 1/0, master_option_index: 0..3/None)
-    """
     sub_soal = sub.get("soal", [])
     ans_list = sub.get("jawaban", [])
     
@@ -1196,7 +1184,7 @@ def render_guru():
             )
 
 # ==========================================
-# 10. PANEL SISWA (INTEGRASI SOAL TERACAK)
+# 10. PANEL SISWA (NAVIGASI SOAL DROPDOWN)
 # ==========================================
 def render_siswa():
     username_s = user_info["username"]
@@ -1230,17 +1218,15 @@ def render_siswa():
         tg_id = tg["id"]
         doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
 
-        # Inisialisasi Sesi Soal & Jawaban (Dengan Pengacakan Ter-persis)
+        # Inisialisasi Sesi Soal & Jawaban
         if f"quiz_loaded_{tg_id}" not in st.session_state:
             doc_snap = doc_ref.get()
             existing_sub = doc_snap.to_dict() if doc_snap.exists else {}
 
-            # Cek apakah sudah ada soal teracak yang tersimpan di Firestore untuk siswa ini
             saved_soal = existing_sub.get("soal")
             if isinstance(saved_soal, list) and len(saved_soal) > 0:
                 soal_list = saved_soal
             else:
-                # ACAK SOAL DAN OPSI JAWABAN
                 soal_list = randomize_soal(tg.get("soal", []), tipe=tg.get("tipe", "pg"))
 
             st.session_state[f"quiz_soal_{tg_id}"] = soal_list
@@ -1311,6 +1297,29 @@ def render_siswa():
         st.caption("🎲 *Soal dan Opsi Jawaban disajikan dalam urutan teracak.*")
         st.progress((curr_page + 1) / max(1, total_soal))
 
+        # --- NAVIGASI SOAL DROPDOWN ---
+        def get_soal_label(idx):
+            ans_val = answers[idx]
+            is_answered = (ans_val is not None and ans_val != "" and ans_val != -1)
+            status_str = "Sudah Dijawab" if is_answered else "Belum Dijawab"
+            icon = "🟢" if is_answered else "⚪"
+            return f"{icon} Soal Nomor {idx + 1} ({status_str})"
+
+        col_nav1, col_nav2 = st.columns([3, 1])
+        with col_nav1:
+            selected_page = st.selectbox(
+                "📌 Navigasi Pindah Soal:",
+                options=list(range(total_soal)),
+                index=curr_page,
+                format_func=get_soal_label,
+                key=f"nav_dropdown_{tg_id}_{curr_page}"
+            )
+            if selected_page != curr_page:
+                st.session_state[f"quiz_page_{tg_id}"] = selected_page
+                st.rerun()
+
+        st.divider()
+
         if 0 <= curr_page < total_soal:
             sq = soal_list[curr_page]
             q_text = sq.get("pertanyaan", "") if isinstance(sq, dict) else str(sq)
@@ -1322,7 +1331,6 @@ def render_siswa():
                 opsi_list = sq.get("opsi", [])
                 curr_ans = answers[curr_page]
                 
-                # Menentukan indeks pilihan awal
                 default_idx = curr_ans if (curr_ans is not None and isinstance(curr_ans, int) and 0 <= curr_ans < len(opsi_list)) else None
                 
                 sel_opt = st.radio(
@@ -1377,20 +1385,6 @@ def render_siswa():
                     )
                     st.session_state["active_quiz_id"] = None
                     st.success("🎉 Jawaban berhasil dikirim!")
-                    st.rerun()
-
-        st.divider()
-        st.markdown("### 📌 Navigasi Soal")
-        num_cols = min(10, total_soal) if total_soal > 0 else 1
-        cols = st.columns(num_cols)
-        for idx_q in range(total_soal):
-            ans_val = answers[idx_q]
-            is_answered = (ans_val is not None and ans_val != "" and ans_val != -1)
-            btn_label = f"{'🟢' if is_answered else '⚪'} {idx_q + 1}"
-            col_idx = idx_q % num_cols
-            with cols[col_idx]:
-                if st.button(btn_label, key=f"nav_btn_{idx_q}"):
-                    st.session_state[f"quiz_page_{tg_id}"] = idx_q
                     st.rerun()
 
         return
