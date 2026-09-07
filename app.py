@@ -13,7 +13,6 @@ import streamlit.components.v1 as components
 import firebase_admin
 from firebase_admin import credentials, firestore
 import pandas as pd
-import google.generativeai as genai
 
 try:
     from google.cloud.firestore_bundle import FirestoreBundle
@@ -152,13 +151,57 @@ def get_all_kelas():
     return sorted(doc.to_dict().get("daftar", [])) if doc.exists else ["7-A", "7-B", "8-A", "8-B", "9-A"]
 
 @st.cache_data(ttl=86400)
-def get_all_bab():
+def get_all_bab_data():
+    """Mengambil seluruh data BAB beserta target kelas & status aktifnya."""
     doc = db.collection("config").document("master_bab").get()
-    if doc.exists and "daftar" in doc.to_dict():
-        return sorted(doc.to_dict().get("daftar", []))
-    default_bab = ["BAB 1: Kedudukan dan Fungsi Pancasila", "BAB 2: Bentuk dan Kedaulatan Negara"]
-    db.collection("config").document("master_bab").set({"daftar": default_bab}, merge=True)
-    return default_bab
+    if doc.exists:
+        data = doc.to_dict()
+        if "items" in data:
+            items = data["items"]
+            for b in items:
+                if "is_active" not in b:
+                    b["is_active"] = True
+            return items
+        if "daftar" in data:
+            all_k = get_all_kelas()
+            items = [{"nama": b, "target_kelas": all_k, "is_active": True} for b in data["daftar"]]
+            db.collection("config").document("master_bab").set({"items": items}, merge=True)
+            return items
+            
+    all_k = get_all_kelas()
+    default_items = [
+        {"nama": "BAB 1: Kedudukan dan Fungsi Pancasila", "target_kelas": all_k, "is_active": True},
+        {"nama": "BAB 2: Bentuk dan Kedaulatan Negara", "target_kelas": all_k, "is_active": True}
+    ]
+    db.collection("config").document("master_bab").set({"items": default_items}, merge=True)
+    return default_items
+
+def get_bab_for_kelas(kelas_siswa=None, only_active=False):
+    """Mengambil daftar nama BAB yang ditargetkan untuk kelas tertentu (opsional filter aktif)."""
+    items = get_all_bab_data()
+    daftar_nama = []
+    for b in items:
+        if only_active and not b.get("is_active", True):
+            continue
+        target = b.get("target_kelas", [])
+        if not kelas_siswa or not target or kelas_siswa in target:
+            daftar_nama.append(b["nama"])
+    return daftar_nama
+
+@st.cache_data(ttl=60)
+def get_diskusi_status_cached():
+    """Mengambil status aktif/nonaktif forum diskusi."""
+    doc = db.collection("config").document("master_diskusi_status").get()
+    return doc.to_dict() if doc.exists else {}
+
+def is_diskusi_aktif(bab, pertemuan, kelas=None):
+    """Cek apakah diskusi tertentu aktif."""
+    status_map = get_diskusi_status_cached()
+    key_specific = f"{bab}_p{pertemuan}_{kelas}"
+    key_global = f"{bab}_p{pertemuan}"
+    if key_specific in status_map:
+        return status_map[key_specific]
+    return status_map.get(key_global, True)
 
 @st.cache_data(ttl=300)
 def get_users_paginated(limit=10, offset=0, role_filter=None):
@@ -214,7 +257,10 @@ def clear_kelas_cache():
     get_guru_dashboard_stats.clear()
 
 def clear_bab_cache():
-    get_all_bab.clear()
+    get_all_bab_data.clear()
+
+def clear_diskusi_status_cache():
+    get_diskusi_status_cached.clear()
 
 def clear_tugas_cache(): 
     get_all_tugas_cached.clear()
@@ -502,7 +548,7 @@ def render_guru():
     st.markdown("""
         <div class="smp-header">
             <h2 style="margin:0; color:#FFFFFF;">🎓 DASHBOARD GURU PENDIDIKAN PANCASILA SMP</h2>
-            <p style="margin:0; font-size:14px;">Pengelolaan Materi, Forum Diskusi, UTS BAB, dan UAS BAB</p>
+            <p style="margin:0; font-size:14px;">Pengelolaan BAB, Status Aktif Pembelajaran, Forum Diskusi, UTS BAB, dan UAS BAB</p>
         </div>
     """, unsafe_allow_html=True)
     
@@ -525,88 +571,170 @@ def render_guru():
         "📊 Rekapitulasi Nilai SMP"
     ])
 
-    daftar_bab = get_all_bab()
+    daftar_bab_data = get_all_bab_data()
+    daftar_bab = [b["nama"] for b in daftar_bab_data]
 
     if menu == "📚 Kelola BAB & Materi":
         st.header("📚 Kelola BAB & Pertemuan Pembelajaran")
-        st.caption("ℹ️ Setiap BAB terdiri dari **6 Pertemuan**: Pertemuan 1, 2, 4, 5 (Diskusi); Pertemuan 3 (UTS BAB); Pertemuan 6 (UAS BAB).")
+        st.caption("ℹ️ Tentukan BAB mana yang **aktif**, kelola **target kelas**, serta **keaktifan modul materi**.")
 
-        t_materi, t_bab = st.tabs(["📋 Materi Pertemuan", "⚙️ Tambah / Hapus BAB"])
+        t_materi, t_bab = st.tabs(["📋 Materi Pertemuan", "⚙️ Kelola & Toggle BAB"])
 
         with t_bab:
-            st.subheader("⚙️ Pengaturan BAB Pembelajaran")
-            col_b1, col_b2 = st.columns(2)
+            st.subheader("⚙️ Status Aktif & Target Kelas BAB")
+            col_b1, col_b2 = st.columns([3, 2])
+            
             with col_b1:
-                st.markdown("**Daftar BAB Saat Ini:**")
-                for b in daftar_bab:
-                    st.markdown(f"- **{b}**")
+                st.markdown("**Daftar BAB & Status Keaktifannya:**")
+                bab_updated = False
+                for idx, b in enumerate(daftar_bab_data):
+                    with st.container(border=True):
+                        cb_col1, cb_col2 = st.columns([3, 1])
+                        with cb_col1:
+                            target_str = ", ".join(b.get("target_kelas", [])) if b.get("target_kelas") else "Semua Kelas"
+                            status_badge = "🟢 **AKTIF**" if b.get("is_active", True) else "🔴 **NONAKTIF**"
+                            st.markdown(f"##### {b['nama']}\nStatus: {status_badge}  \n📌 *Kelas: {target_str}*")
+                        with cb_col2:
+                            is_act = st.toggle("Aktifkan", value=b.get("is_active", True), key=f"tg_bab_{idx}")
+                            if is_act != b.get("is_active", True):
+                                daftar_bab_data[idx]["is_active"] = is_act
+                                bab_updated = True
+                
+                if bab_updated:
+                    db.collection("config").document("master_bab").set({"items": daftar_bab_data})
+                    clear_bab_cache()
+                    st.success("Status keaktifan BAB berhasil diperbarui!")
+                    st.rerun()
+
             with col_b2:
-                with st.form("form_add_bab", clear_on_submit=True):
+                with st.form("form_add_bab_with_kelas", clear_on_submit=True):
+                    st.markdown("**➕ Tambah BAB Baru**")
                     new_bab_title = st.text_input("Nama BAB Baru (Contoh: BAB 3: Tata Urutan Peraturan)").strip()
-                    if st.form_submit_button("➕ Tambah BAB"):
-                        if new_bab_title and new_bab_title not in daftar_bab:
-                            daftar_bab.append(new_bab_title)
-                            db.collection("config").document("master_bab").set({"daftar": sorted(daftar_bab)}, merge=True)
-                            clear_bab_cache()
-                            st.success(f"{new_bab_title} berhasil ditambahkan!")
-                            st.rerun()
+                    target_k_bab = st.multiselect("Target Kelas untuk BAB Ini", options=get_all_kelas(), default=pilihan_kelas)
+                    is_active_new = st.checkbox("Langsung Aktifkan BAB", value=True)
+                    
+                    if st.form_submit_button("➕ Simpan BAB"):
+                        if new_bab_title and target_k_bab:
+                            if not any(b["nama"] == new_bab_title for b in daftar_bab_data):
+                                daftar_bab_data.append({
+                                    "nama": new_bab_title,
+                                    "target_kelas": target_k_bab,
+                                    "is_active": is_active_new
+                                })
+                                db.collection("config").document("master_bab").set({"items": daftar_bab_data})
+                                clear_bab_cache()
+                                st.success(f"'{new_bab_title}' berhasil ditambahkan!")
+                                st.rerun()
+                            else:
+                                st.warning("Nama BAB tersebut sudah ada!")
+                        else:
+                            st.warning("Mohon isi nama BAB dan pilih minimal satu target kelas.")
 
                 st.divider()
 
-                if daftar_bab:
+                if daftar_bab_data:
+                    with st.expander("✏️ Edit Target Kelas BAB"):
+                        selected_edit_bab = st.selectbox("Pilih BAB untuk Diubah Kelasnya", options=daftar_bab, key="sb_edit_bab")
+                        bab_obj = next(b for b in daftar_bab_data if b["nama"] == selected_edit_bab)
+                        
+                        with st.form("form_edit_bab_kelas"):
+                            updated_target_k = st.multiselect("Target Kelas Baru", options=get_all_kelas(), default=bab_obj.get("target_kelas", []))
+                            if st.form_submit_button("💾 Simpan Perubahan Kelas"):
+                                bab_obj["target_kelas"] = updated_target_k
+                                db.collection("config").document("master_bab").set({"items": daftar_bab_data})
+                                clear_bab_cache()
+                                st.success(f"Target kelas untuk '{selected_edit_bab}' berhasil diperbarui!")
+                                st.rerun()
+
+                    st.divider()
+
                     with st.form("form_del_bab"):
                         bab_to_del = st.selectbox("Pilih BAB yang akan Dihapus", options=daftar_bab)
                         if st.form_submit_button("🗑️ Hapus BAB", type="primary"):
-                            daftar_bab.remove(bab_to_del)
-                            db.collection("config").document("master_bab").set({"daftar": sorted(daftar_bab)}, merge=True)
+                            updated_items = [b for b in daftar_bab_data if b["nama"] != bab_to_del]
+                            db.collection("config").document("master_bab").set({"items": updated_items})
                             clear_bab_cache()
-                            st.success(f"{bab_to_del} berhasil dihapus!")
+                            st.success(f"'{bab_to_del}' berhasil dihapus!")
                             st.rerun()
 
         with t_materi:
-            sel_bab = st.selectbox("Pilih BAB", options=daftar_bab)
-            sel_p = st.selectbox("Pilih Pertemuan", [1, 2, 3, 4, 5, 6], format_func=lambda x: f"Pertemuan {x} - {'UTS BAB' if x==3 else ('UAS BAB' if x==6 else 'Diskusi & Materi')}")
-
-            st.subheader(f"Materi Pembelajaran - {sel_bab} (Pertemuan {sel_p})")
-            
-            materi_cached = get_all_materi_cached(limit=100)
-            m_curr = [m for m in materi_cached if m.get("bab") == sel_bab and int(m.get("pertemuan", 1)) == sel_p]
-
-            if m_curr:
-                for m in m_curr:
-                    with st.container(border=True):
-                        st.markdown(f"##### 📘 {m.get('judul')}")
-                        st.write(m.get("konten", ""))
-                        if m.get("file_url"): st.link_button("📎 Buka Modul / Lampiran", m.get("file_url"))
-                        if st.button("🗑️ Hapus Materi", key=f"del_mat_{m['id']}", type="primary"):
-                            db.collection("materi_pancasila").document(m["id"]).delete()
-                            clear_materi_cache(); st.success("Materi dihapus!"); st.rerun()
+            if not daftar_bab:
+                st.info("Belum ada BAB. Silakan buat BAB terlebih dahulu pada tab '⚙️ Kelola & Toggle BAB'.")
             else:
-                st.info("Belum ada materi untuk pertemuan ini.")
+                sel_bab = st.selectbox("Pilih BAB", options=daftar_bab)
+                sel_p = st.selectbox("Pilih Pertemuan", [1, 2, 3, 4, 5, 6], format_func=lambda x: f"Pertemuan {x} - {'UTS BAB' if x==3 else ('UAS BAB' if x==6 else 'Diskusi & Materi')}")
 
-            with st.expander("➕ Upload / Tambah Materi Pertemuan"):
-                with st.form(f"f_add_materi_{sel_bab}_{sel_p}", clear_on_submit=True):
-                    judul_m = st.text_input("Judul Materi Pertemuan")
-                    target_k = st.multiselect("Target Kelas", options=pilihan_kelas, default=pilihan_kelas)
-                    konten_m = st.text_area("Deskripsi / Ringkasan Materi")
-                    file_url_m = st.text_input("🔗 Link Bahan Ajar / Slide PPT / Video (Opsional)")
-                    if st.form_submit_button("📁 Simpan Materi"):
-                        if judul_m and target_k:
-                            db.collection("materi_pancasila").add({
-                                "bab": sel_bab, "pertemuan": sel_p, "judul": judul_m,
-                                "target_kelas": target_k, "konten": konten_m, "file_url": file_url_m.strip() or None,
-                                "created_at": firestore.SERVER_TIMESTAMP
-                            })
-                            clear_materi_cache(); st.success("Materi berhasil disimpan!"); st.rerun()
+                st.subheader(f"Materi Pembelajaran - {sel_bab} (Pertemuan {sel_p})")
+                
+                materi_cached = get_all_materi_cached(limit=100)
+                m_curr = [m for m in materi_cached if m.get("bab") == sel_bab and int(m.get("pertemuan", 1)) == sel_p]
+
+                if m_curr:
+                    for m in m_curr:
+                        with st.container(border=True):
+                            cm1, cm2 = st.columns([3, 1])
+                            with cm1:
+                                is_m_active = m.get("is_active", True)
+                                badge_m = "🟢 Aktif" if is_m_active else "🔴 Nonaktif"
+                                st.markdown(f"##### 📘 {m.get('judul')} ({badge_m})")
+                                st.write(m.get("konten", ""))
+                                if m.get("file_url"): st.link_button("📎 Buka Modul / Lampiran", m.get("file_url"))
+                            with cm2:
+                                toggle_mat = st.toggle("Aktifkan Materi", value=is_m_active, key=f"tg_materi_{m['id']}")
+                                if toggle_mat != is_m_active:
+                                    db.collection("materi_pancasila").document(m["id"]).update({"is_active": toggle_mat})
+                                    clear_materi_cache()
+                                    st.success("Status materi berhasil diperbarui!")
+                                    st.rerun()
+
+                                if st.button("🗑️ Hapus Materi", key=f"del_mat_{m['id']}", type="primary"):
+                                    db.collection("materi_pancasila").document(m["id"]).delete()
+                                    clear_materi_cache(); st.success("Materi dihapus!"); st.rerun()
+                else:
+                    st.info("Belum ada materi untuk pertemuan ini.")
+
+                with st.expander("➕ Upload / Tambah Materi Pertemuan"):
+                    with st.form(f"f_add_materi_{sel_bab}_{sel_p}", clear_on_submit=True):
+                        judul_m = st.text_input("Judul Materi Pertemuan")
+                        target_k = st.multiselect("Target Kelas", options=pilihan_kelas, default=pilihan_kelas)
+                        konten_m = st.text_area("Deskripsi / Ringkasan Materi")
+                        file_url_m = st.text_input("🔗 Link Bahan Ajar / Slide PPT / Video (Opsional)")
+                        is_active_m = st.checkbox("Publikasikan (Aktifkan untuk Siswa)", value=True)
+                        
+                        if st.form_submit_button("📁 Simpan Materi"):
+                            if judul_m and target_k:
+                                db.collection("materi_pancasila").add({
+                                    "bab": sel_bab, "pertemuan": sel_p, "judul": judul_m,
+                                    "target_kelas": target_k, "konten": konten_m, "file_url": file_url_m.strip() or None,
+                                    "is_active": is_active_m, "created_at": firestore.SERVER_TIMESTAMP
+                                })
+                                clear_materi_cache(); st.success("Materi berhasil disimpan!"); st.rerun()
 
     elif menu == "💬 Forum Diskusi":
         st.header("💬 Pengelolaan Forum Diskusi")
-        st.caption("ℹ️ Forum diskusi aktif pada **Pertemuan 1, 2, 4, dan 5** di setiap BAB.")
+        st.caption("ℹ️ Guru dapat menentukan apakah **forum diskusi aktif/terbuka** atau **ditutup** untuk siswa.")
 
         col_b, col_k, col_p = st.columns(3)
         with col_b: sel_bab = st.selectbox("Pilih BAB", options=daftar_bab)
         with col_k: sel_k = st.selectbox("Pilih Kelas SMP", options=pilihan_kelas)
         with col_p: sel_p = st.selectbox("Pilih Pertemuan Diskusi", [1, 2, 4, 5], format_func=lambda x: f"Pertemuan {x} (Diskusi)")
+
+        # Control active status of Discussion
+        curr_diskusi_status = is_diskusi_aktif(sel_bab, sel_p, sel_k)
+        with st.container(border=True):
+            cd1, cd2 = st.columns([3, 1])
+            with cd1:
+                st.markdown(f"##### ⚙️ Status Forum Diskusi: {'🟢 **DIBUKA / AKTIF**' if curr_diskusi_status else '🔴 **DITUTUP / NONAKTIF**'}")
+                st.caption(f"BAB: {sel_bab} | Pertemuan {sel_p} | Kelas {sel_k}")
+            with cd2:
+                toggle_diskusi = st.toggle("Buka Forum Diskusi", value=curr_diskusi_status, key=f"tg_disk_{sel_bab}_{sel_p}_{sel_k}")
+                if toggle_diskusi != curr_diskusi_status:
+                    db.collection("config").document("master_diskusi_status").set({
+                        f"{sel_bab}_p{sel_p}_{sel_k}": toggle_diskusi
+                    }, merge=True)
+                    clear_diskusi_status_cache()
+                    st.success("Status Forum Diskusi berhasil diperbarui!")
+                    st.rerun()
 
         st.subheader(f"Tanggapan Siswa - {sel_bab} | Pertemuan {sel_p} ({sel_k})")
         discussions = get_diskusi_by_bab_pertemuan_kelas(sel_bab, sel_p, sel_k)
@@ -713,12 +841,10 @@ def render_guru():
             un = s["username"]
             nm = s.get("nama", un)
             
-            # 1. Kehadiran (6 Pertemuan)
             user_hadir = get_kehadiran_user(un)
             cnt_hadir = sum(1 for p in range(1, 7) if user_hadir.get(f"{sel_bab}_p{p}", {}).get("hadir"))
             score_hadir = round((cnt_hadir / 6.0) * 100)
 
-            # 2. Rata-rata Nilai Diskusi (Pertemuan 1, 2, 4, 5)
             diskusi_scores = []
             for p in [1, 2, 4, 5]:
                 d_docs = get_diskusi_by_bab_pertemuan_kelas(sel_bab, p, sel_k)
@@ -727,7 +853,6 @@ def render_guru():
                         diskusi_scores.append(float(d.get("nilai")))
             score_diskusi = round(sum(diskusi_scores) / len(diskusi_scores), 1) if diskusi_scores else 0.0
 
-            # 3. Nilai UTS BAB (Pertemuan 3)
             uts_scores = []
             for tg in [t for t in tugas_list if t.get("pertemuan") == 3]:
                 p = p_map.get((un, tg["id"]), {})
@@ -735,7 +860,6 @@ def render_guru():
                     uts_scores.append(float(p.get("nilai")))
             score_uts = round(sum(uts_scores) / len(uts_scores), 1) if uts_scores else 0.0
 
-            # 4. Nilai UAS BAB (Pertemuan 6)
             uas_scores = []
             for tg in [t for t in tugas_list if t.get("pertemuan") == 6]:
                 p = p_map.get((un, tg["id"]), {})
@@ -743,7 +867,6 @@ def render_guru():
                     uas_scores.append(float(p.get("nilai")))
             score_uas = round(sum(uas_scores) / len(uas_scores), 1) if uas_scores else 0.0
 
-            # Formula Nilai Akhir BAB: (20% Kehadiran) + (20% Diskusi) + (30% UTS BAB) + (30% UAS BAB)
             score_akhir_bab = round((0.20 * score_hadir) + (0.20 * score_diskusi) + (0.30 * score_uts) + (0.30 * score_uas), 2)
 
             rekap_smp.append({
@@ -842,9 +965,10 @@ def render_siswa():
         </div>
     """, unsafe_allow_html=True)
 
-    daftar_bab = get_all_bab()
+    # Filter BAB yang HANYA AKTIF
+    daftar_bab = get_bab_for_kelas(kelas_s, only_active=True)
     if not daftar_bab:
-        st.info("Belum ada BAB pembelajaran yang tersedia.")
+        st.info(f"Belum ada BAB pembelajaran yang aktif untuk Kelas {kelas_s}.")
         st.stop()
 
     sel_bab = st.selectbox("📚 Pilih BAB Pembelajaran", options=daftar_bab)
@@ -853,7 +977,6 @@ def render_siswa():
     materi_docs = get_all_materi_cached(limit=50)
     tugas_docs = get_all_tugas_cached(limit=50)
 
-    # TABS FOR PERTEMUAN 1 - 6 IN THE SELECTED BAB
     tabs_pertemuan = st.tabs([
         "Pertemuan 1 (Diskusi)", 
         "Pertemuan 2 (Diskusi)", 
@@ -867,7 +990,6 @@ def render_siswa():
         with tab:
             st.markdown(f"### 📌 Ruang Pembelajaran - {sel_bab} (Pertemuan {idx})")
 
-            # --- 1. KEHADIRAN PERTEMUAN ---
             st.markdown("#### 1. Presensi / Kehadiran")
             key_abs = f"{sel_bab}_p{idx}"
             is_hadir = kehadiran_dict.get(key_abs, {}).get("hadir", False)
@@ -883,11 +1005,11 @@ def render_siswa():
 
             st.divider()
 
-            # --- 2. MATERI PERTEMUAN ---
             st.markdown("#### 2. Materi Pembelajaran")
-            m_curr = [m for m in materi_docs if m.get("bab") == sel_bab and int(m.get("pertemuan", 1)) == idx]
+            # Filter materi HANYA yang AKTIF
+            m_curr = [m for m in materi_docs if m.get("bab") == sel_bab and int(m.get("pertemuan", 1)) == idx and m.get("is_active", True)]
             if not m_curr:
-                st.info(f"Belum ada materi pada Pertemuan {idx}.")
+                st.info(f"Belum ada materi aktif pada Pertemuan {idx}.")
             else:
                 for m in m_curr:
                     with st.container(border=True):
@@ -897,11 +1019,9 @@ def render_siswa():
 
             st.divider()
 
-            # --- 3. SKEMA AKTIVITAS PERTEMUAN ---
             if idx in [1, 2, 4, 5]:
-                # FORUM DISKUSI
                 st.markdown("#### 3. Forum Diskusi Siswa")
-                st.caption("Silakan tuliskan tanggapan diskusi Anda sesuai materi pertemuan ini.")
+                diskusi_aktif = is_diskusi_aktif(sel_bab, idx, kelas_s)
                 
                 d_docs = get_diskusi_by_bab_pertemuan_kelas(sel_bab, idx, kelas_s)
                 my_d = next((d for d in d_docs if d.get("username") == username_s), None)
@@ -911,7 +1031,10 @@ def render_siswa():
                     st.markdown(f"**Tanggapan Anda:**\n\n_{my_d.get('tanggapan')}_")
                     if my_d.get("nilai") is not None:
                         st.info(f"📊 Nilai Diskusi Guru: **{my_d.get('nilai')}** / 100\n\nCatatan Guru: {my_d.get('catatan_guru', '-')}")
+                elif not diskusi_aktif:
+                    st.warning("🔒 Forum diskusi untuk pertemuan ini sedang nonaktif / ditutup oleh Guru.")
                 else:
+                    st.caption("Silakan tuliskan tanggapan diskusi Anda sesuai materi pertemuan ini.")
                     with st.form(f"f_diskusi_mhs_{sel_bab}_{idx}"):
                         resp_diskusi = st.text_area(f"Tulis Tanggapan Diskusi Pertemuan {idx}:")
                         if st.form_submit_button("🚀 Kirim Tanggapan Diskusi"):
@@ -925,7 +1048,6 @@ def render_siswa():
                             else: st.warning("Isi tanggapan diskusi terlebih dahulu.")
 
             elif idx in [3, 6]:
-                # UTS BAB (P3) / UAS BAB (P6)
                 jenis_ujian = "UTS BAB" if idx == 3 else "UAS BAB"
                 st.markdown(f"#### 3. Evaluasi {jenis_ujian}")
 
