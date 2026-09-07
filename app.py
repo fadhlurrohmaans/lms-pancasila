@@ -15,7 +15,6 @@ from firebase_admin import credentials, firestore
 import pandas as pd
 import google.generativeai as genai
 
-# Impor FirestoreBundle untuk penanganan Firestore Data Bundles
 try:
     from google.cloud.firestore_bundle import FirestoreBundle
 except ImportError:
@@ -25,11 +24,11 @@ except ImportError:
         FirestoreBundle = None
 
 # ==========================================
-# 1. CONFIG & STYLING
+# 1. CONFIG & UT BRANDING STYLING
 # ==========================================
 st.set_page_config(
-    page_title="LMS Pendidikan Pancasila",
-    page_icon="🇮🇩",
+    page_title="Tuton UT - Pendidikan Pancasila",
+    page_icon="🎓",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -39,29 +38,38 @@ st.markdown("""
     html, body, [class*="css"] {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
+    :root {
+        --ut-navy: #002147;
+        --ut-yellow: #FFC72C;
+        --ut-light-bg: #F4F6F9;
+    }
     input[type="text"], input[type="password"], textarea, select { 
-        font-size: 16px !important;
-        border-radius: 10px !important;
+        font-size: 15px !important;
+        border-radius: 8px !important;
     }
     @media (max-width: 768px) {
         .main .block-container { padding: 0.8rem 0.6rem 3rem !important; }
         [data-testid="column"] { width: 100% !important; flex: 1 1 100% !important; min-width: 100% !important; margin-bottom: 0.5rem; }
         .stButton > button, .stDownloadButton > button { 
-            width: 100% !important; min-height: 50px !important; font-size: 16px !important; font-weight: bold; border-radius: 12px !important; 
+            width: 100% !important; min-height: 48px !important; font-size: 15px !important; font-weight: bold; border-radius: 10px !important; 
         }
-        h1 { font-size: 1.6rem !important; } 
-        h2 { font-size: 1.3rem !important; } 
-        h3 { font-size: 1.1rem !important; }
+        h1 { font-size: 1.5rem !important; } 
+        h2 { font-size: 1.2rem !important; } 
     }
-    .student-header {
-        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-        color: white; padding: 18px 20px; border-radius: 16px; margin-bottom: 15px;
+    .ut-header {
+        background: linear-gradient(135deg, #002147 0%, #003366 100%);
+        border-bottom: 5px solid #FFC72C;
+        color: white; padding: 20px 24px; border-radius: 12px; margin-bottom: 20px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
     }
-    .stTabs [data-baseweb="tab-list"] { gap: 6px; overflow-x: auto; white-space: nowrap; border-bottom: 2px solid #eaeaea; padding-bottom: 4px; }
-    .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 20px; font-weight: 600; }
-    .stTabs [aria-selected="true"] { background-color: #1e3c72 !important; color: white !important; }
+    .ut-card {
+        background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; margin-bottom: 12px;
+        border-left: 4px solid #002147;
+    }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; overflow-x: auto; white-space: nowrap; border-bottom: 2px solid #eaeaea; padding-bottom: 4px; }
+    .stTabs [data-baseweb="tab"] { padding: 8px 16px; border-radius: 16px; font-weight: 600; font-size: 14px; }
+    .stTabs [aria-selected="true"] { background-color: #002147 !important; color: #FFC72C !important; }
     
-    /* Hide localStorage bridge input element */
     div[data-testid="stTextInput"]:has(input[aria-label="Draft Bridge Input"]) {
         display: none !important;
     }
@@ -87,15 +95,13 @@ except Exception as e:
     st.error(f"Gagal terhubung ke Firebase: {e}")
     st.stop()
 
-# --- FIRESTORE AGGREGATION QUERY HELPERS (.count()) HEBAT KUOTA ---
+# --- FIRESTORE AGGREGATION QUERIES (.count()) ---
 @st.cache_data(ttl=60)
 def count_siswa_by_kelas(kelas):
     try:
         query = db.collection("users").where("role", "==", "siswa").where("kelas", "==", kelas)
-        res = query.count().get()
-        return res[0][0].value
-    except Exception:
-        return 0
+        return query.count().get()[0][0].value
+    except Exception: return 0
 
 @st.cache_data(ttl=60)
 def count_all_users(role_filter=None):
@@ -103,59 +109,35 @@ def count_all_users(role_filter=None):
         query = db.collection("users")
         if role_filter and role_filter != "semua":
             query = query.where("role", "==", role_filter)
-        res = query.count().get()
-        return res[0][0].value
-    except Exception:
-        return 0
+        return query.count().get()[0][0].value
+    except Exception: return 0
 
 @st.cache_data(ttl=60)
 def count_submitted_by_tugas_kelas(tugas_id, kelas):
     try:
         query = db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).where("kelas_siswa", "==", kelas).where("status", "==", "submitted")
-        res = query.count().get()
-        return res[0][0].value
-    except Exception:
-        return 0
+        return query.count().get()[0][0].value
+    except Exception: return 0
 
 @st.cache_data(ttl=60)
 def get_guru_dashboard_stats(pilihan_kelas_tuple):
-    """Menghitung ringkasan statistik Guru menggunakan Aggregation Queries count()"""
-    try:
-        total_materi = db.collection("materi_pancasila").count().get()[0][0].value
-    except Exception:
-        total_materi = 0
-
-    try:
-        total_tugas = db.collection("tugas_pancasila").count().get()[0][0].value
-    except Exception:
-        total_tugas = 0
-
-    total_siswa = 0
-    for k in pilihan_kelas_tuple:
-        total_siswa += count_siswa_by_kelas(k)
-
+    total_materi = db.collection("materi_pancasila").count().get()[0][0].value if db else 0
+    total_tugas = db.collection("tugas_pancasila").count().get()[0][0].value if db else 0
+    total_siswa = sum(count_siswa_by_kelas(k) for k in pilihan_kelas_tuple)
     total_submitted = 0
     for k in pilihan_kelas_tuple:
         try:
-            q_sub = db.collection("pengerjaan_siswa").where("kelas_siswa", "==", k).where("status", "==", "submitted")
-            total_submitted += q_sub.count().get()[0][0].value
-        except Exception:
-            pass
+            total_submitted += db.collection("pengerjaan_siswa").where("kelas_siswa", "==", k).where("status", "==", "submitted").count().get()[0][0].value
+        except Exception: pass
+    return {"total_siswa": total_siswa, "total_tugas": total_tugas, "total_materi": total_materi, "total_submitted": total_submitted}
 
-    return {
-        "total_siswa": total_siswa,
-        "total_tugas": total_tugas,
-        "total_materi": total_materi,
-        "total_submitted": total_submitted
-    }
-
-# --- OPTIMIZED CACHED READ FUNCTIONS DENGAN LIMIT QUERY & PAGINATION ---
-@st.cache_data(ttl=86400)  # 24 Jam
+# --- CACHED READS WITH LIMITS & PAGINATION ---
+@st.cache_data(ttl=86400)
 def ensure_default_admin_created():
     admin_ref = db.collection("users").document("admin")
     if not admin_ref.get().exists:
         admin_ref.set({
-            "nama": "Super Admin",
+            "nama": "Administrator Tuton",
             "role": "superadmin",
             "password": hash_pass("admin123"),
             "password_plain": "admin123",
@@ -164,44 +146,39 @@ def ensure_default_admin_created():
         return True
     return False
 
-@st.cache_data(ttl=86400)  # 24 Jam
+@st.cache_data(ttl=86400)
 def get_all_kelas():
     doc = db.collection("config").document("master_kelas").get()
-    if doc.exists:
-        return sorted(doc.to_dict().get("daftar", []))
-    return []
+    return sorted(doc.to_dict().get("daftar", [])) if doc.exists else []
 
 @st.cache_data(ttl=300)
 def get_users_paginated(limit=10, offset=0, role_filter=None):
-    """Membaca data user dengan Limit Query dan Offset (Pagination)"""
     query = db.collection("users")
     if role_filter and role_filter != "semua":
         query = query.where("role", "==", role_filter)
-    query = query.limit(limit).offset(offset)
-    docs = query.stream()
+    docs = query.limit(limit).offset(offset).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=600)  # 10 Menit (Dengan Limit 500 sebagai batas atas pengamanan)
+@st.cache_data(ttl=600)
 def get_all_users_cached(limit=500):
     docs = db.collection("users").limit(limit).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
 @st.cache_data(ttl=300)
-def get_siswa_by_kelas_cached(kelas, limit=100, offset=0):
+def get_siswa_by_kelas_cached(kelas, limit=150, offset=0):
     docs = db.collection("users").where("role", "==", "siswa").where("kelas", "==", kelas).limit(limit).offset(offset).stream()
     return [{"username": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=300)  # 5 Menit (Limit Query Max 100)
+@st.cache_data(ttl=300)
 def get_all_tugas_cached(limit=100, offset=0):
     docs = db.collection("tugas_pancasila").limit(limit).offset(offset).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=300)  # 5 Menit (Limit Query Max 100)
+@st.cache_data(ttl=300)
 def get_all_materi_cached(limit=100, offset=0):
     docs = db.collection("materi_pancasila").limit(limit).offset(offset).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-# --- CACHE DATA PENGERJAAN SISWA (DENGAN LIMIT QUERY) ---
 @st.cache_data(ttl=30)
 def get_user_pengerjaan_cached(username, limit=50):
     docs = db.collection("pengerjaan_siswa").where("username_siswa", "==", username).limit(limit).stream()
@@ -216,6 +193,17 @@ def get_pengerjaan_by_tugas_kelas_cached(tugas_id, kelas, limit=150, offset=0):
 def get_all_pengerjaan_by_kelas_cached(kelas, limit=300):
     docs = db.collection("pengerjaan_siswa").where("kelas_siswa", "==", kelas).limit(limit).stream()
     return [d.to_dict() for d in docs]
+
+# --- TUTON SPECIFIC CACHED READS ---
+@st.cache_data(ttl=60)
+def get_diskusi_by_sesi_kelas(sesi, kelas):
+    docs = db.collection("diskusi_pancasila").where("sesi", "==", int(sesi)).where("kelas", "==", kelas).stream()
+    return [{"id": d.id, **d.to_dict()} for d in docs]
+
+@st.cache_data(ttl=60)
+def get_kehadiran_user(username):
+    docs = db.collection("kehadiran_siswa").where("username", "==", username).stream()
+    return {d.to_dict().get("sesi"): d.to_dict() for d in docs}
 
 # --- CACHE CLEAR HELPERS ---
 def clear_kelas_cache(): 
@@ -245,92 +233,52 @@ def clear_pengerjaan_cache():
     count_submitted_by_tugas_kelas.clear()
     get_guru_dashboard_stats.clear()
 
+def clear_diskusi_cache():
+    get_diskusi_by_sesi_kelas.clear()
+
+def clear_kehadiran_cache():
+    get_kehadiran_user.clear()
+
 # ==========================================
-# 3. FIRESTORE DATA BUNDLES IMPLEMENTATION
+# 3. FIRESTORE DATA BUNDLES
 # ==========================================
 @st.cache_data(ttl=3600)
 def generate_firestore_data_bundle():
-    """
-    Membuat Firestore Data Bundle yang membundel data statis/master 
-    (Master Kelas, Materi, dan Tugas) dalam format serialized Firestore Bundle.
-    Menghemat kuota pembacaan Firestore dan mempercepat response.
-    """
     if FirestoreBundle is None:
-        return None, "Modul `google.cloud.firestore_bundle` tidak tersedia di lingkungan ini."
-
+        return None, "Modul `google.cloud.firestore_bundle` tidak tersedia."
     try:
-        bundle = FirestoreBundle("lms_master_data_bundle")
-
-        # 1. Bundling Dokumen Master Kelas
-        kelas_ref = db.collection("config").document("master_kelas")
-        kelas_snap = kelas_ref.get()
-        if kelas_snap.exists:
-            bundle.add_document(kelas_snap)
-
-        # 2. Bundling Query Named 'bundle_all_materi'
-        materi_query = db.collection("materi_pancasila").limit(50)._query()
-        bundle.add_named_query("bundle_all_materi", materi_query)
-
-        # 3. Bundling Query Named 'bundle_all_tugas'
-        tugas_query = db.collection("tugas_pancasila").limit(50)._query()
-        bundle.add_named_query("bundle_all_tugas", tugas_query)
-
-        # Serialisasi bundle menjadi format biner/string
-        serialized_bundle = bundle.build()
-        return serialized_bundle, None
+        bundle = FirestoreBundle("tuton_master_bundle")
+        kelas_snap = db.collection("config").document("master_kelas").get()
+        if kelas_snap.exists: bundle.add_document(kelas_snap)
+        bundle.add_named_query("bundle_all_materi", db.collection("materi_pancasila").limit(50)._query())
+        bundle.add_named_query("bundle_all_tugas", db.collection("tugas_pancasila").limit(50)._query())
+        return bundle.build(), None
     except Exception as e:
         return None, f"Gagal membuat Data Bundle: {str(e)}"
 
 # ==========================================
-# 4. UTILITY & PAGINATION UI HELPERS
+# 4. UTILITIES
 # ==========================================
 def render_pagination_controls(total_items, default_page_size=10, key_prefix="pg"):
-    """
-    Helper UI untuk merender navigasi Pagination di Streamlit.
-    Mengembalikan tuple: (current_page, limit, offset)
-    """
-    if total_items <= 0:
-        return 1, default_page_size, 0
-
+    if total_items <= 0: return 1, default_page_size, 0
     col_p1, col_p2, col_p3 = st.columns([2, 2, 4])
-    
     with col_p1:
-        page_size = st.selectbox(
-            "Tampilkan per Halaman", 
-            options=[5, 10, 20, 50, 100], 
-            index=[5, 10, 20, 50, 100].index(default_page_size) if default_page_size in [5, 10, 20, 50, 100] else 1,
-            key=f"{key_prefix}_size"
-        )
-    
+        page_size = st.selectbox("Per Halaman", options=[5, 10, 20, 50], index=1, key=f"{key_prefix}_size")
     total_pages = max(1, (total_items + page_size - 1) // page_size)
-
     with col_p2:
-        curr_page = st.number_input(
-            f"Halaman (1 - {total_pages})", 
-            min_value=1, 
-            max_value=total_pages, 
-            value=1, 
-            step=1, 
-            key=f"{key_prefix}_num"
-        )
-
+        curr_page = st.number_input(f"Halaman (1-{total_pages})", min_value=1, max_value=total_pages, value=1, key=f"{key_prefix}_num")
     offset = (curr_page - 1) * page_size
-
     with col_p3:
-        start_item = offset + 1
-        end_item = min(offset + page_size, total_items)
-        st.markdown(f"<p style='padding-top:25px; color:#666;'>Showing <b>{start_item}-{end_item}</b> of <b>{total_items}</b> items</p>", unsafe_allow_html=True)
-
+        st.markdown(f"<p style='padding-top:25px; color:#666;'>Data {offset+1}-{min(offset+page_size, total_items)} dari {total_items}</p>", unsafe_allow_html=True)
     return curr_page, page_size, offset
 
 def safe_read_uploaded_file(uploaded_file):
     if uploaded_file.name.endswith('.csv'):
-        for enc in ['utf-8', 'utf-8-sig', 'cp1252', 'latin1']:
+        for enc in ['utf-8', 'utf-8-sig', 'latin1']:
             try:
                 uploaded_file.seek(0)
                 return pd.read_csv(uploaded_file, encoding=enc)
-            except (UnicodeDecodeError, UnicodeError):
-                continue
+            except Exception: continue
         uploaded_file.seek(0)
         return pd.read_csv(uploaded_file, encoding='utf-8', errors='replace')
     return pd.read_excel(uploaded_file)
@@ -341,15 +289,14 @@ def hash_pass(password):
 def generate_username(nama, existing_usernames=None):
     if existing_usernames is None:
         existing_usernames = {u["id"] for u in get_all_users_cached()}
-    first_name = nama.strip().split()[0] if nama.strip() else "siswa"
-    base_username = re.sub(r'[^a-z0-9]', '', first_name.lower())[:5] or "siswa"
-    
+    first_name = nama.strip().split()[0] if nama.strip() else "mahasiswa"
+    base_username = re.sub(r'[^a-z0-9]', '', first_name.lower())[:5] or "mhs"
     username, counter = base_username, 1
     while username in existing_usernames:
         username = f"{base_username}{counter}"
         counter += 1
     return username
-    
+
 def generate_password(length=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
@@ -362,132 +309,60 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
     tg_id = tg["id"]
     soal_list = tg.get("soal", [])
     total_soal = len(soal_list)
-    
-    if is_violation:
-        catatan = "⚠️ Submit Otomatis (Mencapai Limit Maksimal Pelanggaran)"
-    elif is_forced:
-        catatan = "Di-submit Paksa oleh Guru"
-    else:
-        catatan = "Penilaian Otomatis Sistem"
-    
+    catatan = "⚠️ Submit Otomatis (Limit Pelanggaran)" if is_violation else ("Di-submit Paksa Tutor" if is_forced else "Penilaian Otomatis Sistem")
     doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
 
     if tg.get("tipe") == "pg":
-        correct_count = 0
-        formatted_ans = []
-        for idx_q, sq in enumerate(soal_list):
-            user_a = answers[idx_q] if answers and idx_q < len(answers) else None
-            formatted_ans.append(user_a if user_a is not None else -1)
-            if user_a is not None and user_a == sq.get("kunci"):
-                correct_count += 1
+        correct_count = sum(1 for idx_q, sq in enumerate(soal_list) if idx_q < len(answers) and answers[idx_q] == sq.get("kunci"))
         score = round((correct_count / total_soal) * 100) if total_soal > 0 else 0
-
         doc_ref.set({
             "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
-            "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "pg", "jawaban": formatted_ans,
+            "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "pg", "jawaban": answers,
             "nilai": score, "catatan_guru": catatan, "status": "submitted", "ijin_guru": True,
             "submitted_at": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
     else:
-        formatted_ans = [a if a is not None else "" for a in (answers if answers else [])]
         doc_ref.set({
             "id_tugas": tg_id, "judul_tugas": tg.get("judul"), "username_siswa": username_s,
             "nama_siswa": nama_s, "kelas_siswa": kelas_s, "tipe": "essay", "soal": soal_list,
-            "jawaban": formatted_ans, "nilai": None, "catatan_guru": catatan, "status": "submitted", "ijin_guru": True,
+            "jawaban": answers, "nilai": None, "catatan_guru": catatan, "status": "submitted", "ijin_guru": True,
             "submitted_at": firestore.SERVER_TIMESTAMP, "updated_at": firestore.SERVER_TIMESTAMP
         }, merge=True)
+    clear_pengerjaan_cache()
+    return True
 
+def reset_pengerjaan_siswa(username_siswa, tugas_id):
+    db.collection("pengerjaan_siswa").document(f"{username_siswa}_{tugas_id}").delete()
     clear_pengerjaan_cache()
     return True
 
 def delete_tugas_and_submissions(tugas_id):
     batch = db.batch()
-    tugas_ref = db.collection("tugas_pancasila").document(tugas_id)
-    batch.delete(tugas_ref)
-    
-    p_docs = db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).limit(100).stream()
-    for doc in p_docs:
+    batch.delete(db.collection("tugas_pancasila").document(tugas_id))
+    for doc in db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).limit(100).stream():
         batch.delete(doc.reference)
-        
     batch.commit()
     clear_tugas_cache()
     clear_pengerjaan_cache()
 
-def reset_pengerjaan_siswa(username_siswa, tugas_id):
-    """Mereset/menghapus riwayat pengerjaan siswa untuk tugas tertentu"""
-    doc_ref = db.collection("pengerjaan_siswa").document(f"{username_siswa}_{tugas_id}")
-    doc_ref.delete()
-    clear_pengerjaan_cache()
-    return True
-
 # ==========================================
-# 5. AI EVALUATION HELPER (FAST & LIGHTWEIGHT)
+# 5. AI EVALUATION HELPER
 # ==========================================
 def koreksi_essay_dengan_ai(soal_list, jawaban_list):
     api_key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini", {}).get("api_key") or st.secrets.get("firebase", {}).get("GEMINI_API_KEY")
-    if not api_key:
-        return None, "⚠️ Key 'GEMINI_API_KEY' belum dikonfigurasi di secrets Streamlit."
-
+    if not api_key: return None, "Key GEMINI_API_KEY belum dikonfigurasi."
     try:
         genai.configure(api_key=api_key)
-
-        total_soal = len(soal_list)
-        prompt_items = []
-        for i in range(total_soal):
-            s = soal_list[i] if i < len(soal_list) else ""
-            j = jawaban_list[i] if i < len(jawaban_list) else ""
-            q_text = s.get('pertanyaan', '') if isinstance(s, dict) else str(s)
-            j_text = str(j).strip() if j and str(j).strip() else '(Siswa tidak menjawab)'
-            prompt_items.append(f"Soal {i+1}: {q_text}\nJawaban Siswa: {j_text}")
-
-        prompt = (
-            f"Jumlah Soal: {total_soal}\n\n"
-            + "\n\n".join(prompt_items)
-            + "\n\nKembalikan HANYA format JSON persis seperti berikut tanpa teks ekstra:\n"
-            '{"nilai": 85, "feedback": "Catatan koreksi Anda..."}'
-        )
-
-        system_instruction = (
-            "Anda adalah Guru Pendidikan Pancasila. Evaluasi jawaban siswa secara objektif (skala 0-100).\n"
-            "Hitung nilai rata-rata integer (0-100) dan berikan feedback per nomor yang ramah serta edukatif."
-        )
-
-        candidate_models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-latest']
-
-        response = None
-        last_error = None
-
-        for model_name in candidate_models:
-            try:
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=system_instruction
-                )
-                response = model.generate_content(
-                    prompt,
-                    generation_config={"response_mime_type": "application/json"}
-                )
-                if response and hasattr(response, 'text') and response.text.strip():
-                    break
-            except Exception as err:
-                last_error = err
-                continue
-
-        if not response or not hasattr(response, 'text') or not response.text.strip():
-            return None, f"AI tidak merespon. Error: {str(last_error)}"
-
-        raw_text = response.text.strip()
-        raw_text = re.sub(r'^```json\s*', '', raw_text)
-        raw_text = re.sub(r'\s*```$', '', raw_text)
-
-        result_json = json.loads(raw_text)
-        nilai = int(result_json.get("nilai", 0))
-        feedback = str(result_json.get("feedback", "")).strip() or "Terima kasih telah mengerjakan!"
-
-        return nilai, feedback
-
+        prompt_items = [f"Soal {i+1}: {s.get('pertanyaan','') if isinstance(s, dict) else str(s)}\nJawaban: {str(j).strip() or '(Kosong)'}" for i, (s, j) in enumerate(zip(soal_list, jawaban_list))]
+        prompt = f"Jumlah Soal: {len(soal_list)}\n\n" + "\n\n".join(prompt_items) + '\n\nFormat JSON HANYA:\n{"nilai": 85, "feedback": "Catatan..."}'
+        
+        model = genai.GenerativeModel(model_name='gemini-2.0-flash', system_instruction="Evaluasi jawaban sebagai Tutor Pendidikan Pancasila UT. Berikan nilai integer 0-100 dan feedback singkat.")
+        res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        raw_text = re.sub(r'^```json\s*|\s*```$', '', res.text.strip())
+        res_json = json.loads(raw_text)
+        return int(res_json.get("nilai", 0)), str(res_json.get("feedback", "")).strip()
     except Exception as e:
-        return None, f"Gagal mengeksekusi AI: {str(e)}"
+        return None, f"Gagal AI: {str(e)}"
 
 # ==========================================
 # 6. AUTHENTICATION
@@ -495,34 +370,32 @@ def koreksi_essay_dengan_ai(soal_list, jawaban_list):
 if "user" not in st.session_state:
     st.session_state["user"] = None
 
-if ensure_default_admin_created():
-    st.toast("💡 Akun default awal berhasil dibuat! Username: admin | Pass: admin123")
+ensure_default_admin_created()
 
 if st.session_state["user"] is None:
-    st.title("🇮🇩 LMS Pendidikan Pancasila")
-    st.info("💡 **Informasi**: Akun Siswa dan Guru dikelola oleh **Super Admin**.")
+    st.markdown("""
+        <div style="text-align: center; padding: 20px;">
+            <h1 style="color: #002147; margin-bottom: 0;">🎓 TUTON UNIVERSITAS TERBUKA</h1>
+            <p style="color: #666; font-weight: 600;">LMS Pendidikan Pancasila (MKDU4111)</p>
+        </div>
+    """, unsafe_allow_html=True)
     
     with st.form("form_login"):
-        username = st.text_input("Username").strip().lower()
+        username = st.text_input("NIM / Username").strip().lower()
         password = st.text_input("Password", type="password")
-        if st.form_submit_button("Masuk / Login"):
+        if st.form_submit_button("Masuk Ke Tuton UT"):
             if username and password:
                 all_users = {u["id"]: u for u in get_all_users_cached(limit=500)}
-                if username in all_users:
-                    user_data = all_users[username]
-                    if user_data.get("password") == hash_pass(password):
-                        st.session_state["user"] = {
-                            "username": username,
-                            "nama": user_data.get("nama"),
-                            "role": user_data.get("role"),
-                            "kelas": user_data.get("kelas", ""),
-                            "kelas_ajar": user_data.get("kelas_ajar", [])
-                        }
-                        st.success(f"✅ Berhasil login! Selamat datang, {user_data.get('nama')}!")
-                        st.rerun()
-                    else: st.error("Password salah!")
-                else: st.error("Username tidak terdaftar!")
-            else: st.warning("Isi username dan password.")
+                if username in all_users and all_users[username].get("password") == hash_pass(password):
+                    u = all_users[username]
+                    st.session_state["user"] = {
+                        "username": username, "nama": u.get("nama"), "role": u.get("role"),
+                        "kelas": u.get("kelas", ""), "kelas_ajar": u.get("kelas_ajar", [])
+                    }
+                    st.success(f"Selamat Datang, {u.get('nama')}!")
+                    st.rerun()
+                else: st.error("Username atau password salah!")
+            else: st.warning("Silakan lengkapi NIM/Username & Password.")
     st.stop()
 
 # ==========================================
@@ -530,15 +403,12 @@ if st.session_state["user"] is None:
 # ==========================================
 user_info = st.session_state["user"]
 role = user_info["role"]
+role_label = "Tutor" if role == "guru" else ("Mahasiswa" if role == "siswa" else "Super Admin")
 
-st.sidebar.title(f"👋 Halo, {user_info['nama']}")
-caption_text = f"Role: **{role.upper()}** | @{user_info['username']}"
+st.sidebar.markdown(f"### 🎓 Tuton UT")
+st.sidebar.caption(f"👤 **{user_info['nama']}**\n\nRole: **{role_label}** | @{user_info['username']}")
 if role == "siswa" and user_info.get("kelas"):
-    caption_text += f"\n\n🏫 Kelas: **{user_info['kelas']}**"
-elif role == "guru" and user_info.get("kelas_ajar"):
-    k_str = ", ".join(user_info['kelas_ajar']) if isinstance(user_info['kelas_ajar'], list) else user_info['kelas_ajar']
-    caption_text += f"\n\n🏫 Mengajar: **{k_str}**"
-st.sidebar.caption(caption_text)
+    st.sidebar.caption(f"🏫 Kelas Tuton: **{user_info['kelas']}**")
 
 if st.sidebar.button("🚪 Keluar / Logout"):
     st.session_state.clear()
@@ -551,1126 +421,373 @@ st.sidebar.divider()
 # 8. PANEL SUPER ADMIN
 # ==========================================
 def render_superadmin():
-    st.title("⚙️ Panel Super Admin")
+    st.title("⚙️ Panel Administrator Tuton")
     t_kelas, t_list, t_add, t_imp, t_edit, t_del, t_bundle = st.tabs([
-        "🏫 Master Kelas", "👥 Daftar User", "➕ Buat Akun", "📥 Import/Export", "✏️ Atur Kelas", "🗑️ Hapus Akun", "📦 Firestore Data Bundles"
+        "🏫 Kelas Tuton", "👥 User", "➕ Buat Akun", "📥 Import/Export", "✏️ Atur Kelas", "🗑️ Hapus Akun", "📦 Data Bundles"
     ])
 
     with t_kelas:
-        st.subheader("🏫 Kelola Master Data Kelas (Dokumen Tunggal)")
-        col1, col2 = st.columns(2)
+        st.subheader("🏫 Kelola Kelas Tutorial Online")
         daftar_kelas = get_all_kelas()
-        
+        col1, col2 = st.columns(2)
         with col1:
-            st.write("📋 **Kelas Terdaftar:**")
-            for k in daftar_kelas: st.markdown(f"- 🏫 **{k}**")
-        
+            for k in daftar_kelas: st.markdown(f"- 🏫 Kelas: **{k}**")
         with col2:
-            with st.form("form_add_k", clear_on_submit=True):
-                new_k = st.text_input("Nama Kelas Baru").strip()
+            with st.form("f_add_k", clear_on_submit=True):
+                new_k = st.text_input("Nama Kelas Tuton Baru (cth: UT-01)").strip()
                 if st.form_submit_button("Tambah Kelas"):
-                    if new_k:
-                        if new_k not in daftar_kelas:
-                            updated_k = sorted(daftar_kelas + [new_k])
-                            db.collection("config").document("master_kelas").set({"daftar": updated_k}, merge=True)
-                            clear_kelas_cache()
-                            st.success(f"✅ Kelas '{new_k}' ditambahkan!")
-                            st.rerun()
-                        else:
-                            st.warning("Kelas sudah ada!")
-            
-            if daftar_kelas:
-                st.divider()
-                del_k = st.selectbox("Pilih Kelas Dihapus", daftar_kelas)
-                if st.button("Hapus Kelas", type="primary"):
-                    updated_k = [k for k in daftar_kelas if k != del_k]
-                    db.collection("config").document("master_kelas").set({"daftar": updated_k}, merge=True)
-                    clear_kelas_cache()
-                    st.success(f"✅ Kelas '{del_k}' dihapus.")
-                    st.rerun()
+                    if new_k and new_k not in daftar_kelas:
+                        db.collection("config").document("master_kelas").set({"daftar": sorted(daftar_kelas + [new_k])}, merge=True)
+                        clear_kelas_cache()
+                        st.success(f"Kelas {new_k} berhasil ditambahkan.")
+                        st.rerun()
 
     with t_list:
-        st.subheader("👥 Daftar Akun (Dengan Pagination & Limit Query)")
-        
-        # Filter Peran User
-        role_filter = st.selectbox("Filter Peran User", ["semua", "siswa", "guru", "superadmin"], format_func=lambda x: x.upper(), key="admin_role_filter")
-        
+        st.subheader("👥 Daftar Pengguna Sistem")
+        role_filter = st.selectbox("Filter Peran", ["semua", "siswa", "guru", "superadmin"], format_func=lambda x: "Mahasiswa" if x=="siswa" else ("Tutor" if x=="guru" else x.upper()))
         total_users = count_all_users(role_filter)
-        curr_page, limit, offset = render_pagination_controls(total_users, default_page_size=10, key_prefix="users_pg")
+        curr_page, limit, offset = render_pagination_controls(total_users, default_page_size=10, key_prefix="u_pg")
         
-        # Query Firestore Paginated
-        paginated_users_list = get_users_paginated(limit=limit, offset=offset, role_filter=role_filter)
-        users = []
-        for u in paginated_users_list:
-            role_user = str(u.get("role", "")).lower()
-            
-            if role_user == "siswa":
-                kelas_display = str(u.get("kelas") or "-")
-            else:
-                ka = u.get("kelas_ajar")
-                if isinstance(ka, list):
-                    kelas_display = ", ".join([str(x) for x in ka if x]) or "-"
-                elif ka:
-                    kelas_display = str(ka)
-                else:
-                    kelas_display = "-"
-
-            users.append({
-                "Username": u.get("id"),
-                "Nama": u.get("nama", "-"),
-                "Role": role_user.upper(),
-                "Kelas": kelas_display
-            })
-            
-        if users:
-            st.dataframe(pd.DataFrame(users), use_container_width=True)
-        else:
-            st.info("Tidak ada pengguna ditemukan.")
+        paginated = get_users_paginated(limit=limit, offset=offset, role_filter=role_filter)
+        u_table = [{"NIM/Username": u.get("id"), "Nama": u.get("nama"), "Peran": "Mahasiswa" if u.get("role")=="siswa" else ("Tutor" if u.get("role")=="guru" else "Admin"), "Kelas": u.get("kelas") or ", ".join(u.get("kelas_ajar", []))} for u in paginated]
+        if u_table: st.dataframe(pd.DataFrame(u_table), use_container_width=True)
 
     with t_add:
         st.subheader("➕ Buat Akun Satuan")
         daftar_kelas = get_all_kelas()
-        new_role = st.selectbox("Role", ["Siswa", "Guru", "Superadmin"])
-        existing_usernames = {u["id"] for u in get_all_users_cached(limit=500)}
+        new_role_sel = st.selectbox("Peran User", ["Mahasiswa", "Tutor", "Superadmin"])
+        new_role = "siswa" if new_role_sel == "Mahasiswa" else ("guru" if new_role_sel == "Tutor" else "superadmin")
         
         with st.form("form_add_user", clear_on_submit=True):
             nama = st.text_input("Nama Lengkap")
-            uname = st.text_input("Username").strip().lower()
+            uname = st.text_input("NIM / Username").strip().lower()
             pwd = st.text_input("Password", type="password")
-            
-            k_siswa = st.selectbox("Pilih Kelas", options=daftar_kelas) if new_role == "Siswa" and daftar_kelas else None
-            k_guru = st.multiselect("Pilih Kelas Ajar", options=daftar_kelas) if new_role == "Guru" and daftar_kelas else None
+            k_s = st.selectbox("Kelas Mahasiswa", options=daftar_kelas) if new_role == "siswa" else None
+            k_g = st.multiselect("Kelas Ajar Tutor", options=daftar_kelas) if new_role == "guru" else None
             
             if st.form_submit_button("Buat Akun"):
                 if nama and uname and pwd:
-                    if uname in existing_usernames:
-                        st.error("Username sudah ada!")
-                    else:
-                        payload = {"nama": nama, "password": hash_pass(pwd), "password_plain": pwd, "role": new_role.lower(), "created_at": firestore.SERVER_TIMESTAMP}
-                        if new_role == "Siswa": payload["kelas"] = k_siswa
-                        elif new_role == "Guru": payload["kelas_ajar"] = k_guru
-                        db.collection("users").document(uname).set(payload)
-                        clear_users_cache()
-                        st.success(f"✅ Akun '{uname}' berhasil dibuat!")
-                        st.rerun()
+                    payload = {"nama": nama, "password": hash_pass(pwd), "password_plain": pwd, "role": new_role, "created_at": firestore.SERVER_TIMESTAMP}
+                    if new_role == "siswa": payload["kelas"] = k_s
+                    elif new_role == "guru": payload["kelas_ajar"] = k_g
+                    db.collection("users").document(uname).set(payload)
+                    clear_users_cache()
+                    st.success("Akun berhasil dibuat!")
+                    st.rerun()
 
     with t_imp:
-        st.subheader("📥 Import User & 📤 Export Data")
-        
-        st.markdown("### 📄 Unduh Template Import")
-        st.caption("Gunakan template di bawah ini agar format data sesuai saat melakukan upload.")
-        
-        df_tpl_siswa = pd.DataFrame([
-            {"nama": "Ahmad Santoso", "kelas": "X-1"},
-            {"nama": "Siti Nurhaliza", "kelas": "X-2"}
-        ])
-        csv_tpl_siswa = df_tpl_siswa.to_csv(index=False).encode('utf-8-sig')
-
-        df_tpl_guru = pd.DataFrame([
-            {"nama": "Budi Gunawan, S.Pd.", "kelas": "X-1, X-2"},
-            {"nama": "Dewi Sartika, M.Pd.", "kelas": "XI-1, XI-2"}
-        ])
-        csv_tpl_guru = df_tpl_guru.to_csv(index=False).encode('utf-8-sig')
-
-        c_tpl_s, c_tpl_g = st.columns(2)
-        with c_tpl_s:
-            st.download_button("📄 Unduh Template Siswa (.csv)", csv_tpl_siswa, "template_import_siswa.csv", "text/csv", use_container_width=True)
-        with c_tpl_g:
-            st.download_button("📄 Unduh Template Guru (.csv)", csv_tpl_guru, "template_import_guru.csv", "text/csv", use_container_width=True)
-
-        st.divider()
-
-        target_role_imp = st.radio("Pilih Peran User yang Akan Di-import:", ["Siswa", "Guru"], horizontal=True)
-        st.info("💡 **Format File Import (.csv / .xlsx)**: Wajib memiliki 2 kolom utama: **`nama`** dan **`kelas`**.")
-        
-        col_imp, col_exp = st.columns(2)
-        with col_imp:
-            up_file = st.file_uploader(f"Unggah File Data {target_role_imp} (.csv / .xlsx)", type=["csv", "xlsx"])
-            if up_file and st.button(f"🚀 Import {target_role_imp}", type="primary", use_container_width=True):
-                df = safe_read_uploaded_file(up_file)
-                df.columns = [str(c).strip().lower() for c in df.columns]
+        st.subheader("📥 Import Data Mahasiswa & Tutor")
+        target_role_imp = st.radio("Peran Import:", ["Mahasiswa", "Tutor"], horizontal=True)
+        up_file = st.file_uploader("Upload File (.csv / .xlsx)", type=["csv", "xlsx"])
+        if up_file and st.button("🚀 Proses Import"):
+            df = safe_read_uploaded_file(up_file)
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            if "nama" in df.columns and "kelas" in df.columns:
+                role_str = "siswa" if target_role_imp == "Mahasiswa" else "guru"
+                cached_u = get_all_users_cached(limit=500)
+                exist_names = {u.get("nama", "").strip().lower(): u["id"] for u in cached_u if u.get("role") == role_str}
+                existing_un = {u["id"] for u in cached_u}
                 
-                if "nama" in df.columns and "kelas" in df.columns:
-                    role_str = target_role_imp.lower()
-                    all_cached = get_all_users_cached(limit=500)
-                    exist_map = {
-                        u.get("nama", "").strip().lower(): u["id"] 
-                        for u in all_cached if u.get("role") == role_str
-                    }
-                    existing_usernames = {u["id"] for u in all_cached}
-                    c_new, c_up = 0, 0
+                for _, r in df.iterrows():
+                    n_str, k_str = str(r["nama"]).strip(), str(r["kelas"]).strip()
+                    if not n_str or pd.isna(r["nama"]): continue
                     
-                    for _, r in df.iterrows():
-                        n_str = str(r["nama"]).strip()
-                        k_str = str(r["kelas"]).strip()
-                        if not n_str or pd.isna(r["nama"]): continue
-                        
-                        n_key = n_str.lower()
-                        
-                        if role_str == "guru":
-                            list_kelas = [k.strip() for k in k_str.split(",") if k.strip()]
-                            if n_key in exist_map:
-                                db.collection("users").document(exist_map[n_key]).update({"kelas_ajar": list_kelas})
-                                c_up += 1
-                            else:
-                                un = generate_username(n_str, existing_usernames)
-                                existing_usernames.add(un)
-                                pw = generate_password()
-                                db.collection("users").document(un).set({
-                                    "nama": n_str, "password": hash_pass(pw), "password_plain": pw,
-                                    "role": "guru", "kelas_ajar": list_kelas, "created_at": firestore.SERVER_TIMESTAMP
-                                })
-                                c_new += 1
+                    if role_str == "guru":
+                        lk = [x.strip() for x in k_str.split(",") if x.strip()]
+                        if n_str.lower() in exist_names:
+                            db.collection("users").document(exist_names[n_str.lower()]).update({"kelas_ajar": lk})
                         else:
-                            if n_key in exist_map:
-                                db.collection("users").document(exist_map[n_key]).update({"kelas": k_str})
-                                c_up += 1
-                            else:
-                                un = generate_username(n_str, existing_usernames)
-                                existing_usernames.add(un)
-                                pw = generate_password()
-                                db.collection("users").document(un).set({
-                                    "nama": n_str, "password": hash_pass(pw), "password_plain": pw,
-                                    "role": "siswa", "kelas": k_str, "created_at": firestore.SERVER_TIMESTAMP
-                                })
-                                c_new += 1
-                    
-                    clear_users_cache()
-                    st.success(f"✅ Selesai: {c_new} akun baru dibuat, {c_up} akun diperbarui.")
-                    st.rerun()
-                else:
-                    st.error("❌ Format kolom file tidak sesuai! Pastikan terdapat kolom **nama** dan **kelas**.")
-
-        with col_exp:
-            data_siswa = [
-                {"Nama": u.get("nama"), "Username": u["id"], "Password": u.get("password_plain", "*****"), "Kelas": u.get("kelas", "")}
-                for u in get_all_users_cached(limit=500) if u.get("role") == "siswa"
-            ]
-            if data_siswa:
-                df_exp = pd.DataFrame(data_siswa)
-                st.download_button("💾 Unduh CSV Data Siswa Eksisting", df_exp.to_csv(index=False).encode('utf-8'), "data_siswa_eksisting.csv", "text/csv", use_container_width=True)
-
-    with t_edit:
-        st.subheader("✏️ Atur Kelas User (Siswa & Guru)")
-        all_cached = get_all_users_cached(limit=500)
-        users_map = {
-            u["id"]: f"{u.get('nama')} (@{u['id']}) - [{str(u.get('role', '')).upper()}]" 
-            for u in all_cached if u.get("role") in ["siswa", "guru"]
-        }
-        daftar_k = get_all_kelas()
-        
-        if not users_map:
-            st.info("Belum ada akun Guru atau Siswa terdaftar.")
-        elif not daftar_k:
-            st.warning("⚠️ Master Kelas belum diisi.")
-        else:
-            target_uid = st.selectbox("Pilih Pengguna yang Akan Diatur", list(users_map.keys()), format_func=lambda x: users_map[x])
-            u_data = next(u for u in all_cached if u["id"] == target_uid)
-            u_role = u_data.get("role", "")
-            
-            with st.form(key=f"form_edit_user_k_{target_uid}"):
-                if u_role == "siswa":
-                    curr_k = u_data.get("kelas", "")
-                    idx_k = daftar_k.index(curr_k) if curr_k in daftar_k else 0
-                    new_k = st.selectbox("Pilih Kelas Baru Siswa", options=daftar_k, index=idx_k, key=f"sb_siswa_{target_uid}")
-                    
-                    if st.form_submit_button("💾 Simpan Perubahan Kelas Siswa", type="primary"):
-                        db.collection("users").document(target_uid).update({"kelas": new_k})
-                        clear_users_cache()
-                        st.success(f"✅ Kelas untuk siswa '{u_data.get('nama')}' berhasil diubah ke {new_k}!")
-                        st.rerun()
-                else:
-                    curr_ka = u_data.get("kelas_ajar", [])
-                    if isinstance(curr_ka, str): 
-                        curr_ka = [curr_ka]
-                    
-                    curr_ka_safe = curr_ka if isinstance(curr_ka, (list, tuple, set)) else []
-                    valid_defaults = [k for k in curr_ka_safe if k in daftar_k]
-
-                    st.write(f"👤 **Pengaturan Kelas Ajar untuk Guru:** {u_data.get('nama')}")
-                    new_ka = st.multiselect("Tentukan Kelas Ajar Guru:", options=daftar_k, default=valid_defaults, key=f"ms_guru_{target_uid}")
-                    
-                    if st.form_submit_button("💾 Simpan Perubahan Kelas Ajar Guru", type="primary"):
-                        db.collection("users").document(target_uid).update({"kelas_ajar": new_ka})
-                        clear_users_cache()
-                        st.success(f"✅ Berhasil memperbarui kelas ajar untuk Guru '{u_data.get('nama')}'!")
-                        st.rerun()
-
-    with t_del:
-        st.subheader("🗑️ Hapus Akun")
-        all_u = {u["id"]: f"{u.get('nama')} (@{u['id']})" for u in get_all_users_cached(limit=500) if u["id"] != user_info["username"]}
-        if all_u:
-            target_del = st.selectbox("Pilih Akun Dihapus", list(all_u.keys()), format_func=lambda x: all_u[x])
-            if st.button("Hapus Akun", type="primary"):
-                db.collection("users").document(target_del).delete()
+                            un = generate_username(n_str, existing_un)
+                            existing_un.add(un)
+                            pw = generate_password()
+                            db.collection("users").document(un).set({"nama": n_str, "password": hash_pass(pw), "password_plain": pw, "role": "guru", "kelas_ajar": lk, "created_at": firestore.SERVER_TIMESTAMP})
+                    else:
+                        if n_str.lower() in exist_names:
+                            db.collection("users").document(exist_names[n_str.lower()]).update({"kelas": k_str})
+                        else:
+                            un = generate_username(n_str, existing_un)
+                            existing_un.add(un)
+                            pw = generate_password()
+                            db.collection("users").document(un).set({"nama": n_str, "password": hash_pass(pw), "password_plain": pw, "role": "siswa", "kelas": k_str, "created_at": firestore.SERVER_TIMESTAMP})
                 clear_users_cache()
-                st.success("✅ Akun berhasil dihapus!")
+                st.success("Import Berhasil!")
                 st.rerun()
 
-    with t_bundle:
-        st.subheader("📦 Generator & Pengelola Firestore Data Bundles")
-        st.info(
-            "💡 **Firestore Data Bundles** memungkinkan Anda membundel data statis/master "
-            "(seperti Master Kelas, Modul Materi, dan Daftar Tugas) dalam format file biner terkompresi. "
-            "Data ini dapat di-cache secara efisien di CDN / local cache untuk **menghemat hingga 90% kuota pembacaan Firestore**."
-        )
-
-        col_b1, col_b2 = st.columns([2, 1])
-        with col_b1:
-            st.markdown("### 🛠️ Status Data Bundle")
-            st.markdown("- **Nama Bundle:** `lms_master_data_bundle`")
-            st.markdown("- **Terdiri Dari:** Dokumen Master Kelas, Query `bundle_all_materi`, Query `bundle_all_tugas`")
-
-            if st.button("🚀 Buat Data Bundle Baru Sekarang", type="primary"):
-                with st.spinner("Membundel data Firestore..."):
-                    bundle_bytes, err = generate_firestore_data_bundle()
-                if err:
-                    st.error(f"❌ {err}")
+    with t_edit:
+        st.subheader("✏️ Edit Kelas User")
+        cached_u = get_all_users_cached(limit=500)
+        users_map = {u["id"]: f"{u.get('nama')} (@{u['id']})" for u in cached_u if u.get("role") in ["siswa", "guru"]}
+        daftar_k = get_all_kelas()
+        if users_map and daftar_k:
+            target_uid = st.selectbox("Pilih User", list(users_map.keys()), format_func=lambda x: users_map[x])
+            u_data = next(u for u in cached_u if u["id"] == target_uid)
+            with st.form(f"f_edit_u_{target_uid}"):
+                if u_data.get("role") == "siswa":
+                    nk = st.selectbox("Kelas Baru", options=daftar_k)
+                    if st.form_submit_button("Simpan Perubahan"):
+                        db.collection("users").document(target_uid).update({"kelas": nk})
+                        clear_users_cache(); st.success("Kelas diperbarui!"); st.rerun()
                 else:
-                    st.session_state["cached_bundle_bytes"] = bundle_bytes
-                    st.success("✅ Firestore Data Bundle berhasil dibuat dan diperbarui di memori!")
+                    nka = st.multiselect("Kelas Ajar Baru", options=daftar_k, default=[k for k in u_data.get("kelas_ajar",[]) if k in daftar_k])
+                    if st.form_submit_button("Simpan Perubahan"):
+                        db.collection("users").document(target_uid).update({"kelas_ajar": nka})
+                        clear_users_cache(); st.success("Kelas Ajar diperbarui!"); st.rerun()
 
-        with col_b2:
-            if "cached_bundle_bytes" in st.session_state and st.session_state["cached_bundle_bytes"]:
-                b_data = st.session_state["cached_bundle_bytes"]
-                b_size = len(b_data) if isinstance(b_data, (bytes, str)) else 0
-                st.metric("Ukuran Data Bundle", f"{round(b_size / 1024, 2)} KB")
-                
-                download_bytes = b_data.encode('utf-8') if isinstance(b_data, str) else b_data
-                st.download_button(
-                    label="💾 Unduh Data Bundle (.bundle)",
-                    data=download_bytes,
-                    file_name="lms_master_data_bundle.bundle",
-                    mime="application/octet-stream",
-                    use_container_width=True
-                )
+    with t_del:
+        st.subheader("🗑️ Hapus Akun User")
+        all_u = {u["id"]: f"{u.get('nama')} (@{u['id']})" for u in get_all_users_cached() if u["id"] != user_info["username"]}
+        if all_u:
+            target_del = st.selectbox("Pilih User Dihapus", list(all_u.keys()), format_func=lambda x: all_u[x])
+            if st.button("Hapus Akun", type="primary"):
+                db.collection("users").document(target_del).delete()
+                clear_users_cache(); st.success("Akun dihapus."); st.rerun()
+
+    with t_bundle:
+        st.subheader("📦 Generator Data Bundle")
+        if st.button("🚀 Regenerate Data Bundle"):
+            b_bytes, err = generate_firestore_data_bundle()
+            if err: st.error(err)
+            else:
+                st.session_state["cached_bundle_bytes"] = b_bytes
+                st.success("Bundle berhasil diperbarui!")
 
 # ==========================================
-# 9. PANEL GURU
+# 9. PANEL TUTOR (GURU)
 # ==========================================
 def render_guru():
-    st.title("🇮🇩 Panel Guru")
+    st.markdown("""
+        <div class="ut-header">
+            <h2 style="margin:0; color:#FFC72C;">🎓 DASHBOARD TUTOR TUTON UT</h2>
+            <p style="margin:0; font-size:14px;">Mata Kuliah: MKDU4111 / Pendidikan Pancasila</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
     pilihan_kelas = user_info.get("kelas_ajar") or get_all_kelas()
     if isinstance(pilihan_kelas, str): pilihan_kelas = [pilihan_kelas]
 
     guru_stats = get_guru_dashboard_stats(tuple(pilihan_kelas))
-    st.markdown("##### ⚡ Ringkasan Statistik Real-Time (Aggregation count())")
-    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-    m_col1.metric("👥 Total Siswa Ajar", f"{guru_stats['total_siswa']} Siswa")
-    m_col2.metric("📝 Total Tugas dibuat", f"{guru_stats['total_tugas']} Tugas")
-    m_col3.metric("📖 Total Materi diunggah", f"{guru_stats['total_materi']} Modul")
-    m_col4.metric("✅ Total Jawaban Masuk", f"{guru_stats['total_submitted']} Pengumpulan")
+    st.markdown("##### ⚡ Ringkasan Statistik Aktivitas Tuton")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("👥 Total Mahasiswa", f"{guru_stats['total_siswa']}")
+    m2.metric("📝 Total Tugas", f"{guru_stats['total_tugas']}")
+    m3.metric("📖 Inisiasi Materi", f"{guru_stats['total_materi']}")
+    m4.metric("💬 Pengumpulan Tugas", f"{guru_stats['total_submitted']}")
     st.divider()
 
-    menu = st.sidebar.radio("📌 Menu Guru", ["📖 Kelola Materi", "📝 Buat & Kelola Tugas", "📊 Rekap & Penilaian", "📜 Daftar Nilai"])
+    menu = st.sidebar.radio("📌 Menu Tutor", ["📖 Inisiasi Sesi", "💬 Forum Diskusi", "📝 Tugas Tuton", "📊 Rekapitulasi & Nilai UT"])
 
-    if menu == "📖 Kelola Materi":
-        st.header("📖 Kelola Materi Pembelajaran")
-        t_list, t_buat = st.tabs(["📋 Daftar Materi", "➕ Tambah Materi Baru"])
+    if menu == "📖 Inisiasi Sesi":
+        st.header("📖 Kelola Materi Inisiasi (Sesi 1 - 8)")
+        t_list, t_buat = st.tabs(["📋 Daftar Inisiasi", "➕ Tambah Inisiasi Sesi"])
         
         with t_list:
             materi_docs = get_all_materi_cached(limit=50)
-            if not materi_docs:
-                st.info("Belum ada materi pembelajaran yang diunggah.")
+            if not materi_docs: st.info("Belum ada materi inisiasi diunggah.")
             else:
                 for m in materi_docs:
                     m_id = m["id"]
-                    target_str = ", ".join(m.get("target_kelas", [])) if m.get("target_kelas") else "Semua Kelas"
-                    
+                    sesi_num = m.get("sesi", 1)
                     with st.container(border=True):
-                        col_info, col_aksi = st.columns([3, 1])
-                        with col_info:
-                            st.markdown(f"### 📘 [{m.get('bab')}] {m.get('judul')}")
-                            st.caption(f"🏫 **Target Kelas:** {target_str}")
-                            if m.get("konten"): st.write(m.get("konten"))
-                            if m.get("file_url"): st.link_button("📎 Buka Lampiran File", m.get("file_url"))
-
-                        with col_aksi:
-                            with st.popover("✏️ Edit"):
-                                with st.form(key=f"form_edit_materi_{m_id}"):
-                                    e_bab = st.text_input("Bab / Unit", value=m.get("bab", ""), key=f"e_bab_{m_id}")
-                                    e_judul = st.text_input("Judul Materi", value=m.get("judul", ""), key=f"e_jud_{m_id}")
-                                    e_target = st.multiselect("Target Kelas", options=pilihan_kelas, default=m.get("target_kelas", pilihan_kelas) if m.get("target_kelas") else pilihan_kelas, key=f"e_tgt_{m_id}")
-                                    e_konten = st.text_area("Deskripsi / Teks Materi", value=m.get("konten", ""), key=f"e_kon_{m_id}")
-                                    e_file_url = st.text_input("🔗 Link Lampiran", value=m.get("file_url", "") or "", key=f"e_url_{m_id}")
-
-                                    if st.form_submit_button("💾 Simpan Perubahan"):
-                                        if e_bab and e_judul and e_target:
-                                            db.collection("materi_pancasila").document(m_id).update({
-                                                "bab": e_bab, "judul": e_judul, "target_kelas": e_target,
-                                                "konten": e_konten, "file_url": e_file_url.strip() if e_file_url else None,
-                                                "updated_at": firestore.SERVER_TIMESTAMP
-                                            })
-                                            clear_materi_cache()
-                                            st.success("✅ Perubahan berhasil disimpan!")
-                                            st.rerun()
-
-                            if st.button("🗑️ Hapus", key=f"btn_del_mat_{m_id}", type="primary"):
+                        st.markdown(f"### 📘 [SESI {sesi_num}] {m.get('judul')}")
+                        st.caption(f"Target Kelas: {', '.join(m.get('target_kelas', [])) or 'Semua'}")
+                        if m.get("konten"): st.write(m.get("konten"))
+                        if m.get("file_url"): st.link_button("📎 Buka Modul / Lampiran", m.get("file_url"))
+                        
+                        col_e, col_d = st.columns(2)
+                        with col_e:
+                            with st.popover("✏️ Edit Inisiasi"):
+                                with st.form(f"f_edit_mat_{m_id}"):
+                                    e_sesi = st.selectbox("Sesi", list(range(1, 9)), index=int(sesi_num)-1)
+                                    e_judul = st.text_input("Judul Inisiasi", value=m.get("judul",""))
+                                    e_konten = st.text_area("Penjelasan Inisiasi", value=m.get("konten",""))
+                                    e_url = st.text_input("Link Modul/OER", value=m.get("file_url","") or "")
+                                    if st.form_submit_button("Simpan"):
+                                        db.collection("materi_pancasila").document(m_id).update({
+                                            "sesi": e_sesi, "judul": e_judul, "konten": e_konten, "file_url": e_url.strip() or None, "updated_at": firestore.SERVER_TIMESTAMP
+                                        })
+                                        clear_materi_cache(); st.success("Diperbarui!"); st.rerun()
+                        with col_d:
+                            if st.button("🗑️ Hapus", key=f"del_m_{m_id}", type="primary"):
                                 db.collection("materi_pancasila").document(m_id).delete()
-                                clear_materi_cache()
-                                st.success("✅ Materi berhasil dihapus!")
-                                st.rerun()
+                                clear_materi_cache(); st.success("Dihapus!"); st.rerun()
 
         with t_buat:
-            with st.form(key="form_tambah_materi_baru", clear_on_submit=True):
-                bab = st.text_input("Bab / Unit", key="add_bab")
-                judul = st.text_input("Judul Materi", key="add_judul")
-                target_k = st.multiselect("Target Kelas", options=pilihan_kelas, default=pilihan_kelas, key="add_target")
-                konten = st.text_area("Deskripsi / Teks Materi (Opsional)", key="add_konten")
-                file_url = st.text_input("🔗 Link Lampiran Dokumen", key="add_url")
-
-                if st.form_submit_button("📁 Simpan Materi Baru"):
-                    if bab and judul and target_k:
+            with st.form("form_add_inisiasi", clear_on_submit=True):
+                sesi_in = st.selectbox("Pilih Sesi Tutorial", list(range(1, 9)))
+                judul_in = st.text_input("Judul Materi Inisiasi")
+                target_k = st.multiselect("Target Kelas", options=pilihan_kelas, default=pilihan_kelas)
+                konten_in = st.text_area("Deskripsi Materi / Pokok Bahasan")
+                file_url_in = st.text_input("🔗 Link Modul OER / PPT (Opsional)")
+                if st.form_submit_button("📁 Publikasikan Inisiasi"):
+                    if judul_in and target_k:
                         db.collection("materi_pancasila").add({
-                            "bab": bab, "judul": judul, "target_kelas": target_k, "konten": konten,
-                            "file_url": file_url.strip() if file_url else None, "created_at": firestore.SERVER_TIMESTAMP
+                            "sesi": sesi_in, "bab": f"Sesi {sesi_in}", "judul": judul_in, "target_kelas": target_k,
+                            "konten": konten_in, "file_url": file_url_in.strip() or None, "created_at": firestore.SERVER_TIMESTAMP
                         })
-                        clear_materi_cache()
-                        st.success("✅ Materi baru berhasil ditambahkan!")
-                        st.rerun()
+                        clear_materi_cache(); st.success("Materi Inisiasi Berhasil Ditambahkan!"); st.rerun()
 
-    elif menu == "📝 Buat & Kelola Tugas":
-        st.header("📝 Buat & Kelola Tugas")
-        t_list, t_buat, t_edit, t_imp = st.tabs(["📋 Daftar", "➕ Buat Tugas", "✏️ Edit Tugas", "📥 Import Soal"])
+    elif menu == "💬 Forum Diskusi":
+        st.header("💬 Pengelolaan & Penilaian Forum Diskusi")
+        col_k, col_s = st.columns(2)
+        with col_k: sel_k = st.selectbox("🏫 Pilih Kelas Tuton", options=pilihan_kelas)
+        with col_s: sel_sesi = st.selectbox("📌 Pilih Sesi Tutorial", list(range(1, 9)))
 
+        st.subheader(f"Daftar Tanggapan Diskusi Sesi {sel_sesi} ({sel_k})")
+        discussions = get_diskusi_by_sesi_kelas(sel_sesi, sel_k)
+        
+        if not discussions:
+            st.info(f"Belum ada tanggapan diskusi dari mahasiswa pada Sesi {sel_sesi} di kelas {sel_k}.")
+        else:
+            for d in discussions:
+                d_id = d["id"]
+                with st.expander(f"👤 {d.get('nama_siswa')} (@{d.get('username')}) — Nilai: {d.get('nilai', 'Belum Dinilai')}"):
+                    st.write(f"**Tanggapan Mahasiswa:**")
+                    st.info(d.get("tanggapan", "(Kosong)"))
+                    
+                    with st.form(f"f_grade_diskusi_{d_id}"):
+                        score_in = st.number_input("Nilai Diskusi (0-100)", 0, 100, value=int(d.get("nilai", 80)) if d.get("nilai") is not None else 80, key=f"score_d_{d_id}")
+                        fb_in = st.text_area("Catatan Tutor", value=d.get("catatan_tutor", ""), key=f"fb_d_{d_id}")
+                        if st.form_submit_button("💾 Simpan Nilai Diskusi"):
+                            db.collection("diskusi_pancasila").document(d_id).update({
+                                "nilai": score_in, "catatan_tutor": fb_in, "updated_at": firestore.SERVER_TIMESTAMP
+                            })
+                            clear_diskusi_cache(); st.success("Nilai Diskusi Berhasil Disimpan!"); st.rerun()
+
+    elif menu == "📝 Tugas Tuton":
+        st.header("📝 Kelola Tugas Tuton (Tugas 1, 2, & 3)")
+        st.caption("ℹ️ Sesuai standar UT, Tugas Tuton resmi diberikan pada **Sesi 3 (Tugas 1)**, **Sesi 5 (Tugas 2)**, dan **Sesi 7 (Tugas 3)**.")
+        
+        t_list, t_buat = st.tabs(["📋 Daftar Tugas", "➕ Buat Tugas Sesi"])
         with t_list:
             tugas_cached = get_all_tugas_cached(limit=50)
-            if not tugas_cached:
-                st.info("Belum ada tugas/kuis yang dibuat.")
+            if not tugas_cached: st.info("Belum ada tugas dibuat.")
             else:
                 for tg in tugas_cached:
-                    target_str = ", ".join(tg.get("target_kelas", [])) if tg.get("target_kelas") else "Semua"
-                    is_published = tg.get("status", "terbit") == "terbit"
-                    status_label = "🟢 Terbit" if is_published else "🔴 Draft (Tidak Terbit)"
-                    jenis_label = "🎯 Ulangan Harian" if tg.get("jenis_tugas", "Ulangan Harian") == "Ulangan Harian" else "📌 Tugas Biasa"
-                    
-                    with st.expander(f"[{'PG' if tg.get('tipe')=='pg' else 'Essay'}] [{jenis_label}] {tg.get('judul')} ({status_label} | Kelas: {target_str})"):
-                        st.write(f"**Jenis Pelaksanaan:** {jenis_label}")
+                    sesi_str = f"Sesi {tg.get('sesi', 3)}"
+                    with st.expander(f"[{sesi_str}] [{tg.get('tipe','').upper()}] {tg.get('judul')}"):
                         st.write(f"**Instruksi:** {tg.get('instruksi')}")
                         st.write(f"**Jumlah Soal:** {len(tg.get('soal', []))}")
-                        st.write(f"**Status Publikasi:** {status_label}")
-                        
-                        col_t1, col_t2 = st.columns(2)
-                        with col_t1:
-                            new_st = "draft" if is_published else "terbit"
-                            btn_st_label = "🔴 Ubah ke Draft" if is_published else "🟢 Terbitkan Tugas"
-                            if st.button(btn_st_label, key=f"toggle_st_{tg['id']}"):
-                                db.collection("tugas_pancasila").document(tg["id"]).update({"status": new_st})
-                                clear_tugas_cache()
-                                st.rerun()
-                        with col_t2:
-                            if st.button(f"🗑️ Hapus Tugas", key=f"del_{tg['id']}", type="primary"):
-                                delete_tugas_and_submissions(tg["id"])
-                                st.success("✅ Berhasil! Tugas beserta seluruh riwayat nilainya telah dihapus.")
-                                st.rerun()
+                        if st.button("🗑️ Hapus Tugas", key=f"del_tg_{tg['id']}", type="primary"):
+                            delete_tugas_and_submissions(tg["id"])
+                            st.success("Tugas dihapus!"); st.rerun()
 
         with t_buat:
-            judul = st.text_input("Judul Tugas")
-            instruksi = st.text_area("Instruksi")
+            sesi_tg = st.selectbox("Pilih Sesi Tugas", [3, 5, 7], format_func=lambda x: f"Sesi {x} (Tugas {(x//2)})")
+            judul_tg = st.text_input("Judul Tugas")
+            instruksi_tg = st.text_area("Instruksi / Pentunjuk Pengerjaan")
             target_k = st.multiselect("Target Kelas", options=pilihan_kelas, default=pilihan_kelas)
-            jenis_tugas = st.radio("Jenis Pelaksanaan Tugas / Ujian", ["Ulangan Harian", "Tugas Biasa"], horizontal=True)
-            status_t = st.radio("Status Publikasi", ["terbit", "draft"], format_func=lambda x: "🟢 Terbit" if x == "terbit" else "🔴 Draft", horizontal=True)
-            tipe_t = st.radio("Tipe Soal", ["Pilihan Ganda", "Essay"])
+            tipe_tg = st.radio("Tipe Soal", ["Essay", "Pilihan Ganda"])
 
-            if tipe_t == "Pilihan Ganda":
-                n_soal = st.number_input("Jumlah Soal", 1, 50, 5)
-                with st.form("form_pg"):
-                    soal_list = []
-                    for i in range(n_soal):
-                        q = st.text_area(f"Soal #{i+1}", key=f"q_{i}")
-                        c1, c2 = st.columns(2)
-                        o0, o1 = c1.text_input(f"A #{i+1}", key=f"a_{i}"), c1.text_input(f"B #{i+1}", key=f"b_{i}")
-                        o2, o3 = c2.text_input(f"C #{i+1}", key=f"c_{i}"), c2.text_input(f"D #{i+1}", key=f"d_{i}")
-                        k = st.selectbox(f"Kunci #{i+1}", [0, 1, 2, 3], format_func=lambda x: ['A','B','C','D'][x], key=f"k_{i}")
-                        soal_list.append({"pertanyaan": q, "opsi": [o0, o1, o2, o3], "kunci": k})
-                    
-                    if st.form_submit_button("Simpan Tugas PG"):
-                        if judul and target_k:
-                            db.collection("tugas_pancasila").add({
-                                "judul": judul, "instruksi": instruksi, "tipe": "pg", "target_kelas": target_k,
-                                "jenis_tugas": jenis_tugas, "status": status_t, "soal": soal_list, "created_at": firestore.SERVER_TIMESTAMP
-                            })
-                            clear_tugas_cache()
-                            st.success("✅ Berhasil! Tugas Pilihan Ganda berhasil disimpan.")
-                            st.rerun()
-            else:
+            if tipe_tg == "Essay":
                 n_essay = st.number_input("Jumlah Soal Essay", 1, 10, 2)
-                with st.form("form_essay"):
-                    soal_list = [{"pertanyaan": st.text_area(f"Soal #{i+1}", key=f"qe_{i}")} for i in range(n_essay)]
+                with st.form("form_create_essay_tuton"):
+                    soal_list = [{"pertanyaan": st.text_area(f"Soal #{i+1}", key=f"q_e_{i}")} for i in range(n_essay)]
                     if st.form_submit_button("Simpan Tugas Essay"):
-                        if judul and target_k:
+                        if judul_tg and target_k:
                             db.collection("tugas_pancasila").add({
-                                "judul": judul, "instruksi": instruksi, "tipe": "essay", "target_kelas": target_k,
-                                "jenis_tugas": jenis_tugas, "status": status_t, "soal": soal_list, "created_at": firestore.SERVER_TIMESTAMP
+                                "sesi": sesi_tg, "judul": judul_tg, "instruksi": instruksi_tg, "tipe": "essay",
+                                "target_kelas": target_k, "status": "terbit", "jenis_tugas": f"Tugas {sesi_tg//2}",
+                                "soal": soal_list, "created_at": firestore.SERVER_TIMESTAMP
                             })
-                            clear_tugas_cache()
-                            st.success("✅ Berhasil! Tugas Essay berhasil disimpan.")
-                            st.rerun()
+                            clear_tugas_cache(); st.success("Tugas Essay Berhasil Diterbitkan!"); st.rerun()
 
-        with t_edit:
-            st.subheader("✏️ Edit Tugas & Soal")
-            tugas_list = get_all_tugas_cached(limit=50)
-            if tugas_list:
-                tg_map = {t["id"]: f"[{'🟢 Terbit' if t.get('status', 'terbit') == 'terbit' else '🔴 Draft'}] [{t.get('jenis_tugas', 'Ulangan Harian')}] {t.get('judul')}" for t in tugas_list}
-                sel_id = st.selectbox("Pilih Tugas yang Akan Diedit", list(tg_map.keys()), format_func=lambda x: tg_map[x])
-                target_tg = next(t for t in tugas_list if t["id"] == sel_id)
-
-                with st.form(key=f"form_update_tg_{sel_id}"):
-                    e_judul = st.text_input("Judul Tugas", value=target_tg.get("judul", ""), key=f"e_judul_{sel_id}")
-                    e_instruksi = st.text_area("Instruksi Tugas", value=target_tg.get("instruksi", ""), key=f"e_instruksi_{sel_id}")
-                    e_target = st.multiselect("Target Kelas", options=pilihan_kelas, default=target_tg.get("target_kelas", pilihan_kelas), key=f"e_target_{sel_id}")
-                    
-                    curr_jenis = target_tg.get("jenis_tugas", "Ulangan Harian")
-                    e_jenis = st.radio("Jenis Pelaksanaan Tugas / Ujian", ["Ulangan Harian", "Tugas Biasa"], index=0 if curr_jenis == "Ulangan Harian" else 1, horizontal=True, key=f"e_jenis_{sel_id}")
-                    e_status = st.radio("Status Publikasi", ["terbit", "draft"], index=0 if target_tg.get("status", "terbit") == "terbit" else 1, format_func=lambda x: "🟢 Terbit" if x == "terbit" else "🔴 Draft", horizontal=True, key=f"e_status_{sel_id}")
-                    
-                    tipe_tugas = target_tg.get("tipe", "pg")
-                    existing_soal = target_tg.get("soal", [])
-                    updated_soal = []
-
-                    if tipe_tugas == "pg":
-                        for i, s in enumerate(existing_soal):
-                            st.markdown(f"**Soal #{i+1}**")
-                            q_val = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
-                            e_q = st.text_area(f"Pertanyaan #{i+1}", value=q_val, key=f"e_q_{sel_id}_{i}")
-                            opsi = s.get("opsi", ["", "", "", ""]) if isinstance(s, dict) else ["", "", "", ""]
-                            c1, c2 = st.columns(2)
-                            e_o0 = c1.text_input(f"A #{i+1}", value=opsi[0] if len(opsi)>0 else "", key=f"e_a_{sel_id}_{i}")
-                            e_o1 = c1.text_input(f"B #{i+1}", value=opsi[1] if len(opsi)>1 else "", key=f"e_b_{sel_id}_{i}")
-                            e_o2 = c2.text_input(f"C #{i+1}", value=opsi[2] if len(opsi)>2 else "", key=f"e_c_{sel_id}_{i}")
-                            e_o3 = c2.text_input(f"D #{i+1}", value=opsi[3] if len(opsi)>3 else "", key=f"e_d_{sel_id}_{i}")
-                            curr_k = s.get("kunci", 0) if isinstance(s, dict) else 0
-                            curr_idx = int(curr_k) if isinstance(curr_k, int) and 0 <= int(curr_k) <= 3 else 0
-                            e_k = st.selectbox(f"Kunci Jawaban #{i+1}", [0, 1, 2, 3], index=curr_idx, format_func=lambda x: ['A','B','C','D'][x], key=f"e_k_{sel_id}_{i}")
-                            updated_soal.append({"pertanyaan": e_q, "opsi": [e_o0, e_o1, e_o2, e_o3], "kunci": e_k})
-                    else:
-                        for i, s in enumerate(existing_soal):
-                            q_val = s.get("pertanyaan", "") if isinstance(s, dict) else str(s)
-                            e_q = st.text_area(f"Soal Essay #{i+1}", value=q_val, key=f"e_qe_{sel_id}_{i}")
-                            updated_soal.append({"pertanyaan": e_q})
-
-                    if st.form_submit_button("💾 Perbarui Tugas & Soal"):
-                        db.collection("tugas_pancasila").document(sel_id).update({
-                            "judul": e_judul, "instruksi": e_instruksi, "target_kelas": e_target,
-                            "jenis_tugas": e_jenis, "status": e_status, "soal": updated_soal, "updated_at": firestore.SERVER_TIMESTAMP
-                        })
-                        clear_tugas_cache()
-                        st.success("✅ Berhasil! Informasi tugas dan soal telah diperbarui.")
-                        st.rerun()
-
-        with t_imp:
-            st.subheader("📥 Import Soal Tugas (.csv / .xlsx)")
-            df_tpl_pg = pd.DataFrame([{"pertanyaan": "Lambang sila ke-1?", "opsi_a": "Bintang", "opsi_b": "Rantai", "opsi_c": "Pohon Beringin", "opsi_d": "Banteng", "kunci": "A"}])
-            df_tpl_essay = pd.DataFrame([{"pertanyaan": "Jelaskan penerapan sila ke-3 di sekolah!"}])
-
-            c_tpl1, c_tpl2 = st.columns(2)
-            c_tpl1.download_button("📄 Unduh Template PG (.csv)", df_tpl_pg.to_csv(index=False).encode('utf-8-sig'), "template_soal_pg.csv", "text/csv", use_container_width=True)
-            c_tpl2.download_button("📄 Unduh Template Essay (.csv)", df_tpl_essay.to_csv(index=False).encode('utf-8-sig'), "template_soal_essay.csv", "text/csv", use_container_width=True)
-
-            st.divider()
-
-            up_soal = st.file_uploader("Upload File Soal (.csv / .xlsx)", type=["csv", "xlsx"])
-            imp_judul = st.text_input("Judul Tugas Baru")
-            imp_instruksi = st.text_area("Instruksi (Opsional)")
-            imp_target = st.multiselect("Target Kelas Import", options=pilihan_kelas, default=pilihan_kelas)
-            imp_jenis = st.radio("Jenis Pelaksanaan Import", ["Ulangan Harian", "Tugas Biasa"], horizontal=True)
-            imp_status = st.radio("Status Publikasi Import", ["terbit", "draft"], format_func=lambda x: "🟢 Terbit" if x == "terbit" else "🔴 Draft", horizontal=True)
-            imp_tipe = st.selectbox("Tipe Soal Import", ["pg", "essay"])
-
-            if up_soal and imp_judul and imp_target and st.button("🚀 Import Soal Sekarang", type="primary"):
-                df_s = safe_read_uploaded_file(up_soal)
-                df_s.columns = [str(c).strip().lower() for c in df_s.columns]
-                q_col = next((c for c in ["pertanyaan", "soal", "question"] if c in df_s.columns), None)
-
-                if not q_col:
-                    st.error(f"❌ Kolom pertanyaan tidak ditemukan.")
-                    st.stop()
-
-                parsed_s = []
-                if imp_tipe == "pg":
-                    key_m = {'a': 0, 'b': 1, 'c': 2, 'd': 3, '0': 0, '1': 1, '2': 2, '3': 3}
-                    for _, r in df_s.iterrows():
-                        if pd.isna(r[q_col]): continue
-                        parsed_s.append({
-                            "pertanyaan": str(r[q_col]),
-                            "opsi": [str(r["opsi_a"]), str(r["opsi_b"]), str(r["opsi_c"]), str(r["opsi_d"])],
-                            "kunci": key_m.get(str(r["kunci"]).strip().lower(), 0)
-                        })
-                else:
-                    for _, r in df_s.iterrows():
-                        if pd.isna(r[q_col]): continue
-                        parsed_s.append({"pertanyaan": str(r[q_col])})
-
-                db.collection("tugas_pancasila").add({
-                    "judul": imp_judul, "instruksi": imp_instruksi, "tipe": imp_tipe, "target_kelas": imp_target,
-                    "jenis_tugas": imp_jenis, "status": imp_status, "soal": parsed_s, "created_at": firestore.SERVER_TIMESTAMP
-                })
-                clear_tugas_cache()
-                st.success(f"✅ Berhasil! {len(parsed_s)} soal berhasil diimpor.")
-                st.rerun()
-
-    elif menu == "📊 Rekap & Penilaian":
-        st.header("📊 Rekap & Penilaian Tugas Per Kelas")
-        if not pilihan_kelas: st.warning("⚠️ Anda belum ditugaskan mengajar kelas manapun."); st.stop()
-
-        col_k, col_t = st.columns(2)
-        with col_k: selected_kelas = st.selectbox("🏫 Pilih Kelas Ajar", options=pilihan_kelas)
-
-        tugas_kelas = [d for d in get_all_tugas_cached(limit=50) if is_target_sesuai_kelas(d, selected_kelas)]
-        if not tugas_kelas: st.info(f"Belum ada tugas untuk Kelas **{selected_kelas}**."); st.stop()
-
-        with col_t:
-            tg_options = {t["id"]: f"[{'🟢 Terbit' if t.get('status', 'terbit') == 'terbit' else '🔴 Draft'}] [{t.get('jenis_tugas', 'Ulangan Harian')}] [{t.get('tipe', '').upper()}] {t.get('judul')}" for t in tugas_kelas}
-            selected_tugas_id = st.selectbox("📝 Pilih Tugas", list(tg_options.keys()), format_func=lambda x: tg_options[x])
-            selected_tugas = next(t for t in tugas_kelas if t["id"] == selected_tugas_id)
-
-        total_siswa_k = count_siswa_by_kelas(selected_kelas)
-        total_submitted_k = count_submitted_by_tugas_kelas(selected_tugas_id, selected_kelas)
-        total_belum_k = max(0, total_siswa_k - total_submitted_k)
-
-        siswa_list = get_siswa_by_kelas_cached(selected_kelas, limit=150)
-        sub_list = get_pengerjaan_by_tugas_kelas_cached(selected_tugas_id, selected_kelas, limit=150)
-        sub_map = {s.get("username_siswa"): s for s in sub_list}
-
-        siswa_belum_submit = [s for s in siswa_list if sub_map.get(s["username"], {}).get("status") != "submitted"]
-
-        st.divider()
-        col_sub_info, col_sub_btn = st.columns([2, 1])
-        with col_sub_info:
-            st.write(f"👥 Total Siswa: **{total_siswa_k}** | Sudah Submit: **{total_submitted_k}** | Belum Submit: **{total_belum_k}**")
-        with col_sub_btn:
-            if siswa_belum_submit and st.button("⚡ Submit Paksa Semua Siswa Belum", type="primary", use_container_width=True):
-                for s_unsub in siswa_belum_submit:
-                    submit_jawaban_siswa(
-                        selected_tugas, s_unsub["username"], s_unsub.get("nama", s_unsub["username"]), 
-                        selected_kelas, answers=[], is_forced=True
-                    )
-                st.success(f"✅ Berhasil melakukan Submit Paksa untuk {len(siswa_belum_submit)} siswa!")
-                st.rerun()
-
-        rekap_rows = []
-        is_ulangan_task = selected_tugas.get("jenis_tugas", "Ulangan Harian") == "Ulangan Harian"
+    elif menu == "📊 Rekapitulasi & Nilai UT":
+        st.header("📊 Transkrip & Rekapitulasi Nilai Tuton UT")
+        if not pilihan_kelas: st.warning("Anda belum ditugaskan mengajar kelas manapun."); st.stop()
+        sel_k = st.selectbox("🏫 Pilih Kelas Tuton", options=pilihan_kelas)
         
+        siswa_list = get_siswa_by_kelas_cached(sel_k, limit=150)
+        tugas_list = [t for t in get_all_tugas_cached(limit=50) if is_target_sesuai_kelas(t, sel_k)]
+        pengerjaan_all = get_all_pengerjaan_by_kelas_cached(sel_k, limit=300)
+        p_map = {(p.get("username_siswa"), p.get("id_tugas")): p for p in pengerjaan_all}
+
+        rekap_tuton = []
         for s in siswa_list:
             un = s["username"]
-            sub = sub_map.get(un, {})
-            v_count = sub.get("violation_count", 0)
-            ijin = sub.get("ijin_guru", True)
-            st_ujian = sub.get("status", "")
+            nm = s.get("nama", un)
             
-            rekap_rows.append({
-                "Username": un, "Nama Siswa": s.get("nama", un),
-                "Status": "✅ Sudah Submit" if st_ujian == "submitted" else ("⏳ Sedang Mengerjakan" if st_ujian == "in_progress" else "❌ Belum"),
-                "Pelanggaran / Refresh": f"⚠️ {v_count}x" if v_count > 0 else "0",
-                "Status Akses": "✅ Diberikan Izin" if ijin else "🔒 Terkunci (Perlu Izin)",
-                "Nilai": sub.get("nilai") if sub.get("nilai") is not None else ("Belum Dinilai" if st_ujian == "submitted" else "-"),
-                "Catatan Guru": sub.get("catatan_guru", "-") if st_ujian == "submitted" else "-"
+            # 1. Hitung Nilai Kehadiran (Bobot 20%)
+            user_hadir = get_kehadiran_user(un)
+            cnt_hadir = sum(1 for sesi in range(1, 9) if user_hadir.get(sesi, {}).get("hadir"))
+            score_hadir = round((cnt_hadir / 8.0) * 100)
+
+            # 2. Hitung Nilai Rata-rata Diskusi (Bobot 30%)
+            diskusi_scores = []
+            for sesi in range(1, 9):
+                d_docs = get_diskusi_by_sesi_kelas(sesi, sel_k)
+                for d in d_docs:
+                    if d.get("username") == un and d.get("nilai") is not None:
+                        diskusi_scores.append(float(d.get("nilai")))
+            score_diskusi = round(sum(diskusi_scores) / len(diskusi_scores), 1) if diskusi_scores else 0.0
+
+            # 3. Hitung Nilai Rata-rata Tugas (Bobot 50%)
+            tugas_scores = []
+            for tg in tugas_list:
+                p = p_map.get((un, tg["id"]), {})
+                if p.get("status") == "submitted" and p.get("nilai") is not None:
+                    tugas_scores.append(float(p.get("nilai")))
+            score_tugas = round(sum(tugas_scores) / len(tugas_scores), 1) if tugas_scores else 0.0
+
+            # Formula Bobot Resmi Tuton UT: (20% Kehadiran) + (30% Diskusi) + (50% Tugas)
+            score_akhir_tuton = round((0.20 * score_hadir) + (0.30 * score_diskusi) + (0.50 * score_tugas), 2)
+
+            rekap_tuton.append({
+                "NIM": un, "Nama Mahasiswa": nm,
+                "Kehadiran (20%)": f"{score_hadir} ({cnt_hadir}/8 Sesi)",
+                "Rata Diskusi (30%)": score_diskusi,
+                "Rata Tugas (50%)": score_tugas,
+                "Nilai Akhir Tuton": score_akhir_tuton
             })
 
-        t_rekap, t_koreksi, t_analisis, t_kontrol, t_reset = st.tabs([
-            "📋 Rekap Pengerjaan", "✏️ Koreksi & Penilaian", "📈 Analisis & Validitas PG", "🔓 Kontrol Izin & Buka Kunci", "🔄 Reset Pengerjaan"
-        ])
-
-        with t_rekap:
-            st.dataframe(pd.DataFrame(rekap_rows), use_container_width=True)
-
-        with t_koreksi:
-            submitted_docs = [s for s in sub_list if s.get("status") == "submitted"]
-            if not submitted_docs:
-                st.info("Belum ada siswa yang mengumpulkan tugas.")
-            else:
-                for sub in submitted_docs:
-                    sub_id = sub["id"]
-                    val_key, cat_key = f"n_{sub_id}", f"c_{sub_id}"
-                    if val_key not in st.session_state: st.session_state[val_key] = int(sub.get("nilai", 80)) if sub.get("nilai") is not None else 80
-                    if cat_key not in st.session_state: st.session_state[cat_key] = str(sub.get("catatan_guru", ""))
-
-                    with st.expander(f"👤 {sub.get('nama_siswa')} — Nilai: {sub.get('nilai', 'Belum')}"):
-                        soal_items = sub.get("soal", selected_tugas.get("soal", []))
-                        jawaban_items = sub.get("jawaban", [])
-
-                        for idx, (q, a) in enumerate(zip(soal_items, jawaban_items), 1):
-                            q_text = q.get('pertanyaan') if isinstance(q, dict) else q
-                            st.write(f"**{idx}. {q_text}**")
-                            if sub.get("tipe") == "pg":
-                                opsi_list = q.get("opsi", [])
-                                ans_idx = a if isinstance(a, int) else 0
-                                ans_text = opsi_list[ans_idx] if ans_idx < len(opsi_list) and ans_idx >= 0 else str(a)
-                                is_correct = (ans_idx == q.get("kunci", 0))
-                                st.write(f"Jawaban: **{ans_text}** ({'✅ Benar' if is_correct else '❌ Salah'})")
-                            else:
-                                st.info(a or "(Kosong)")
-
-                        if selected_tugas.get("tipe") == "essay" and st.button("🤖 Auto Koreksi AI", key=f"ai_{sub_id}"):
-                            with st.spinner("Menganalisis jawaban dengan AI..."):
-                                val, fb = koreksi_essay_dengan_ai(soal_items, jawaban_items)
-                            if val is not None:
-                                int_val = int(val)
-                                str_fb = str(fb)
-                                st.session_state[val_key] = int_val
-                                st.session_state[cat_key] = str_fb
-                                db.collection("pengerjaan_siswa").document(sub_id).update({
-                                    "nilai": int_val, 
-                                    "catatan_guru": str_fb
-                                })
-                                clear_pengerjaan_cache()
-                                st.success("✅ Nilai dan catatan AI berhasil diperbarui dan disimpan!")
-                                st.rerun()
-                            else:
-                                st.error(f"❌ Auto Koreksi AI Gagal: {fb}")
-
-                        with st.form(key=f"f_eval_{sub_id}"):
-                            n_in = st.number_input("Nilai (0-100)", 0, 100, key=val_key)
-                            c_in = st.text_area("Catatan Guru", key=cat_key)
-                            if st.form_submit_button("💾 Simpan Perubahan"):
-                                db.collection("pengerjaan_siswa").document(sub_id).update({"nilai": n_in, "catatan_guru": c_in})
-                                clear_pengerjaan_cache()
-                                st.success("✅ Tersimpan!")
-                                st.rerun()
-                        
-                        st.divider()
-                        if st.button("🔄 Reset Pengerjaan Siswa Ini", key=f"btn_reset_kor_{sub_id}", type="secondary"):
-                            reset_pengerjaan_siswa(sub.get("username_siswa"), selected_tugas_id)
-                            st.success(f"✅ Pengerjaan tugas untuk siswa '{sub.get('nama_siswa')}' berhasil di-reset!")
-                            st.rerun()
-
-        with t_analisis:
-            st.subheader("📈 Analisis Butir Soal & Uji Validitas (PG)")
-            submitted_docs = [s for s in sub_list if s.get("status") == "submitted"]
-            if selected_tugas.get("tipe") != "pg":
-                st.info("ℹ️ Khusus tugas bertipe **Pilihan Ganda**.")
-            elif not submitted_docs:
-                st.info("ℹ️ Belum ada siswa yang mengumpulkan tugas.")
-            else:
-                soal_master = selected_tugas.get("soal", [])
-                total_responden = len(submitted_docs)
-                scores = [s.get("nilai", 0) for s in submitted_docs if s.get("nilai") is not None]
-
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Total Responden", f"{total_responden} Siswa")
-                m2.metric("Rata-rata Kelas", f"{round(sum(scores)/len(scores), 1) if scores else 0}")
-                m3.metric("Nilai Tertinggi", f"{max(scores) if scores else 0}")
-                m4.metric("Nilai Terendah", f"{min(scores) if scores else 0}")
-
-                st.divider()
-
-                matrix_data = []
-                for sub in submitted_docs:
-                    ans_list = sub.get("jawaban", [])
-                    row_scores = {
-                        f"Q_{idx}": 1 if (isinstance(ans_list[idx] if idx < len(ans_list) else None, int) and ans_list[idx] == q.get("kunci", 0)) else 0
-                        for idx, q in enumerate(soal_master)
-                    }
-                    row_scores["Total_Benar"] = sum(row_scores.values())
-                    matrix_data.append(row_scores)
-
-                df_matrix = pd.DataFrame(matrix_data)
-                analisis_rows = []
-
-                for idx, q in enumerate(soal_master, 1):
-                    q_text = q.get("pertanyaan", "") if isinstance(q, dict) else str(q)
-                    kunci_idx = q.get("kunci", 0) if isinstance(q, dict) else 0
-                    kunci_str = ['A', 'B', 'C', 'D'][kunci_idx] if 0 <= kunci_idx <= 3 else "A"
-
-                    counts = [0, 0, 0, 0]
-                    for sub in submitted_docs:
-                        ans_list = sub.get("jawaban", [])
-                        if idx - 1 < len(ans_list):
-                            ans = ans_list[idx - 1]
-                            if isinstance(ans, int) and 0 <= ans <= 3: counts[ans] += 1
-
-                    jml_benar = counts[kunci_idx]
-                    pct_benar = round((jml_benar / total_responden) * 100, 1) if total_responden > 0 else 0
-
-                    if pct_benar >= 80: kategori_kesukaran = "🟢 Mudah"
-                    elif pct_benar >= 30: kategori_kesukaran = "🟡 Sedang"
-                    else: kategori_kesukaran = "🔴 Sukar"
-
-                    q_col = f"Q_{idx-1}"
-                    validity_status = "⚪ N/A"
-                    
-                    if total_responden >= 3 and q_col in df_matrix.columns:
-                        std_q, std_tot = df_matrix[q_col].std(), df_matrix["Total_Benar"].std()
-                        if std_q > 0 and std_tot > 0:
-                            r_val = round(df_matrix[q_col].corr(df_matrix["Total_Benar"]), 3)
-                            if pd.isna(r_val): r_val = 0.0
-                            if r_val >= 0.30: validity_status = f"🟢 Valid ({r_val})"
-                            elif r_val >= 0.20: validity_status = f"🟡 Cukup ({r_val})"
-                            else: validity_status = f"🔴 Tidak Valid ({r_val})"
-                        else: validity_status = "⚪ Varian 0"
-                    else: validity_status = "⚪ Min. 3 Responden"
-
-                    analisis_rows.append({
-                        "No": idx,
-                        "Soal": q_text[:50] + ("..." if len(q_text) > 50 else ""),
-                        "Kunci": kunci_str,
-                        "Benar": f"{jml_benar}/{total_responden}",
-                        "% Benar": f"{pct_benar}%",
-                        "Kesukaran": kategori_kesukaran,
-                        "Status Validitas (r)": validity_status,
-                        "Distribusi Opsi (A | B | C | D)": f"A: {counts[0]} | B: {counts[1]} | C: {counts[2]} | D: {counts[3]}"
-                    })
-
-                st.dataframe(pd.DataFrame(analisis_rows), use_container_width=True)
-
-        with t_kontrol:
-            st.subheader("🔓 Kontrol Izin & Buka Kunci Siswa")
-            locked_students = [
-                s for s in siswa_list 
-                if sub_map.get(s["username"], {}).get("status") == "in_progress" 
-                and not sub_map.get(s["username"], {}).get("ijin_guru", True)
-            ]
-            if not locked_students:
-                st.info("ℹ️ Tidak ada siswa yang sedang terkunci.")
-            else:
-                for ls in locked_students:
-                    un_l = ls["username"]
-                    nm_l = ls.get("nama", un_l)
-                    st_l = sub_map.get(un_l, {})
-                    v_c = st_l.get("violation_count", 0)
-                    
-                    c_info, c_act = st.columns([3, 1])
-                    c_info.write(f"👤 **{nm_l}** (@{un_l}) — Pelanggaran / Refresh: **{v_c}x**")
-                    if c_act.button("🔓 Beri Izin Mengerjakan", key=f"btn_grant_{un_l}"):
-                        db.collection("pengerjaan_siswa").document(f"{un_l}_{selected_tugas_id}").set({
-                            "ijin_guru": True, "updated_at": firestore.SERVER_TIMESTAMP
-                        }, merge=True)
-                        clear_pengerjaan_cache()
-                        st.success(f"✅ Izin berhasil diberikan kepada {nm_l}!")
-                        st.rerun()
-
-        with t_reset:
-            st.subheader("🔄 Reset Pengerjaan Soal Siswa")
-            st.caption("Fitur ini akan menghapus dokumen pengerjaan siswa pada tugas terpilih agar siswa dapat mengerjakan ulang dari awal.")
-            
-            siswa_pengerjaan = [
-                s for s in siswa_list 
-                if s["username"] in sub_map and sub_map[s["username"]].get("status") in ["submitted", "in_progress"]
-            ]
-            
-            if not siswa_pengerjaan:
-                st.info("ℹ️ Belum ada siswa yang mengerjakan atau mengumpulkan tugas ini.")
-            else:
-                col_r1, col_r2 = st.columns(2)
-                
-                with col_r1:
-                    st.markdown("### 👤 Reset Individual")
-                    list_options_indiv = {
-                        s["username"]: f"{s.get('nama', s['username'])} (@{s['username']}) - [{sub_map[s['username']].get('status').upper()}]" 
-                        for s in siswa_pengerjaan
-                    }
-                    selected_indiv = st.selectbox("Pilih Siswa", options=list(list_options_indiv.keys()), format_func=lambda x: list_options_indiv[x], key="sb_reset_indiv")
-                    
-                    if st.button("🗑️ Reset Pengerjaan Siswa Ini", type="primary", key="btn_reset_indiv"):
-                        reset_pengerjaan_siswa(selected_indiv, selected_tugas_id)
-                        st.success(f"✅ Pengerjaan tugas untuk siswa @{selected_indiv} berhasil di-reset!")
-                        st.rerun()
-
-                with col_r2:
-                    st.markdown("### 👥 Reset Siswa Tertentu (Multiple)")
-                    list_options_multi = {
-                        s["username"]: f"{s.get('nama', s['username'])} (@{s['username']})" 
-                        for s in siswa_pengerjaan
-                    }
-                    selected_multi = st.multiselect("Pilih Satu atau Beberapa Siswa", options=list(list_options_multi.keys()), format_func=lambda x: list_options_multi[x], key="ms_reset_multi")
-                    
-                    if st.button("🗑️ Reset Pengerjaan Siswa Terpilih", type="primary", key="btn_reset_multi"):
-                        if selected_multi:
-                            for un in selected_multi:
-                                reset_pengerjaan_siswa(un, selected_tugas_id)
-                            st.success(f"✅ Berhasil mereset pengerjaan {len(selected_multi)} siswa terpilih!")
-                            st.rerun()
-                        else:
-                            st.warning("Pilih minimal satu siswa untuk di-reset.")
-
-    elif menu == "📜 Daftar Nilai":
-        st.header("📜 Transkrip & Daftar Nilai Siswa")
-        if not pilihan_kelas: st.warning("⚠️ Anda belum ditugaskan mengajar."); st.stop()
-
-        selected_kelas = st.selectbox("🏫 Pilih Kelas Ajar", options=pilihan_kelas, key="sb_dn_kelas")
-        tugas_kelas = [d for d in get_all_tugas_cached(limit=50) if is_target_sesuai_kelas(d, selected_kelas)]
-        valid_tugas_ids = {tg["id"] for tg in tugas_kelas}
-        
-        siswa_list = get_siswa_by_kelas_cached(selected_kelas, limit=150)
-        siswa_list = sorted(siswa_list, key=lambda x: str(x.get("nama", "")).lower())
-
-        if not siswa_list:
-            st.info(f"Belum ada siswa terdaftar di Kelas **{selected_kelas}**.")
-        elif not tugas_kelas:
-            st.info(f"Belum ada tugas/kuis aktif untuk Kelas **{selected_kelas}**.")
-        else:
-            sub_list = [d for d in get_all_pengerjaan_by_kelas_cached(selected_kelas, limit=300) if d.get("id_tugas") in valid_tugas_ids]
-            sub_map = {(s.get("username_siswa"), s.get("id_tugas")): s for s in sub_list}
-
-            table_rows = []
-            for s in siswa_list:
-                un = s["username"]
-                row_data = {"Username": un, "Nama Siswa": s.get("nama", un)}
-                numeric_scores = []
-                for tg in tugas_kelas:
-                    tg_id = tg["id"]
-                    tg_title = tg.get("judul", tg_id)
-                    sub = sub_map.get((un, tg_id), {})
-
-                    if sub.get("status") == "submitted" and sub.get("nilai") is not None:
-                        val = sub.get("nilai")
-                        row_data[tg_title] = val
-                        try: numeric_scores.append(float(val))
-                        except (ValueError, TypeError): pass
-                    elif sub.get("status") == "submitted":
-                        row_data[tg_title] = "Belum Dinilai"
-                    else:
-                        row_data[tg_title] = "-"
-
-                row_data["Rata-Rata Nilai"] = round(sum(numeric_scores) / len(numeric_scores), 2) if numeric_scores else "-"
-                table_rows.append(row_data)
-
-            df_daftar_nilai = pd.DataFrame(table_rows)
-            st.dataframe(df_daftar_nilai, use_container_width=True)
-
-            csv_data = df_daftar_nilai.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("💾 Unduh Rekap Transkrip Nilai (.csv)", csv_data, f"rekap_nilai_kelas_{selected_kelas}.csv", "text/csv", use_container_width=True)
+        df_tuton = pd.DataFrame(rekap_tuton)
+        st.dataframe(df_tuton, use_container_width=True)
+        csv_data = df_tuton.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("💾 Unduh Rekap Nilai Tuton (.csv)", csv_data, f"rekap_tuton_ut_{sel_k}.csv", "text/csv", use_container_width=True)
 
 # ==========================================
-# 10. PANEL SISWA
+# 10. PANEL MAHASISWA (SISWA)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
-    nama_s = user_info.get("nama", "Siswa")
+    nama_s = user_info.get("nama", "Mahasiswa")
     username_s = user_info.get("username", "")
 
     my_subs = get_user_pengerjaan_cached(username_s)
     active_quiz_id = st.session_state.get("active_quiz_id")
 
+    # --- JIKA MAHASISWA SEDANG MENGERJAKAN TUGAS ---
     if active_quiz_id:
-        if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
-            all_t = get_all_tugas_cached(limit=50)
-            st.session_state["active_quiz_data"] = next((t for t in all_t if t["id"] == active_quiz_id), None)
-
-        tg = st.session_state.get("active_quiz_data")
-        if not tg:
-            st.session_state["active_quiz_id"] = None
-            st.rerun()
+        tg = next((t for t in get_all_tugas_cached(limit=50) if t["id"] == active_quiz_id), None)
+        if not tg: st.session_state["active_quiz_id"] = None; st.rerun()
 
         tg_id = tg["id"]
-        jenis_tugas = tg.get("jenis_tugas", "Ulangan Harian")
-        is_ulangan = (jenis_tugas == "Ulangan Harian")
-
-        if f"quiz_soal_{tg_id}" not in st.session_state:
-            st.session_state[f"quiz_soal_{tg_id}"] = tg.get("soal", [])
-        soal_list = st.session_state[f"quiz_soal_{tg_id}"]
+        soal_list = tg.get("soal", [])
         total_soal = len(soal_list)
-
         doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
 
-        # Inisialisasi awal & Pemulihan status dari Database
         if f"quiz_loaded_{tg_id}" not in st.session_state:
             doc_snap = doc_ref.get()
-            existing_sub = doc_snap.to_dict() if doc_snap.exists else {}
-
-            # Restore Jawaban tersimpan dari Firestore jika ada
-            saved_ans = existing_sub.get("jawaban")
-            if isinstance(saved_ans, list) and len(saved_ans) == total_soal:
-                st.session_state[f"quiz_answers_{tg_id}"] = saved_ans
-            else:
-                st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
-
-            v_count = existing_sub.get("violation_count", 0)
-            ijin_val = existing_sub.get("ijin_guru", True)
-
-            # Deteksi Refresh / Keluar Halaman (Sesi Browser Ter-reset)
-            if f"quiz_session_active_{tg_id}" not in st.session_state:
-                if existing_sub.get("status") == "in_progress":
-                    v_count += 1
-                    
-                    # 1. Pelanggaran ke-15 -> Submit Otomatis
-                    if v_count >= 15:
-                        tg_submit = dict(tg)
-                        tg_submit["soal"] = soal_list
-                        submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, st.session_state[f"quiz_answers_{tg_id}"], is_violation=True)
-                        st.session_state["active_quiz_id"] = None
-                        clear_pengerjaan_cache()
-                        st.rerun()
-                    
-                    # 2. Pelanggaran tepat ke-10 -> Kunci Soal sampai diizinkan guru
-                    elif v_count == 10:
-                        ijin_val = False
-
-                    doc_ref.set({
-                        "username_siswa": username_s,
-                        "nama_siswa": nama_s,
-                        "kelas_siswa": kelas_s,
-                        "id_tugas": tg_id,
-                        "status": "in_progress",
-                        "ijin_guru": ijin_val,
-                        "violation_count": v_count,
-                        "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
-                        "updated_at": firestore.SERVER_TIMESTAMP
-                    }, merge=True)
-                    clear_pengerjaan_cache()
-                else:
-                    # Pertama kali pengerjaan dimulai
-                    doc_ref.set({
-                        "username_siswa": username_s,
-                        "nama_siswa": nama_s,
-                        "kelas_siswa": kelas_s,
-                        "id_tugas": tg_id,
-                        "status": "in_progress",
-                        "ijin_guru": True,
-                        "violation_count": v_count,
-                        "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
-                        "updated_at": firestore.SERVER_TIMESTAMP
-                    }, merge=True)
-                    clear_pengerjaan_cache()
-
-            st.session_state[f"violation_count_{tg_id}"] = v_count
-            st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
-            st.session_state[f"quiz_session_active_{tg_id}"] = True
+            ex_data = doc_snap.to_dict() if doc_snap.exists else {}
+            st.session_state[f"quiz_answers_{tg_id}"] = ex_data.get("jawaban") if isinstance(ex_data.get("jawaban"), list) and len(ex_data.get("jawaban"))==total_soal else [None]*total_soal
             st.session_state[f"quiz_page_{tg_id}"] = 0
             st.session_state[f"quiz_loaded_{tg_id}"] = True
 
         answers = st.session_state[f"quiz_answers_{tg_id}"]
         curr_page = st.session_state[f"quiz_page_{tg_id}"]
-        violation_count = st.session_state.get(f"violation_count_{tg_id}", 0)
-        ijin_guru = st.session_state.get(f"ijin_guru_{tg_id}", True)
 
-        terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
-        is_locked = not ijin_guru
-
-        # Deteksi otomatis Pindah Tab / Layar Blur (Menambah Pelanggaran)
-        if is_ulangan:
-            if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
-                if not is_locked:
-                    st.session_state[f"violation_count_{tg_id}"] += 1
-                    new_v = st.session_state[f"violation_count_{tg_id}"]
-                    
-                    # LOGIKA PELANGGARAN:
-                    # A. Pelanggaran ke-15 -> Submit Otomatis
-                    if new_v >= 15:
-                        tg_submit = dict(tg)
-                        tg_submit["soal"] = soal_list
-                        submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_violation=True)
-                        st.session_state["active_quiz_id"] = None
-                        for k in [
-                            f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
-                            f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                            f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}"
-                        ]:
-                            st.session_state.pop(k, None)
-                        st.rerun()
-
-                    # B. Pelanggaran tepat ke-10 -> Kunci Soal & Perlu Izin Guru
-                    elif new_v == 10:
-                        st.session_state[f"ijin_guru_{tg_id}"] = False
-                        doc_ref.set({
-                            "username_siswa": username_s, 
-                            "id_tugas": tg_id, 
-                            "violation_count": new_v,
-                            "status": "in_progress", 
-                            "ijin_guru": False,
-                            "jawaban": answers,
-                            "updated_at": firestore.SERVER_TIMESTAMP
-                        }, merge=True)
-                        clear_pengerjaan_cache()
-                        st.rerun()
-
-                    # C. Pelanggaran standar (termasuk 11-14) -> Tidak mengunci soal
-                    else:
-                        doc_ref.set({
-                            "username_siswa": username_s, 
-                            "id_tugas": tg_id, 
-                            "violation_count": new_v,
-                            "status": "in_progress", 
-                            "jawaban": answers,
-                            "updated_at": firestore.SERVER_TIMESTAMP
-                        }, merge=True)
-                        clear_pengerjaan_cache()
-                        st.rerun()
-
-            if not is_locked:
-                components.html(f"""
-                    <script>
-                    (function() {{
-                        const parentDoc = window.parent.document;
-                        let lastTriggerViolation = 0;
-
-                        function getBtnByText(text) {{
-                            const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                            return buttons.find(b => b.innerText.includes(text));
-                        }}
-
-                        function hideActionButtons() {{
-                            const btn = getBtnByText('Catat Pelanggaran');
-                            if (btn && btn.parentElement) {{
-                                const container = btn.closest('[data-testid="stElementContainer"]') || btn.parentElement;
-                                if (container) container.style.display = 'none';
-                            }}
-                        }}
-
-                        function triggerViolation() {{
-                            const now = Date.now();
-                            if (now - lastTriggerViolation < 3000) return;
-                            lastTriggerViolation = now;
-                            
-                            const btn = getBtnByText('Catat Pelanggaran');
-                            if (btn) btn.click();
-                        }}
-
-                        window.addEventListener('blur', triggerViolation);
-                        document.addEventListener('visibilitychange', function() {{
-                            if (document.hidden) triggerViolation();
-                        }});
-
-                        hideActionButtons();
-                        setInterval(hideActionButtons, 500);
-                    }})();
-                    </script>
-                """, height=0)
-
-        st.markdown(f"### 📝 {tg.get('judul')}")
-        if is_ulangan and violation_count > 0:
-            st.warning(f"⚠️ **Deteksi Pelanggaran / Refresh:** {violation_count}x (Batas Kunci: 10x | Batas Auto-Submit: 15x)")
-
-        if is_locked:
-            st.error("🔒 **Akses Pengerjaan Terkunci!** Anda telah mencapai limit 10x pelanggaran/refresh. Silakan hubungi Guru Anda untuk membuka kunci akses.")
-            st.stop()
-
+        st.markdown(f"### 📝 {tg.get('judul')} (Sesi {tg.get('sesi', 3)})")
         st.progress((curr_page + 1) / max(1, total_soal))
         
-        # Fitur Pindah Nomor Soal (Dropdown) & Status Jawaban
-        col_info_soal, col_select_soal = st.columns([2, 1])
-        with col_info_soal:
-            st.write(f"Soal **{curr_page + 1}** dari **{total_soal}** | Terjawab: **{terjawab_count}/{total_soal}**")
-        with col_select_soal:
-            options_soal = list(range(total_soal))
-            def label_soal(i):
-                ans = answers[i]
-                filled = ans is not None and (not isinstance(ans, str) or ans.strip() != "")
-                icon = "✅" if filled else "⚪"
-                return f"{icon} Soal {i + 1}"
-
-            jump_page = st.selectbox(
-                "Pindah Nomor Soal",
-                options=options_soal,
-                index=curr_page,
-                format_func=label_soal,
-                key=f"jump_soal_{tg_id}_{curr_page}"
-            )
-            if jump_page != curr_page:
-                st.session_state[f"quiz_page_{tg_id}"] = jump_page
-                st.rerun()
-
         if 0 <= curr_page < total_soal:
             sq = soal_list[curr_page]
             q_text = sq.get("pertanyaan", "") if isinstance(sq, dict) else str(sq)
-            st.markdown(f"#### {curr_page + 1}. {q_text}")
+            st.markdown(f"#### Soal #{curr_page + 1}: {q_text}")
 
             if tg.get("tipe") == "pg":
-                opsi = sq.get("opsi", ["", "", "", ""]) if isinstance(sq, dict) else ["", "", "", ""]
+                opsi = sq.get("opsi", ["", "", "", ""])
                 curr_a = answers[curr_page]
                 curr_idx = curr_a if isinstance(curr_a, int) and 0 <= curr_a <= 3 else None
-
-                sel_o = st.radio("Pilih Jawaban:", opsi, index=curr_idx, key=f"q_rad_{tg_id}_{curr_page}")
+                sel_o = st.radio("Pilih Jawaban:", opsi, index=curr_idx, key=f"rad_{tg_id}_{curr_page}")
                 if sel_o in opsi:
                     new_idx = opsi.index(sel_o)
                     if answers[curr_page] != new_idx:
@@ -1678,110 +795,128 @@ def render_siswa():
                         st.session_state[f"quiz_answers_{tg_id}"] = answers
                         doc_ref.set({"jawaban": answers, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
             else:
-                curr_essay = answers[curr_page] if answers[curr_page] is not None else ""
-                val_e = st.text_area("Jawaban Anda:", value=curr_essay, key=f"q_txt_{tg_id}_{curr_page}")
+                curr_essay = answers[curr_page] or ""
+                val_e = st.text_area("Jawaban Anda:", value=curr_essay, key=f"txt_{tg_id}_{curr_page}")
                 if answers[curr_page] != val_e:
                     answers[curr_page] = val_e
                     st.session_state[f"quiz_answers_{tg_id}"] = answers
                     doc_ref.set({"jawaban": answers, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
 
         st.divider()
-        col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 1])
-        with col_nav1:
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c1:
             if curr_page > 0 and st.button("⬅️ Sebelumnya"):
-                st.session_state[f"quiz_page_{tg_id}"] -= 1
-                st.rerun()
-
-        with col_nav2:
+                st.session_state[f"quiz_page_{tg_id}"] -= 1; st.rerun()
+        with c2:
             if curr_page < total_soal - 1 and st.button("Berikutnya ➡️"):
-                st.session_state[f"quiz_page_{tg_id}"] += 1
-                st.rerun()
-
-        with col_nav3:
-            # HANYA TAMPILKAN TOMBOL SUBMIT DI SOAL TERAKHIR
-            if curr_page == total_soal - 1:
-                if st.button("🚀 Selesai & Kirim Jawaban", type="primary"):
-                    tg_submit = dict(tg)
-                    tg_submit["soal"] = soal_list
-                    submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers)
-                    st.session_state["active_quiz_id"] = None
-                    for k in [
-                        f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
-                        f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                        f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}"
-                    ]:
-                        st.session_state.pop(k, None)
-                    st.success("✅ Jawaban berhasil dikirim!")
-                    st.rerun()
+                st.session_state[f"quiz_page_{tg_id}"] += 1; st.rerun()
+        with c3:
+            if curr_page == total_soal - 1 and st.button("🚀 Kirim Jawaban Tugas", type="primary"):
+                submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers)
+                st.session_state["active_quiz_id"] = None
+                st.success("Tugas Berhasil Dikirim!"); st.rerun()
         st.stop()
 
-    # --- DASHBOARD UTAMA SISWA ---
+    # --- DASHBOARD UTAMA TUTON MAHASISWA ---
     st.markdown(f"""
-        <div class="student-header">
-            <h2>🇮🇩 Dashboard Siswa Pendidikan Pancasila</h2>
-            <p>Selamat Datang, <b>{nama_s}</b> | Kelas: <b>{kelas_s}</b></p>
+        <div class="ut-header">
+            <h2 style="margin:0; color:#FFC72C;">🎓 TUTORIAL ONLINE UNIVERSITAS TERBUKA</h2>
+            <p style="margin:0; font-size:15px;"><b>Pendidikan Pancasila (MKDU4111)</b> | Kelas: <b>{kelas_s}</b></p>
+            <p style="margin:0; font-size:13px; opacity:0.8;">Mahasiswa: {nama_s} (NIM: @{username_s})</p>
         </div>
     """, unsafe_allow_html=True)
 
-    t_materi_s, t_tugas_s = st.tabs(["📖 Materi Pembelajaran", "📝 Tugas & Ujian Saya"])
+    # Dapatkan Data Kehadiran Mahasiswa
+    kehadiran_dict = get_kehadiran_user(username_s)
 
-    with t_materi_s:
-        materi_docs = get_all_materi_cached(limit=50)
-        materi_siswa = [m for m in materi_docs if is_target_sesuai_kelas(m, kelas_s)]
-        if not materi_siswa:
-            st.info("Belum ada materi pembelajaran untuk kelas Anda.")
-        else:
-            for m in materi_siswa:
-                with st.container(border=True):
-                    st.markdown(f"### 📘 [{m.get('bab')}] {m.get('judul')}")
-                    if m.get("konten"): st.write(m.get("konten"))
-                    if m.get("file_url"): st.link_button("📎 Buka Lampiran File", m.get("file_url"))
+    # NAVIGASI SESI 1 - 8 TUTON UT
+    tabs_sesi = st.tabs([f"Sesi {i}" for i in range(1, 9)])
 
-    with t_tugas_s:
-        all_tugas = get_all_tugas_cached(limit=50)
-        tugas_siswa = [
-            t for t in all_tugas 
-            if is_target_sesuai_kelas(t, kelas_s) and t.get("status", "terbit") == "terbit"
-        ]
+    materi_docs = get_all_materi_cached(limit=50)
+    tugas_docs = get_all_tugas_cached(limit=50)
 
-        if not tugas_siswa:
-            st.info("Belum ada tugas/kuis terbit untuk kelas Anda.")
-        else:
-            for tg in tugas_siswa:
-                tg_id = tg["id"]
-                sub = my_subs.get(tg_id, {})
-                status_sub = sub.get("status", "belum")
-                
-                jenis_tugas = tg.get("jenis_tugas", "Ulangan Harian")
-                jenis_badge = "🎯 Ulangan Harian" if jenis_tugas == "Ulangan Harian" else "📌 Tugas Biasa"
+    for i, tab in enumerate(tabs_sesi, 1):
+        with tab:
+            st.markdown(f"### 📌 Ruang Tuton - Sesi Tutorial {i}")
+            
+            # --- 1. FITUR KEHADIRAN SESI ---
+            st.markdown("#### 1. Kehadiran Sesi")
+            is_hadir = kehadiran_dict.get(i, {}).get("hadir", False)
+            if is_hadir:
+                st.success("✅ Anda telah mengisi konfirmasi kehadiran pada Sesi ini.")
+            else:
+                if st.button(f"✋ Konfirmasi Kehadiran Sesi {i}", key=f"btn_hadir_{i}", type="primary"):
+                    db.collection("kehadiran_siswa").document(f"{username_s}_sesi_{i}").set({
+                        "username": username_s, "nama": nama_s, "kelas": kelas_s,
+                        "sesi": i, "hadir": True, "timestamp": firestore.SERVER_TIMESTAMP
+                    })
+                    clear_kehadiran_cache(); st.success(f"Kehadiran Sesi {i} Berhasil Dicatat!"); st.rerun()
+            
+            st.divider()
 
-                with st.container(border=True):
-                    col_info, col_btn = st.columns([3, 1])
-                    with col_info:
-                        st.markdown(f"### 📝 {tg.get('judul')} [{jenis_badge}]")
-                        st.caption(f"Tipe: **{tg.get('tipe', '').upper()}** | Jumlah Soal: **-**")
-                        if tg.get("instruksi"): st.write(tg.get("instruksi"))
+            # --- 2. MATERI INISIASI ---
+            st.markdown("#### 2. Materi Inisiasi")
+            m_sesi = [m for m in materi_docs if m.get("sesi") == i or m.get("bab") == f"Sesi {i}"]
+            if not m_sesi:
+                st.info(f"Belum ada materi inisiasi pada Sesi {i}.")
+            else:
+                for m in m_sesi:
+                    with st.container(border=True):
+                        st.markdown(f"##### 📘 {m.get('judul')}")
+                        if m.get("konten"): st.write(m.get("konten"))
+                        if m.get("file_url"): st.link_button("📎 Buka Modul / Bahan Ajar", m.get("file_url"))
 
-                        if status_sub == "submitted":
-                            nilai_val = sub.get("nilai")
-                            str_nilai = f"**{nilai_val}** / 100" if nilai_val is not None else "⌛ *Belum Dinilai Guru*"
-                            st.success(f"✅ Sudah Dikumpulkan | Nilai: {str_nilai}")
-                            if sub.get("catatan_guru"):
-                                st.caption(f"💬 Catatan Guru: {sub.get('catatan_guru')}")
-                        elif status_sub == "in_progress":
-                            v_c = sub.get("violation_count", 0)
-                            ijin = sub.get("ijin_guru", True)
-                            if not ijin:
-                                st.error("🔒 **Status: Terkunci (Perlu Izin Guru)** — Anda melebihi limit 10x pelanggaran/refresh.")
+            st.divider()
+
+            # --- 3. FORUM DISKUSI SESI ---
+            st.markdown("#### 3. Forum Diskusi")
+            st.caption("Silakan berikan tanggapan atau tanggapi topik diskusi yang diberikan oleh Tutor.")
+            
+            d_docs = get_diskusi_by_sesi_kelas(i, kelas_s)
+            my_d = next((d for d in d_docs if d.get("username") == username_s), None)
+
+            if my_d:
+                st.success("✅ Anda telah mengirimkan tanggapan diskusi pada Sesi ini.")
+                st.markdown(f"**Tanggapan Anda:**\n\n_{my_d.get('tanggapan')}_")
+                if my_d.get("nilai") is not None:
+                    st.info(f"📊 Nilai Diskusi Tutor: **{my_d.get('nilai')}** / 100\n\nCatatan Tutor: {my_d.get('catatan_tutor', '-')}")
+            else:
+                with st.form(f"f_diskusi_mhs_{i}"):
+                    resp_diskusi = st.text_area(f"Tuliskan Tanggapan Diskusi Sesi {i} Anda di sini:")
+                    if st.form_submit_button("🚀 Kirim Tanggapan Diskusi"):
+                        if resp_diskusi.strip():
+                            db.collection("diskusi_pancasila").add({
+                                "sesi": i, "kelas": kelas_s, "username": username_s, "nama_siswa": nama_s,
+                                "tanggapan": resp_diskusi.strip(), "nilai": None, "catatan_tutor": "", "created_at": firestore.SERVER_TIMESTAMP
+                            })
+                            clear_diskusi_cache(); st.success("Tanggapan Diskusi Berhasil Dikirim!"); st.rerun()
+                        else: st.warning("Isi tanggapan diskusi terlebih dahulu.")
+
+            st.divider()
+
+            # --- 4. TUGAS TUTON (SESI 3, 5, 7) ---
+            if i in [3, 5, 7]:
+                st.markdown(f"#### 4. Tugas Tuton {i//2}")
+                t_sesi = [t for t in tugas_docs if t.get("sesi") == i and is_target_sesuai_kelas(t, kelas_s)]
+                if not t_sesi:
+                    st.info(f"Belum ada Tugas Tuton yang dikonfigurasi pada Sesi {i}.")
+                else:
+                    for tg in t_sesi:
+                        tg_id = tg["id"]
+                        sub = my_subs.get(tg_id, {})
+                        status_sub = sub.get("status", "belum")
+
+                        with st.container(border=True):
+                            st.markdown(f"##### 📝 {tg.get('judul')}")
+                            if tg.get("instruksi"): st.write(tg.get("instruksi"))
+                            
+                            if status_sub == "submitted":
+                                val_n = sub.get("nilai")
+                                st.success(f"✅ Sudah Dikerjakan | Nilai: **{val_n if val_n is not None else 'Sedang Dinilai Tutor'}**")
                             else:
-                                st.warning(f"⏳ **Status: Sedang Dikerjakan** (Pelanggaran/Refresh: {v_c}x)")
-
-                    with col_btn:
-                        if status_sub != "submitted":
-                            btn_label = "Lanjutkan Mengerjakan 🚀" if status_sub == "in_progress" else "Mulai Mengerjakan 🚀"
-                            if st.button(btn_label, key=f"btn_start_{tg_id}", use_container_width=True):
-                                st.session_state["active_quiz_id"] = tg_id
-                                st.rerun()
+                                if st.button(f"Mulai Kerjakan Tugas Tuton {i//2} 🚀", key=f"btn_tg_s_{tg_id}", type="primary"):
+                                    st.session_state["active_quiz_id"] = tg_id
+                                    st.rerun()
 
 # ==========================================
 # 11. MAIN APP ROUTER
