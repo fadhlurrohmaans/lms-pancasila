@@ -1327,9 +1327,9 @@ def render_siswa():
         sub_tg_id = st.query_params.get("submit_tg")
         raw_ans_b64 = st.query_params.get("ans_data", "")
         try:
-            # Perbaikan: Konversi spasi kembali menjadi '+' agar dekode Base64 valid
+            # Perbaikan: Mengembalikan karakter '+' yang diubah menjadi spasi oleh HTTP query parser
             raw_ans_b64 = raw_ans_b64.replace(" ", "+")
-            decoded_json = urllib.parse.unquote(base64.b64decode(raw_ans_b64).decode('utf-8'))
+            decoded_json = base64.b64decode(raw_ans_b64).decode('utf-8')
             parsed_ans = json.loads(decoded_json)
             
             all_t = get_all_tugas_cached(limit=100)
@@ -1748,31 +1748,32 @@ def render_siswa():
                     if (lockEl) lockEl.style.display = "flex";
                 }}
 
+                // PERBAIKAN: Menggunakan HTML Form Submit dengan target="_top" agar melewasi batasan Cross-Origin Iframe
                 function submitViaServer() {{
                     try {{
                         const cleanAnswers = jawabanSiswa.map(a => (a === null || a === undefined || a === "") ? -1 : (isNaN(parseInt(a)) ? a : parseInt(a)));
                         const jsonStr = JSON.stringify(cleanAnswers);
-                        const encodedAns = encodeURIComponent(btoa(unescape(encodeURIComponent(jsonStr))));
+                        const b64Str = btoa(unescape(encodeURIComponent(jsonStr)));
                         
-                        let parentUrl = "";
-                        try {{
-                            if (window.parent && window.parent.location && window.parent.location.origin) {{
-                                parentUrl = window.parent.location.origin + window.parent.location.pathname;
-                            }}
-                        }} catch (e) {{
-                            parentUrl = window.location.origin + "/";
-                        }}
-                        if (!parentUrl) {{
-                            parentUrl = window.location.origin + "/";
-                        }}
+                        const form = document.createElement('form');
+                        form.method = 'GET';
+                        form.action = window.location.origin + window.location.pathname;
+                        form.target = '_top';
 
-                        const targetUrl = parentUrl + "?submit_tg=" + encodeURIComponent(taskData.id) + "&ans_data=" + encodedAns;
-                        
-                        if (window.parent && window.parent.location) {{
-                            window.parent.location.href = targetUrl;
-                        }} else {{
-                            window.open(targetUrl, "_top");
-                        }}
+                        const inputTg = document.createElement('input');
+                        inputTg.type = 'hidden';
+                        inputTg.name = 'submit_tg';
+                        inputTg.value = taskData.id;
+                        form.appendChild(inputTg);
+
+                        const inputAns = document.createElement('input');
+                        inputAns.type = 'hidden';
+                        inputAns.name = 'ans_data';
+                        inputAns.value = b64Str;
+                        form.appendChild(inputAns);
+
+                        document.body.appendChild(form);
+                        form.submit();
                     }} catch (e) {{
                         alert("Gagal memproses pengiriman jawaban: " + e.message);
                     }}
