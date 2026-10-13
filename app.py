@@ -337,7 +337,7 @@ def is_target_sesuai_kelas(doc_data, kelas_siswa):
     if not target: return True
     return kelas_siswa in target if isinstance(target, list) else target == kelas_siswa
 
-def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=False, is_violation=False):
+def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers=None, is_forced=False, is_violation=False):
     tg_id = tg["id"]
     soal_list = tg.get("soal", [])
     total_soal = len(soal_list)
@@ -358,7 +358,7 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
         correct_count = 0
         formatted_ans = []
         for idx_q, sq in enumerate(soal_list):
-            user_a = answers[idx_q] if answers and idx_q < len(answers) else None
+            user_a = answers[idx_q] if (answers and idx_q < len(answers)) else None
             formatted_ans.append(user_a if user_a is not None else -1)
             if not mode_kertas and user_a is not None and user_a == sq.get("kunci"):
                 correct_count += 1
@@ -1323,16 +1323,23 @@ def render_siswa():
             "appId": "1:1234567890:web:1234567890"
         }
 
-        # Serialisasi ke JSON String dengan default=str (Aman dari TypeError Datetime Firestore)
         fb_config_json = json.dumps(fb_config, default=str)
         tg_json = json.dumps(tg, default=str)
 
-        # Tombol navigasi keluar dari mode ujian
-        if st.button("⬅️ Keluar / Kembali ke Dashboard", key="btn_exit_cbt"):
-            st.session_state["active_quiz_id"] = None
-            st.rerun()
+        col_nav1, col_nav2 = st.columns([2, 2])
+        with col_nav1:
+            if st.button("⬅️ Keluar / Kembali ke Dashboard", key="btn_exit_cbt"):
+                st.session_state["active_quiz_id"] = None
+                st.rerun()
+        with col_nav2:
+            with st.popover("🆘 Kendala Kirim Jawaban? (Bantuan HP)"):
+                st.info("Gunakan tombol ini jika tombol di dalam lembar soal tidak merespon akibat koneksi HP terputus.")
+                if st.button("⚡ Submit Langsung Lewat Server Streamlit", type="primary", key="btn_emergency_submit"):
+                    submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers=[], is_forced=False)
+                    st.session_state["active_quiz_id"] = None
+                    st.success("✅ Ujian berhasil dikumpulkan via Server!")
+                    st.rerun()
 
-        # HTML / JS CBT Application Statis
         cbt_html_code = f"""
         <!DOCTYPE html>
         <html lang="id">
@@ -1340,22 +1347,23 @@ def render_siswa():
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>CBT Ujian Online</title>
-            <!-- Firebase SDK v10 Compat -->
             <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
             <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
             <style>
-                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; margin: 0; padding: 15px; color: #333; }}
+                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; margin: 0; padding: 15px; color: #333; -webkit-user-select: none; user-select: none; }}
+                input, textarea {{ -webkit-user-select: text; user-select: text; }}
                 .cbt-card {{ background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); max-width: 900px; margin: 0 auto; }}
-                .cbt-header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 12px; margin-bottom: 15px; }}
+                .cbt-header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 12px; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }}
                 .status-badge {{ background: #fff3cd; color: #856404; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 14px; }}
                 .q-block {{ background: #fafafa; border: 1px solid #e0e0e0; border-radius: 10px; padding: 16px; margin-bottom: 20px; }}
-                .q-title {{ font-size: 16px; font-weight: bold; margin-bottom: 12px; color: #1e3c72; }}
+                .q-title {{ font-size: 16px; font-weight: bold; margin-bottom: 12px; color: #1e3c72; -webkit-user-select: none; user-select: none; }}
                 .opt-label {{ display: flex; align-items: center; background: white; border: 1px solid #ccc; padding: 12px; border-radius: 8px; margin-bottom: 8px; cursor: pointer; transition: all 0.2s; }}
                 .opt-label:hover {{ background: #eef2f5; border-color: #1e3c72; }}
                 .opt-label input {{ margin-right: 12px; width: 18px; height: 18px; }}
                 textarea {{ width: 100%; height: 100px; border-radius: 8px; border: 1px solid #ccc; padding: 10px; font-size: 15px; box-sizing: border-box; }}
-                .btn-submit {{ background: #28a745; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 20px; }}
+                .btn-submit {{ background: #28a745; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 20px; transition: background 0.3s; }}
                 .btn-submit:hover {{ background: #218838; }}
+                .btn-submit:disabled {{ background: #6c757d; cursor: not-allowed; }}
                 .lock-overlay {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(220, 53, 69, 0.95); color: white; text-align: center; justify-content: center; align-items: center; flex-direction: column; z-index: 9999; padding: 20px; box-sizing: border-box; }}
             </style>
         </head>
@@ -1384,7 +1392,6 @@ def render_siswa():
             </div>
 
             <script>
-                // 1. INIT FIREBASE SDK CLIENT-SIDE
                 let db = null;
                 try {{
                     const firebaseConfig = {fb_config_json};
@@ -1416,21 +1423,17 @@ def render_siswa():
                         .replace(/'/g, "&#039;");
                 }}
 
-                // 2. AUTO-RESUME & INIT ON LOAD
                 async function initCBT() {{
                     const totalSoal = taskData.soal ? taskData.soal.length : 0;
                     jawabanSiswa = new Array(totalSoal).fill(null);
 
-                    // A. Ambil dari LocalStorage (Instan)
                     const savedLocal = localStorage.getItem(localKey);
                     if (savedLocal) {{
                         try {{ jawabanSiswa = JSON.parse(savedLocal); }} catch(e) {{}}
                     }}
 
-                    // TAMPILKAN SOAL LANGSUNG (INSTAN - Tanpa Menunggu Firestore)
                     renderQuestions();
 
-                    // B. Sinkronisasi Firestore Background
                     if (db) {{
                         try {{
                             const docRef = db.collection("pengerjaan_siswa").doc(docId);
@@ -1439,8 +1442,15 @@ def render_siswa():
                             if (docSnap.exists) {{
                                 const data = docSnap.data();
                                 if (data.status === "submitted") {{
-                                    alert("Anda sudah mengumpulkan tugas/ujian ini!");
-                                    document.body.innerHTML = "<h2 style='text-align:center; padding-top:50px; color:#28a745;'>✅ Jawaban Ujian Berhasil Terkirim!</h2>";
+                                    isSubmitted = true;
+                                    document.body.innerHTML = `
+                                        <div style='text-align:center; padding:50px 20px; background:white; border-radius:12px; margin:20px auto; max-width:600px;'>
+                                            <h2 style='color:#28a745;'>✅ Jawaban Ujian Berhasil Terkirim!</h2>
+                                            <p>Anda sudah mengumpulkan tugas/ujian ini sebelumnya.</p>
+                                            <button onclick="window.parent.location.reload();" style="background:#1e3c72; color:white; border:none; padding:10px 20px; border-radius:8px; font-weight:bold; margin-top:15px; cursor:pointer;">
+                                                🔄 Kembali ke Dashboard Utama
+                                            </button>
+                                        </div>`;
                                     return;
                                 }}
 
@@ -1448,7 +1458,7 @@ def render_siswa():
                                 if (data.jawaban && Array.isArray(data.jawaban)) {{
                                     jawabanSiswa = data.jawaban;
                                     localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
-                                    renderQuestions(); // Refresh UI dengan jawaban cloud terbaru
+                                    renderQuestions();
                                 }}
 
                                 if (data.ijin_guru === false) {{
@@ -1456,7 +1466,6 @@ def render_siswa():
                                     return;
                                 }}
                             }} else {{
-                                // Buat dokumen pengerjaan baru
                                 await docRef.set({{
                                     username_siswa: username,
                                     nama_siswa: namaSiswa,
@@ -1477,7 +1486,6 @@ def render_siswa():
                     }}
                 }}
 
-                // 3. RENDER SOAL
                 function renderQuestions() {{
                     const container = document.getElementById("questionsContainer");
                     if (!container) return;
@@ -1527,12 +1535,10 @@ def render_siswa():
                     container.innerHTML = html;
                 }}
 
-                // 4. AUTO-SAVE JAWABAN (LOCALSTORAGE + FIRESTORE SYNC)
                 function saveAnswer(qIdx, val) {{
                     jawabanSiswa[qIdx] = val;
                     localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
 
-                    // Sync Firestore di Latar Belakang jika terhubung
                     if (db) {{
                         db.collection("pengerjaan_siswa").doc(docId).update({{
                             jawaban: jawabanSiswa,
@@ -1541,13 +1547,19 @@ def render_siswa():
                     }}
                 }}
 
-                // 5. SISTEM ANTI-CHEAT (BLUR & TAB SWITCH)
+                // SISTEM ANTI-CHEAT TEROPTIMASI UNTUK HP ANDROID & DESKTOP
                 let lastViolationTime = 0;
-                function recordViolation() {{
+
+                function recordViolation(reason) {{
                     if (isLocked || isSubmitted) return;
-                    
+
+                    const activeEl = document.activeElement;
+                    if (reason === 'blur' && activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT')) {{
+                        return;
+                    }}
+
                     const now = Date.now();
-                    if (now - lastViolationTime < 3000) return;
+                    if (now - lastViolationTime < 2500) return;
                     lastViolationTime = now;
 
                     violationCount++;
@@ -1575,23 +1587,61 @@ def render_siswa():
                     }}
                 }}
 
-                window.addEventListener("blur", recordViolation);
                 document.addEventListener("visibilitychange", () => {{
-                    if (document.hidden) recordViolation();
+                    if (document.visibilityState === "hidden") {{
+                        recordViolation("visibility_hidden");
+                    }}
                 }});
 
+                window.addEventListener("pagehide", () => {{
+                    recordViolation("pagehide");
+                }});
+
+                window.addEventListener("blur", () => {{
+                    if (document.hidden) {{
+                        recordViolation("blur_hidden");
+                    }} else {{
+                        setTimeout(() => {{
+                            const activeEl = document.activeElement;
+                            const isInputActive = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT');
+                            if (!document.hasFocus() && !isInputActive) {{
+                                recordViolation("blur_lost_focus");
+                            }}
+                        }}, 300);
+                    }}
+                }});
+
+                document.addEventListener("contextmenu", e => e.preventDefault());
+                document.addEventListener("copy", e => e.preventDefault());
+                document.addEventListener("cut", e => e.preventDefault());
+                document.addEventListener("paste", e => e.preventDefault());
+
                 function updateViolationBadge() {{
-                    document.getElementById("badgeViolation").innerText = `⚠️ Pelanggaran: ${{violationCount}}x`;
+                    const badge = document.getElementById("badgeViolation");
+                    if (badge) badge.innerText = `⚠️ Pelanggaran: ${{violationCount}}x`;
                 }}
 
                 function lockScreenUI() {{
-                    document.getElementById("lockScreen").style.display = "flex";
+                    const lockEl = document.getElementById("lockScreen");
+                    if (lockEl) lockEl.style.display = "flex";
                 }}
 
-                // 6. SUBMIT EXAM
                 async function submitExam(isAutoViolation = false) {{
                     if (isSubmitted) return;
+
+                    if (!isAutoViolation) {{
+                        const confirmSubmit = confirm("Apakah Anda yakin ingin menyelesaikan dan mengirim jawaban ujian ini?");
+                        if (!confirmSubmit) return;
+                    }}
+
                     isSubmitted = true;
+
+                    const btnSubmit = document.getElementById("btnSubmitExam");
+                    if (btnSubmit) {{
+                        btnSubmit.disabled = true;
+                        btnSubmit.innerHTML = "⏳ Sedang Mengirim Jawaban... Mohon Tunggu";
+                        btnSubmit.style.background = "#6c757d";
+                    }}
 
                     let notes = "Penilaian Otomatis Sistem";
                     if (isAutoViolation) notes = "⚠️ Submit Otomatis (Mencapai Limit Maksimal Pelanggaran)";
@@ -1600,37 +1650,58 @@ def render_siswa():
                     let finalScore = null;
                     if (taskData.tipe === "pg" && !taskData.mode_kertas) {{
                         let correct = 0;
-                        taskData.soal.forEach((sq, i) => {{
-                            if (jawabanSiswa[i] !== null && jawabanSiswa[i] === sq.kunci) {{ correct++; }}
-                        }});
-                        finalScore = Math.round((correct / taskData.soal.length) * 100);
+                        if (Array.isArray(taskData.soal)) {{
+                            taskData.soal.forEach((sq, i) => {{
+                                if (jawabanSiswa[i] !== null && jawabanSiswa[i] !== undefined && jawabanSiswa[i] === sq.kunci) {{
+                                    correct++;
+                                }}
+                            }});
+                            finalScore = taskData.soal.length > 0 ? Math.round((correct / taskData.soal.length) * 100) : 0;
+                        }}
                     }}
+
+                    const cleanAnswers = jawabanSiswa.map(a => (a === null || a === undefined) ? "" : a);
+
+                    const payload = {{
+                        id_tugas: taskData.id,
+                        judul_tugas: taskData.judul || "",
+                        username_siswa: username,
+                        nama_siswa: namaSiswa,
+                        kelas_siswa: kelasSiswa,
+                        tipe: taskData.tipe || "pg",
+                        jawaban: cleanAnswers,
+                        nilai: finalScore,
+                        catatan_guru: notes,
+                        status: "submitted",
+                        ijin_guru: true,
+                        mode_kertas: taskData.mode_kertas || false,
+                        submitted_at: firebase.firestore.FieldValue.serverTimestamp(),
+                        updated_at: firebase.firestore.FieldValue.serverTimestamp()
+                    }};
 
                     if (db) {{
                         try {{
-                            await db.collection("pengerjaan_siswa").doc(docId).set({{
-                                id_tugas: taskData.id,
-                                judul_tugas: taskData.judul,
-                                username_siswa: username,
-                                nama_siswa: namaSiswa,
-                                kelas_siswa: kelasSiswa,
-                                tipe: taskData.tipe,
-                                jawaban: jawabanSiswa,
-                                nilai: finalScore,
-                                catatan_guru: notes,
-                                status: "submitted",
-                                ijin_guru: true,
-                                mode_kertas: taskData.mode_kertas || false,
-                                submitted_at: firebase.firestore.FieldValue.serverTimestamp(),
-                                updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                            }}, {{ merge: true }});
+                            const firestorePromise = db.collection("pengerjaan_siswa").doc(docId).set(payload, {{ merge: true }});
+                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout koneksi")), 5000));
+                            await Promise.race([firestorePromise, timeoutPromise]);
                         }} catch (e) {{
-                            console.error("Submit error:", e);
+                            console.warn("Firestore client write warn/timeout:", e);
                         }}
                     }}
 
                     localStorage.removeItem(localKey);
-                    document.body.innerHTML = "<h2 style='text-align:center; padding-top:50px; color:#28a745;'>✅ Ujian Berhasil Dikumpulkan! Terima kasih.</h2>";
+
+                    document.body.innerHTML = `
+                        <div style="text-align:center; padding:40px 20px; background:white; border-radius:12px; margin:20px auto; max-width:600px; box-shadow:0 4px 12px rgba(0,0,0,0.1);">
+                            <h2 style="color:#28a745; margin-bottom:15px;">✅ Ujian Berhasil Dikumpulkan!</h2>
+                            <p style="color:#555; font-size:16px;">Terima kasih, jawaban Anda telah tersimpan ke sistem.</p>
+                            <div style="margin-top:25px;">
+                                <button onclick="window.parent.location.reload();" style="background:#1e3c72; color:white; border:none; padding:12px 24px; border-radius:8px; font-weight:bold; font-size:15px; cursor:pointer;">
+                                    🔄 Kembali ke Dashboard Utama
+                                </button>
+                            </div>
+                        </div>
+                    `;
                 }}
 
                 initCBT();
@@ -1639,7 +1710,6 @@ def render_siswa():
         </html>
         """
 
-        # Render HTML/JS Application Statis di Streamlit iFrame
         components.html(cbt_html_code, height=800, scrolling=True)
         st.stop()
 
@@ -1711,6 +1781,7 @@ def render_siswa():
                             if st.button(btn_label, key=f"btn_start_{tg_id}", use_container_width=True):
                                 st.session_state["active_quiz_id"] = tg_id
                                 st.rerun()
+
 # ==========================================
 # 11. MAIN APP ROUTER
 # ==========================================
