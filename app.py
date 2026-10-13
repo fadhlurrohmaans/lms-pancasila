@@ -1325,8 +1325,10 @@ def render_siswa():
     # --- JALUR HANDLER PENGERJAAN SUBMIT VIA SERVER (URL QUERY PARAMS) ---
     if "submit_tg" in st.query_params and "ans_data" in st.query_params:
         sub_tg_id = st.query_params.get("submit_tg")
-        raw_ans_b64 = st.query_params.get("ans_data")
+        raw_ans_b64 = st.query_params.get("ans_data", "")
         try:
+            # Perbaikan: Konversi spasi kembali menjadi '+' agar dekode Base64 valid
+            raw_ans_b64 = raw_ans_b64.replace(" ", "+")
             decoded_json = urllib.parse.unquote(base64.b64decode(raw_ans_b64).decode('utf-8'))
             parsed_ans = json.loads(decoded_json)
             
@@ -1496,8 +1498,11 @@ def render_siswa():
                             firebase.initializeApp(firebaseConfig);
                         }}
                         db = firebase.firestore();
-                        // ENFORCE LONG POLLING UNTUK MENCEGAH STUCK DI JARINGAN HP/SEKOLAH
-                        db.settings({{ experimentalAutoDetectLongPolling: true }});
+                        try {{
+                            db.settings({{ experimentalAutoDetectLongPolling: true }});
+                        }} catch(se) {{
+                            console.warn("Firestore settings notice:", se);
+                        }}
                     }}
                 }} catch(e) {{
                     console.error("Firebase Initialization Error:", e);
@@ -1747,11 +1752,29 @@ def render_siswa():
                     try {{
                         const cleanAnswers = jawabanSiswa.map(a => (a === null || a === undefined || a === "") ? -1 : (isNaN(parseInt(a)) ? a : parseInt(a)));
                         const jsonStr = JSON.stringify(cleanAnswers);
-                        const encodedAns = btoa(unescape(encodeURIComponent(jsonStr)));
-                        const targetUrl = window.location.pathname + "?submit_tg=" + encodeURIComponent(taskData.id) + "&ans_data=" + encodeURIComponent(encodedAns);
-                        window.open(targetUrl, "_top");
+                        const encodedAns = encodeURIComponent(btoa(unescape(encodeURIComponent(jsonStr))));
+                        
+                        let parentUrl = "";
+                        try {{
+                            if (window.parent && window.parent.location && window.parent.location.origin) {{
+                                parentUrl = window.parent.location.origin + window.parent.location.pathname;
+                            }}
+                        }} catch (e) {{
+                            parentUrl = window.location.origin + "/";
+                        }}
+                        if (!parentUrl) {{
+                            parentUrl = window.location.origin + "/";
+                        }}
+
+                        const targetUrl = parentUrl + "?submit_tg=" + encodeURIComponent(taskData.id) + "&ans_data=" + encodedAns;
+                        
+                        if (window.parent && window.parent.location) {{
+                            window.parent.location.href = targetUrl;
+                        }} else {{
+                            window.open(targetUrl, "_top");
+                        }}
                     }} catch (e) {{
-                        alert("Gagal memproses URL Server: " + e.message);
+                        alert("Gagal memproses pengiriman jawaban: " + e.message);
                     }}
                 }}
 
