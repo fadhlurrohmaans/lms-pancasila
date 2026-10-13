@@ -196,7 +196,7 @@ def get_all_materi_cached(limit=100, offset=0):
     docs = db.collection("materi_pancasila").limit(limit).offset(offset).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-# --- CACHE DATA PENGERJAAN SISWA (TTL DIKECILKAN UNTUK RESPONSIVITAS REALTIME) ---
+# --- CACHE DATA PENGERJAAN SISWA ---
 @st.cache_data(ttl=5)
 def get_user_pengerjaan_cached(username, limit=50):
     docs = db.collection("pengerjaan_siswa").where("username_siswa", "==", username).limit(limit).stream()
@@ -1384,7 +1384,7 @@ def render_siswa():
                 st.rerun()
         with col_nav2:
             with st.popover("SOS Kendala Kirim Jawaban"):
-                st.info("Gunakan tombol di bawah jika pengerjaan mengalami masalah jaringan di browser HP.")
+                st.info("Gunakan tombol ini jika pengerjaan mengalami masalah jaringan di browser HP.")
                 if st.button("⚡ Submit Langsung via Server Streamlit", type="primary", key="btn_emergency_submit"):
                     submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers=None, is_forced=False)
                     st.session_state["active_quiz_id"] = None
@@ -1496,6 +1496,8 @@ def render_siswa():
                             firebase.initializeApp(firebaseConfig);
                         }}
                         db = firebase.firestore();
+                        // ENFORCE LONG POLLING UNTUK MENCEGAH STUCK DI JARINGAN HP/SEKOLAH
+                        db.settings({{ experimentalAutoDetectLongPolling: true }});
                     }}
                 }} catch(e) {{
                     console.error("Firebase Initialization Error:", e);
@@ -1742,11 +1744,15 @@ def render_siswa():
                 }}
 
                 function submitViaServer() {{
-                    const cleanAnswers = jawabanSiswa.map(a => (a === null || a === undefined || a === "") ? -1 : (isNaN(parseInt(a)) ? a : parseInt(a)));
-                    const jsonStr = JSON.stringify(cleanAnswers);
-                    const encodedAns = btoa(encodeURIComponent(jsonStr));
-                    const targetUrl = window.top.location.pathname + "?submit_tg=" + encodeURIComponent(taskData.id) + "&ans_data=" + encodedAns;
-                    window.top.location.href = targetUrl;
+                    try {{
+                        const cleanAnswers = jawabanSiswa.map(a => (a === null || a === undefined || a === "") ? -1 : (isNaN(parseInt(a)) ? a : parseInt(a)));
+                        const jsonStr = JSON.stringify(cleanAnswers);
+                        const encodedAns = btoa(unescape(encodeURIComponent(jsonStr)));
+                        const targetUrl = window.location.pathname + "?submit_tg=" + encodeURIComponent(taskData.id) + "&ans_data=" + encodeURIComponent(encodedAns);
+                        window.open(targetUrl, "_top");
+                    }} catch (e) {{
+                        alert("Gagal memproses URL Server: " + e.message);
+                    }}
                 }}
 
                 async function submitExam(isAutoViolation = false) {{
@@ -1810,11 +1816,11 @@ def render_siswa():
                     if (db) {{
                         try {{
                             const firestorePromise = db.collection("pengerjaan_siswa").doc(docId).set(payload, {{ merge: true }});
-                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout koneksi Firestore Client")), 4000));
+                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout Firestore Client")), 3000));
                             await Promise.race([firestorePromise, timeoutPromise]);
                             successClient = true;
                         }} catch (e) {{
-                            console.warn("Firestore client write failed, redirecting to server submit:", e);
+                            console.warn("Firestore client write failed/timeout, switching to server submit:", e);
                             successClient = false;
                         }}
                     }}
