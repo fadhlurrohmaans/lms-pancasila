@@ -1323,6 +1323,10 @@ def render_siswa():
             "appId": "1:1234567890:web:1234567890"
         }
 
+        # Serialisasi ke JSON String dengan default=str (Aman dari TypeError Datetime Firestore)
+        fb_config_json = json.dumps(fb_config, default=str)
+        tg_json = json.dumps(tg, default=str)
+
         # Tombol navigasi keluar dari mode ujian
         if st.button("⬅️ Keluar / Kembali ke Dashboard", key="btn_exit_cbt"):
             st.session_state["active_quiz_id"] = None
@@ -1358,7 +1362,7 @@ def render_siswa():
         <body>
 
             <div id="lockScreen" class="lock-overlay">
-                <h1>🔒 AKSE MENGERJAKAN TERKUNCI</h1>
+                <h1>🔒 AKSES MENGERJAKAN TERKUNCI</h1>
                 <p>Anda telah mencapai limit 10x pelanggaran / perpindahan tab!</p>
                 <p>Silakan hubungi Guru Anda untuk memberikan izin akses kembali.</p>
             </div>
@@ -1381,11 +1385,11 @@ def render_siswa():
 
             <script>
                 // 1. INIT FIREBASE SDK CLIENT-SIDE
-                const firebaseConfig = {json.dumps(fb_config)};
+                const firebaseConfig = {fb_config_json};
                 if (!firebase.apps.length) {{ firebase.initializeApp(firebaseConfig); }}
                 const db = firebase.firestore();
 
-                const taskData = {json.dumps(tg)};
+                const taskData = {tg_json};
                 const username = "{username_s}";
                 const namaSiswa = "{nama_s}";
                 const kelasSiswa = "{kelas_s}";
@@ -1498,7 +1502,7 @@ def render_siswa():
                     jawabanSiswa[qIdx] = val;
                     localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
 
-                    // Sync Firestore di Latar Belakang (Debounced)
+                    // Sync Firestore di Latar Belakang
                     db.collection("pengerjaan_siswa").doc(docId).update({{
                         jawaban: jawabanSiswa,
                         updated_at: firebase.firestore.FieldValue.serverTimestamp()
@@ -1511,7 +1515,7 @@ def render_siswa():
                     if (isLocked || isSubmitted) return;
                     
                     const now = Date.now();
-                    if (now - lastViolationTime < 3000) return; // Throttle 3 detik
+                    if (now - lastViolationTime < 3000) return;
                     lastViolationTime = now;
 
                     violationCount++;
@@ -1596,7 +1600,7 @@ def render_siswa():
         # Render HTML/JS Application Statis di Streamlit iFrame
         components.html(cbt_html_code, height=800, scrolling=True)
         st.stop()
-
+        
     # --- DASHBOARD UTAMA SISWA ---
     st.markdown(f"""
         <div class="student-header">
