@@ -1385,9 +1385,14 @@ def render_siswa():
 
             <script>
                 // 1. INIT FIREBASE SDK CLIENT-SIDE
-                const firebaseConfig = {fb_config_json};
-                if (!firebase.apps.length) {{ firebase.initializeApp(firebaseConfig); }}
-                const db = firebase.firestore();
+                let db = null;
+                try {{
+                    const firebaseConfig = {fb_config_json};
+                    if (!firebase.apps.length) {{ firebase.initializeApp(firebaseConfig); }}
+                    db = firebase.firestore();
+                }} catch(e) {{
+                    console.error("Firebase Initialization Error:", e);
+                }}
 
                 const taskData = {tg_json};
                 const username = "{username_s}";
@@ -1401,6 +1406,16 @@ def render_siswa():
                 let isLocked = false;
                 let isSubmitted = false;
 
+                function escapeHtml(str) {{
+                    if (str === null || str === undefined) return '';
+                    return String(str)
+                        .replace(/&/g, "&amp;")
+                        .replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;")
+                        .replace(/"/g, "&quot;")
+                        .replace(/'/g, "&#039;");
+                }}
+
                 // 2. AUTO-RESUME & INIT ON LOAD
                 async function initCBT() {{
                     const totalSoal = taskData.soal ? taskData.soal.length : 0;
@@ -1412,50 +1427,60 @@ def render_siswa():
                         try {{ jawabanSiswa = JSON.parse(savedLocal); }} catch(e) {{}}
                     }}
 
-                    // B. Sinkronisasi Firestore Background
-                    const docRef = db.collection("pengerjaan_siswa").doc(docId);
-                    const docSnap = await docRef.get();
-
-                    if (docSnap.exists) {{
-                        const data = docSnap.data();
-                        if (data.status === "submitted") {{
-                            alert("Anda sudah mengumpulkan tugas/ujian ini!");
-                            document.body.innerHTML = "<h2 style='text-align:center; padding-top:50px; color:#28a745;'>✅ Jawaban Ujian Berhasil Terkirim!</h2>";
-                            return;
-                        }}
-
-                        violationCount = data.violation_count || 0;
-                        if (data.jawaban && Array.isArray(data.jawaban)) {{
-                            jawabanSiswa = data.jawaban;
-                            localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
-                        }}
-
-                        if (data.ijin_guru === false) {{
-                            lockScreenUI();
-                            return;
-                        }}
-                    }} else {{
-                        // Buat dokumen pengerjaan baru
-                        await docRef.set({{
-                            username_siswa: username,
-                            nama_siswa: namaSiswa,
-                            kelas_siswa: kelasSiswa,
-                            id_tugas: taskData.id,
-                            status: "in_progress",
-                            ijin_guru: true,
-                            violation_count: 0,
-                            jawaban: jawabanSiswa,
-                            updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                        }}, {{ merge: true }});
-                    }}
-
-                    updateViolationBadge();
+                    // TAMPILKAN SOAL LANGSUNG (INSTAN - Tanpa Menunggu Firestore)
                     renderQuestions();
+
+                    // B. Sinkronisasi Firestore Background
+                    if (db) {{
+                        try {{
+                            const docRef = db.collection("pengerjaan_siswa").doc(docId);
+                            const docSnap = await docRef.get();
+
+                            if (docSnap.exists) {{
+                                const data = docSnap.data();
+                                if (data.status === "submitted") {{
+                                    alert("Anda sudah mengumpulkan tugas/ujian ini!");
+                                    document.body.innerHTML = "<h2 style='text-align:center; padding-top:50px; color:#28a745;'>✅ Jawaban Ujian Berhasil Terkirim!</h2>";
+                                    return;
+                                }}
+
+                                violationCount = data.violation_count || 0;
+                                if (data.jawaban && Array.isArray(data.jawaban)) {{
+                                    jawabanSiswa = data.jawaban;
+                                    localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
+                                    renderQuestions(); // Refresh UI dengan jawaban cloud terbaru
+                                }}
+
+                                if (data.ijin_guru === false) {{
+                                    lockScreenUI();
+                                    return;
+                                }}
+                            }} else {{
+                                // Buat dokumen pengerjaan baru
+                                await docRef.set({{
+                                    username_siswa: username,
+                                    nama_siswa: namaSiswa,
+                                    kelas_siswa: kelasSiswa,
+                                    id_tugas: taskData.id,
+                                    status: "in_progress",
+                                    ijin_guru: true,
+                                    violation_count: 0,
+                                    jawaban: jawabanSiswa,
+                                    updated_at: firebase.firestore.FieldValue.serverTimestamp()
+                                }}, {{ merge: true }});
+                            }}
+                            updateViolationBadge();
+                        }} catch (err) {{
+                            console.warn("Firestore sync error (melanjutkan mode lokal):", err);
+                            updateViolationBadge();
+                        }}
+                    }}
                 }}
 
-                // 3. RENDER SOAL (FULL HYBRID SUPPORT: CBT & KERTAS)
+                // 3. RENDER SOAL
                 function renderQuestions() {{
                     const container = document.getElementById("questionsContainer");
+                    if (!container) return;
                     const isKertas = taskData.mode_kertas || false;
                     const isPG = taskData.tipe === "pg";
 
@@ -1463,31 +1488,36 @@ def render_siswa():
                         document.getElementById("cbtInfoBanner").innerHTML = "<div style='background:#e3f2fd; padding:10px; border-radius:8px; margin-bottom:15px; color:#0d47a1;'>📄 <b>MODE UJIAN KERTAS MANUAL ACTIVE:</b> Tulis jawaban Anda pada lembar kertas fisik. Layar ini menjaga sistem Anti-Cheat tetap aktif.</div>";
                     }}
 
+                    if (!taskData.soal || taskData.soal.length === 0) {{
+                        container.innerHTML = "<div style='padding:20px; text-align:center;'>⚠️ Soal tidak ditemukan atau kosong.</div>";
+                        return;
+                    }}
+
                     let html = "";
                     taskData.soal.forEach((sq, idx) => {{
-                        const qText = typeof sq === 'object' ? sq.pertanyaan : sq;
+                        const qText = (typeof sq === 'object' && sq !== null) ? (sq.pertanyaan || '') : String(sq);
                         html += `<div class="q-block">
-                            <div class="q-title">${{idx + 1}}. ${{qText}}</div>`;
+                            <div class="q-title">${{idx + 1}}. ${{escapeHtml(qText)}}</div>`;
 
                         if (isPG) {{
-                            const opsi = sq.opsi || ["", "", "", ""];
+                            const opsi = (typeof sq === 'object' && sq !== null && sq.opsi) ? sq.opsi : ["", "", "", ""];
                             opsi.forEach((optVal, oIdx) => {{
                                 const optLetter = ["A", "B", "C", "D"][oIdx] || oIdx;
                                 const isChecked = (jawabanSiswa[idx] === oIdx) ? "checked" : "";
 
                                 if (isKertas) {{
-                                    html += `<div style="margin-left:15px; padding:4px 0;"><b>${{optLetter}}.</b> ${{optVal}}</div>`;
+                                    html += `<div style="margin-left:15px; padding:4px 0;"><b>${{optLetter}}.</b> ${{escapeHtml(optVal)}}</div>`;
                                 }} else {{
                                     html += `<label class="opt-label">
                                         <input type="radio" name="q_${{idx}}" value="${{oIdx}}" ${{isChecked}} onchange="saveAnswer(${{idx}}, ${{oIdx}})">
-                                        <b>${{optLetter}}.</b>&nbsp; ${{optVal}}
+                                        <b>${{optLetter}}.</b>&nbsp; ${{escapeHtml(optVal)}}
                                     </label>`;
                                 }}
                             }});
                         }} else {{
                             if (!isKertas) {{
                                 const valE = jawabanSiswa[idx] || "";
-                                html += `<textarea oninput="saveAnswer(${{idx}}, this.value)">${{valE}}</textarea>`;
+                                html += `<textarea oninput="saveAnswer(${{idx}}, this.value)">${{escapeHtml(valE)}}</textarea>`;
                             }}
                         }}
 
@@ -1502,11 +1532,13 @@ def render_siswa():
                     jawabanSiswa[qIdx] = val;
                     localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
 
-                    // Sync Firestore di Latar Belakang
-                    db.collection("pengerjaan_siswa").doc(docId).update({{
-                        jawaban: jawabanSiswa,
-                        updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                    }}).catch(e => console.log(e));
+                    // Sync Firestore di Latar Belakang jika terhubung
+                    if (db) {{
+                        db.collection("pengerjaan_siswa").doc(docId).update({{
+                            jawaban: jawabanSiswa,
+                            updated_at: firebase.firestore.FieldValue.serverTimestamp()
+                        }}).catch(e => console.log(e));
+                    }}
                 }}
 
                 // 5. SISTEM ANTI-CHEAT (BLUR & TAB SWITCH)
@@ -1525,17 +1557,21 @@ def render_siswa():
                         submitExam(true);
                     }} else if (violationCount >= 10) {{
                         isLocked = true;
-                        db.collection("pengerjaan_siswa").doc(docId).update({{
-                            violation_count: violationCount,
-                            ijin_guru: false,
-                            updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                        }});
+                        if (db) {{
+                            db.collection("pengerjaan_siswa").doc(docId).update({{
+                                violation_count: violationCount,
+                                ijin_guru: false,
+                                updated_at: firebase.firestore.FieldValue.serverTimestamp()
+                            }}).catch(e => console.log(e));
+                        }}
                         lockScreenUI();
                     }} else {{
-                        db.collection("pengerjaan_siswa").doc(docId).update({{
-                            violation_count: violationCount,
-                            updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                        }});
+                        if (db) {{
+                            db.collection("pengerjaan_siswa").doc(docId).update({{
+                                violation_count: violationCount,
+                                updated_at: firebase.firestore.FieldValue.serverTimestamp()
+                            }}).catch(e => console.log(e));
+                        }}
                     }}
                 }}
 
@@ -1570,22 +1606,28 @@ def render_siswa():
                         finalScore = Math.round((correct / taskData.soal.length) * 100);
                     }}
 
-                    await db.collection("pengerjaan_siswa").doc(docId).set({{
-                        id_tugas: taskData.id,
-                        judul_tugas: taskData.judul,
-                        username_siswa: username,
-                        nama_siswa: namaSiswa,
-                        kelas_siswa: kelasSiswa,
-                        tipe: taskData.tipe,
-                        jawaban: jawabanSiswa,
-                        nilai: finalScore,
-                        catatan_guru: notes,
-                        status: "submitted",
-                        ijin_guru: true,
-                        mode_kertas: taskData.mode_kertas || false,
-                        submitted_at: firebase.firestore.FieldValue.serverTimestamp(),
-                        updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                    }}, {{ merge: true }});
+                    if (db) {{
+                        try {{
+                            await db.collection("pengerjaan_siswa").doc(docId).set({{
+                                id_tugas: taskData.id,
+                                judul_tugas: taskData.judul,
+                                username_siswa: username,
+                                nama_siswa: namaSiswa,
+                                kelas_siswa: kelasSiswa,
+                                tipe: taskData.tipe,
+                                jawaban: jawabanSiswa,
+                                nilai: finalScore,
+                                catatan_guru: notes,
+                                status: "submitted",
+                                ijin_guru: true,
+                                mode_kertas: taskData.mode_kertas || false,
+                                submitted_at: firebase.firestore.FieldValue.serverTimestamp(),
+                                updated_at: firebase.firestore.FieldValue.serverTimestamp()
+                            }}, {{ merge: true }});
+                        }} catch (e) {{
+                            console.error("Submit error:", e);
+                        }}
+                    }}
 
                     localStorage.removeItem(localKey);
                     document.body.innerHTML = "<h2 style='text-align:center; padding-top:50px; color:#28a745;'>✅ Ujian Berhasil Dikumpulkan! Terima kasih.</h2>";
@@ -1600,7 +1642,7 @@ def render_siswa():
         # Render HTML/JS Application Statis di Streamlit iFrame
         components.html(cbt_html_code, height=800, scrolling=True)
         st.stop()
-        
+
     # --- DASHBOARD UTAMA SISWA ---
     st.markdown(f"""
         <div class="student-header">
@@ -1669,7 +1711,6 @@ def render_siswa():
                             if st.button(btn_label, key=f"btn_start_{tg_id}", use_container_width=True):
                                 st.session_state["active_quiz_id"] = tg_id
                                 st.rerun()
-
 # ==========================================
 # 11. MAIN APP ROUTER
 # ==========================================
