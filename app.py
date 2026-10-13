@@ -6,6 +6,8 @@ import random
 import string
 import hashlib
 import time
+import base64
+import urllib.parse
 from datetime import datetime
 
 import streamlit as st
@@ -194,7 +196,7 @@ def get_all_materi_cached(limit=100, offset=0):
     docs = db.collection("materi_pancasila").limit(limit).offset(offset).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-# --- CACHE DATA PENGERJAAN SISWA ---
+# --- CACHE DATA PENGERJAAN SISWA (TTL DIKECILKAN UNTUK RESPONSIVITAS REALTIME) ---
 @st.cache_data(ttl=5)
 def get_user_pengerjaan_cached(username, limit=50):
     docs = db.collection("pengerjaan_siswa").where("username_siswa", "==", username).limit(limit).stream()
@@ -1320,6 +1322,35 @@ def render_siswa():
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
 
+    # --- JALUR HANDLER PENGERJAAN SUBMIT VIA SERVER (URL QUERY PARAMS) ---
+    if "submit_tg" in st.query_params and "ans_data" in st.query_params:
+        sub_tg_id = st.query_params.get("submit_tg")
+        raw_ans_b64 = st.query_params.get("ans_data")
+        try:
+            decoded_json = urllib.parse.unquote(base64.b64decode(raw_ans_b64).decode('utf-8'))
+            parsed_ans = json.loads(decoded_json)
+            
+            all_t = get_all_tugas_cached(limit=100)
+            target_tg = next((t for t in all_t if t["id"] == sub_tg_id), None)
+            
+            if target_tg:
+                submit_jawaban_siswa(
+                    target_tg, 
+                    username_s, 
+                    nama_s, 
+                    kelas_s, 
+                    answers=parsed_ans, 
+                    is_forced=False
+                )
+                st.session_state["active_quiz_id"] = None
+                st.query_params.clear()
+                clear_pengerjaan_cache()
+                st.success("✅ Ujian berhasil dikumpulkan dan nilai telah tersimpan di database!")
+                st.rerun()
+        except Exception as err:
+            st.error(f"⚠️ Terjadi kesalahan saat menyimpan nilai via Server: {err}")
+            st.query_params.clear()
+
     my_subs = get_user_pengerjaan_cached(username_s)
     active_quiz_id = st.session_state.get("active_quiz_id")
 
@@ -1352,9 +1383,9 @@ def render_siswa():
                 st.session_state["active_quiz_id"] = None
                 st.rerun()
         with col_nav2:
-            with st.popover("🆘 Kendala Kirim Jawaban? (Bantuan HP)"):
-                st.info("Gunakan tombol ini jika tombol di dalam lembar soal tidak merespon akibat koneksi HP terputus.")
-                if st.button("⚡ Submit Langsung Lewat Server Streamlit", type="primary", key="btn_emergency_submit"):
+            with st.popover("SOS Kendala Kirim Jawaban"):
+                st.info("Gunakan tombol di bawah jika pengerjaan mengalami masalah jaringan di browser HP.")
+                if st.button("⚡ Submit Langsung via Server Streamlit", type="primary", key="btn_emergency_submit"):
                     submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers=None, is_forced=False)
                     st.session_state["active_quiz_id"] = None
                     clear_pengerjaan_cache()
@@ -1382,9 +1413,10 @@ def render_siswa():
                 .opt-label:hover {{ background: #eef2f5; border-color: #1e3c72; }}
                 .opt-label input {{ margin-right: 12px; width: 18px; height: 18px; }}
                 textarea {{ width: 100%; height: 100px; border-radius: 8px; border: 1px solid #ccc; padding: 10px; font-size: 15px; box-sizing: border-box; }}
-                .btn-submit {{ background: #28a745; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 20px; transition: background 0.3s; }}
+                .btn-submit {{ background: #28a745; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 15px; transition: background 0.3s; }}
                 .btn-submit:hover {{ background: #218838; }}
                 .btn-submit:disabled {{ background: #6c757d; cursor: not-allowed; }}
+                .btn-server {{ background: #1e3c72; color: white; border: none; padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 10px; }}
                 .lock-overlay {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(220, 53, 69, 0.95); color: white; text-align: center; justify-content: center; align-items: center; flex-direction: column; z-index: 9999; padding: 20px; box-sizing: border-box; }}
             </style>
         </head>
@@ -1414,32 +1446,30 @@ def render_siswa():
                 </div>
 
                 <button id="btnSubmitExam" class="btn-submit" onclick="submitExam(false)">🚀 Selesai & Kirim Jawaban</button>
+                <button id="btnSubmitServer" class="btn-server" onclick="submitViaServer()">⚡ Kirim Jawaban via Server (Cadangan / Jaringan Lambat)</button>
             </div>
 
             <script>
-                // SAFELY CATCH ALL JS ERRORS TO PREVENT PERMANENT "LOADING" STUCK
                 window.onerror = function(msg, url, lineNo) {{
                     const container = document.getElementById("questionsContainer");
                     if (container) {{
                         container.innerHTML = `
                             <div style="color:#721c24; padding:16px; background:#f8d7da; border:1px solid #f5c6cb; border-radius:8px;">
                                 ⚠️ <b>Gagal Memuat Soal:</b> ${{escapeHtml(msg)}}<br>
-                                <small>Silakan muat ulang halaman atau gunakan tombol SOS Submit di bagian atas.</small><br><br>
-                                <button onclick="window.location.reload()" style="padding:8px 16px; border-radius:6px; background:#721c24; color:white; border:none; cursor:pointer;">
-                                    🔄 Muat Ulang Halaman
+                                <small>Silakan muat ulang halaman atau gunakan tombol Kirim Jawaban via Server.</small><br><br>
+                                <button onclick="submitViaServer()" style="padding:8px 16px; border-radius:6px; background:#1e3c72; color:white; border:none; cursor:pointer;">
+                                    ⚡ Kirim Jawaban Langsung via Server
                                 </button>
                             </div>`;
                     }}
                     return false;
                 }};
 
-                // SAFE STORAGE HELPERS (PREVENTS DOMEXCEPTION IN MOBILE BROWSERS/IFRAMES)
                 const inMemoryStorage = {{}};
                 function safeGetStorage(key) {{
                     try {{
                         return localStorage.getItem(key);
                     }} catch (e) {{
-                        console.warn("Storage access restricted, using memory:", e);
                         return inMemoryStorage[key] || null;
                     }}
                 }}
@@ -1461,8 +1491,10 @@ def render_siswa():
                 let db = null;
                 try {{
                     const firebaseConfig = {fb_config_json};
-                    if (typeof firebase !== 'undefined' && !firebase.apps.length) {{ 
-                        firebase.initializeApp(firebaseConfig); 
+                    if (typeof firebase !== 'undefined') {{
+                        if (!firebase.apps.length) {{
+                            firebase.initializeApp(firebaseConfig);
+                        }}
                         db = firebase.firestore();
                     }}
                 }} catch(e) {{
@@ -1709,6 +1741,14 @@ def render_siswa():
                     if (lockEl) lockEl.style.display = "flex";
                 }}
 
+                function submitViaServer() {{
+                    const cleanAnswers = jawabanSiswa.map(a => (a === null || a === undefined || a === "") ? -1 : (isNaN(parseInt(a)) ? a : parseInt(a)));
+                    const jsonStr = JSON.stringify(cleanAnswers);
+                    const encodedAns = btoa(encodeURIComponent(jsonStr));
+                    const targetUrl = window.top.location.pathname + "?submit_tg=" + encodeURIComponent(taskData.id) + "&ans_data=" + encodedAns;
+                    window.top.location.href = targetUrl;
+                }}
+
                 async function submitExam(isAutoViolation = false) {{
                     if (isSubmitted) return;
 
@@ -1766,14 +1806,22 @@ def render_siswa():
                         updated_at: firebase.firestore.FieldValue.serverTimestamp()
                     }};
 
+                    let successClient = false;
                     if (db) {{
                         try {{
                             const firestorePromise = db.collection("pengerjaan_siswa").doc(docId).set(payload, {{ merge: true }});
-                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout koneksi")), 5000));
+                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout koneksi Firestore Client")), 4000));
                             await Promise.race([firestorePromise, timeoutPromise]);
+                            successClient = true;
                         }} catch (e) {{
-                            console.warn("Firestore client write warn/timeout:", e);
+                            console.warn("Firestore client write failed, redirecting to server submit:", e);
+                            successClient = false;
                         }}
+                    }}
+
+                    if (!successClient) {{
+                        submitViaServer();
+                        return;
                     }}
 
                     safeRemoveStorage(localKey);
