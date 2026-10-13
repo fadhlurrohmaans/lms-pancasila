@@ -194,7 +194,7 @@ def get_all_materi_cached(limit=100, offset=0):
     docs = db.collection("materi_pancasila").limit(limit).offset(offset).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-# --- CACHE DATA PENGERJAAN SISWA (TTL DIPERPENDEK) ---
+# --- CACHE DATA PENGERJAAN SISWA ---
 @st.cache_data(ttl=5)
 def get_user_pengerjaan_cached(username, limit=50):
     docs = db.collection("pengerjaan_siswa").where("username_siswa", "==", username).limit(limit).stream()
@@ -355,7 +355,6 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers=None, is_force
     doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
     existing_snap = doc_ref.get()
 
-    # JIKA JAWABAN KOSONG / SOS BUTTON, AMBIL JAWABAN TERAKHIR YANG AUTO-SAVED DI FIRESTORE
     if (not answers) and existing_snap.exists:
         existing_data = existing_snap.to_dict()
         answers = existing_data.get("jawaban", [])
@@ -1334,7 +1333,6 @@ def render_siswa():
             st.session_state["active_quiz_id"] = None
             st.rerun()
 
-        # Ekstraksi Firebase Credentials untuk JS SDK Client-Side
         fb_dict = dict(st.secrets["firebase"])
         fb_config = {
             "apiKey": fb_dict.get("api_key") or fb_dict.get("apiKey") or st.secrets.get("GEMINI_API_KEY", ""),
@@ -1345,8 +1343,8 @@ def render_siswa():
             "appId": "1:1234567890:web:1234567890"
         }
 
-        fb_config_json = json.dumps(fb_config, default=str)
-        tg_json = json.dumps(tg, default=str)
+        fb_config_json = json.dumps(fb_config, default=str).replace("<", "\\u003c")
+        tg_json = json.dumps(tg, default=str).replace("<", "\\u003c")
 
         col_nav1, col_nav2 = st.columns([2, 2])
         with col_nav1:
@@ -1409,17 +1407,64 @@ def render_siswa():
 
                 <div id="cbtInfoBanner"></div>
 
-                <div id="questionsContainer">Loading Soal...</div>
+                <div id="questionsContainer">
+                    <div style="text-align:center; padding:30px; color:#666;">
+                        ⏳ Memuat Lembar Ujian & Soal...
+                    </div>
+                </div>
 
                 <button id="btnSubmitExam" class="btn-submit" onclick="submitExam(false)">🚀 Selesai & Kirim Jawaban</button>
             </div>
 
             <script>
+                // SAFELY CATCH ALL JS ERRORS TO PREVENT PERMANENT "LOADING" STUCK
+                window.onerror = function(msg, url, lineNo) {{
+                    const container = document.getElementById("questionsContainer");
+                    if (container) {{
+                        container.innerHTML = `
+                            <div style="color:#721c24; padding:16px; background:#f8d7da; border:1px solid #f5c6cb; border-radius:8px;">
+                                ⚠️ <b>Gagal Memuat Soal:</b> ${{escapeHtml(msg)}}<br>
+                                <small>Silakan muat ulang halaman atau gunakan tombol SOS Submit di bagian atas.</small><br><br>
+                                <button onclick="window.location.reload()" style="padding:8px 16px; border-radius:6px; background:#721c24; color:white; border:none; cursor:pointer;">
+                                    🔄 Muat Ulang Halaman
+                                </button>
+                            </div>`;
+                    }}
+                    return false;
+                }};
+
+                // SAFE STORAGE HELPERS (PREVENTS DOMEXCEPTION IN MOBILE BROWSERS/IFRAMES)
+                const inMemoryStorage = {{}};
+                function safeGetStorage(key) {{
+                    try {{
+                        return localStorage.getItem(key);
+                    }} catch (e) {{
+                        console.warn("Storage access restricted, using memory:", e);
+                        return inMemoryStorage[key] || null;
+                    }}
+                }}
+                function safeSetStorage(key, val) {{
+                    try {{
+                        localStorage.setItem(key, val);
+                    }} catch (e) {{
+                        inMemoryStorage[key] = val;
+                    }}
+                }}
+                function safeRemoveStorage(key) {{
+                    try {{
+                        localStorage.removeItem(key);
+                    }} catch (e) {{
+                        delete inMemoryStorage[key];
+                    }}
+                }}
+
                 let db = null;
                 try {{
                     const firebaseConfig = {fb_config_json};
-                    if (!firebase.apps.length) {{ firebase.initializeApp(firebaseConfig); }}
-                    db = firebase.firestore();
+                    if (typeof firebase !== 'undefined' && !firebase.apps.length) {{ 
+                        firebase.initializeApp(firebaseConfig); 
+                        db = firebase.firestore();
+                    }}
                 }} catch(e) {{
                     console.error("Firebase Initialization Error:", e);
                 }}
@@ -1428,7 +1473,7 @@ def render_siswa():
                 const username = "{username_s}";
                 const namaSiswa = "{nama_s}";
                 const kelasSiswa = "{kelas_s}";
-                const docId = username + "_" + taskData.id;
+                const docId = username + "_" + (taskData ? taskData.id : "");
                 const localKey = "cbt_ans_" + docId;
 
                 let jawabanSiswa = [];
@@ -1441,16 +1486,21 @@ def render_siswa():
                     return String(str)
                         .replace(/&/g, "&amp;")
                         .replace(/</g, "&lt;")
-                        .replace/>/g, "&gt;")
+                        .replace(/>/g, "&gt;")
                         .replace(/"/g, "&quot;")
                         .replace(/'/g, "&#039;");
                 }}
 
                 async function initCBT() {{
+                    if (!taskData || !taskData.soal) {{
+                        document.getElementById("questionsContainer").innerHTML = "<div style='padding:20px; text-align:center;'>⚠️ Data soal tidak valid atau kosong.</div>";
+                        return;
+                    }}
+
                     const totalSoal = taskData.soal ? taskData.soal.length : 0;
                     jawabanSiswa = new Array(totalSoal).fill(null);
 
-                    const savedLocal = localStorage.getItem(localKey);
+                    const savedLocal = safeGetStorage(localKey);
                     if (savedLocal) {{
                         try {{ jawabanSiswa = JSON.parse(savedLocal); }} catch(e) {{}}
                     }}
@@ -1484,7 +1534,7 @@ def render_siswa():
                                             jawabanSiswa[idx] = cloudAns;
                                         }}
                                     }});
-                                    localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
+                                    safeSetStorage(localKey, JSON.stringify(jawabanSiswa));
                                     renderQuestions();
                                 }}
 
@@ -1565,7 +1615,7 @@ def render_siswa():
                 function saveAnswer(qIdx, val) {{
                     const numVal = parseInt(val);
                     jawabanSiswa[qIdx] = isNaN(numVal) ? val : numVal;
-                    localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
+                    safeSetStorage(localKey, JSON.stringify(jawabanSiswa));
 
                     if (db) {{
                         const cleanAns = jawabanSiswa.map(a => (a === null || a === undefined || a === "") ? -1 : (isNaN(parseInt(a)) ? a : parseInt(a)));
@@ -1581,7 +1631,6 @@ def render_siswa():
                     }}
                 }}
 
-                // SISTEM ANTI-CHEAT TEROPTIMASI UNTUK HP ANDROID & DESKTOP
                 let lastViolationTime = 0;
 
                 function recordViolation(reason) {{
@@ -1727,7 +1776,7 @@ def render_siswa():
                         }}
                     }}
 
-                    localStorage.removeItem(localKey);
+                    safeRemoveStorage(localKey);
 
                     document.body.innerHTML = `
                         <div style="text-align:center; padding:40px 20px; background:white; border-radius:12px; margin:20px auto; max-width:600px; box-shadow:0 4px 12px rgba(0,0,0,0.1);">
