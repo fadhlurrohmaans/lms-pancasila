@@ -62,6 +62,22 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 6px; overflow-x: auto; white-space: nowrap; border-bottom: 2px solid #eaeaea; padding-bottom: 4px; }
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 20px; font-weight: 600; }
     .stTabs [aria-selected="true"] { background-color: #1e3c72 !important; color: white !important; }
+    
+    .cbt-container {
+        background-color: #ffffff;
+        padding: 24px;
+        border-radius: 16px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+        border: 1px solid #e1e8ed;
+        margin-bottom: 20px;
+    }
+    .soal-box {
+        background-color: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 18px;
+        margin-bottom: 20px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -921,7 +937,7 @@ def render_guru():
             instruksi = st.text_area("Instruksi")
             target_k = st.multiselect("Target Kelas", options=pilihan_kelas, default=pilihan_kelas)
             jenis_tugas = st.radio("Jenis Pelaksanaan Tugas / Ujian", ["Ulangan Harian", "Tugas Biasa"], horizontal=True)
-            mode_kertas = st.checkbox("📄 **Mode Ujian Kertas (Manual)**", value=False, help="Jika diaktifkan, layar HP/Laptop siswa hanya akan menampilkan daftar soal & opsi. Siswa menjawab di kertas manual, namun sistem Anti-Cheat tetap mengawasi layar!")
+            mode_kertas = st.checkbox("📄 **Mode Ujian Kertas (Manual)**", value=False, help="Jika diaktifkan, layar HP/Laptop siswa hanya akan menampilkan daftar soal & opsi. Siswa menjawab di kertas manual!")
             status_t = st.radio("Status Publikasi", ["terbit", "draft"], format_func=lambda x: "🟢 Terbit" if x == "terbit" else "🔴 Draft", horizontal=True)
             tipe_t = st.radio("Tipe Soal", ["Pilihan Ganda", "Essay"])
 
@@ -975,7 +991,7 @@ def render_guru():
                     
                     curr_jenis = target_tg.get("jenis_tugas", "Ulangan Harian")
                     e_jenis = st.radio("Jenis Pelaksanaan Tugas / Ujian", ["Ulangan Harian", "Tugas Biasa"], index=0 if curr_jenis == "Ulangan Harian" else 1, horizontal=True, key=f"e_jenis_{sel_id}")
-                    e_mode_kertas = st.checkbox("📄 Mode Ujian Kertas (Manual - Hanya Tampil Soal & Anti Cheat)", value=target_tg.get("mode_kertas", False), key=f"e_mk_{sel_id}")
+                    e_mode_kertas = st.checkbox("📄 Mode Ujian Kertas (Manual - Hanya Tampil Soal)", value=target_tg.get("mode_kertas", False), key=f"e_mk_{sel_id}")
                     e_status = st.radio("Status Publikasi", ["terbit", "draft"], index=0 if target_tg.get("status", "terbit") == "terbit" else 1, format_func=lambda x: "🟢 Terbit" if x == "terbit" else "🔴 Draft", horizontal=True, key=f"e_status_{sel_id}")
                     
                     tipe_tugas = target_tg.get("tipe", "pg")
@@ -1315,567 +1331,94 @@ def render_guru():
             st.download_button("💾 Unduh Rekap Transkrip Nilai (.csv)", df_daftar_nilai.to_csv(index=False).encode('utf-8-sig'), f"rekap_nilai_kelas_{selected_kelas}.csv", "text/csv", use_container_width=True)
 
 # ==========================================
-# 10. PANEL SISWA (HTML/JS STATIS CLIENT-SIDE CBT)
+# 10. PANEL SISWA (NATIVE STREAMLIT CBT INTERFACE)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
     nama_s = user_info.get("nama", "Siswa")
     username_s = user_info.get("username", "")
 
-    # --- JALUR HANDLER PENGERJAAN SUBMIT VIA SERVER (URL QUERY PARAMS) ---
-    if "submit_tg" in st.query_params and "ans_data" in st.query_params:
-        sub_tg_id = st.query_params.get("submit_tg")
-        raw_ans_b64 = st.query_params.get("ans_data", "")
-        try:
-            # Perbaikan: Mengembalikan karakter '+' yang diubah menjadi spasi oleh HTTP query parser
-            raw_ans_b64 = raw_ans_b64.replace(" ", "+")
-            decoded_json = base64.b64decode(raw_ans_b64).decode('utf-8')
-            parsed_ans = json.loads(decoded_json)
-            
-            all_t = get_all_tugas_cached(limit=100)
-            target_tg = next((t for t in all_t if t["id"] == sub_tg_id), None)
-            
-            if target_tg:
-                submit_jawaban_siswa(
-                    target_tg, 
-                    username_s, 
-                    nama_s, 
-                    kelas_s, 
-                    answers=parsed_ans, 
-                    is_forced=False
-                )
-                st.session_state["active_quiz_id"] = None
-                st.query_params.clear()
-                clear_pengerjaan_cache()
-                st.success("✅ Ujian berhasil dikumpulkan dan nilai telah tersimpan di database!")
-                st.rerun()
-        except Exception as err:
-            st.error(f"⚠️ Terjadi kesalahan saat menyimpan nilai via Server: {err}")
-            st.query_params.clear()
-
     my_subs = get_user_pengerjaan_cached(username_s)
     active_quiz_id = st.session_state.get("active_quiz_id")
 
+    # --- MODUL CBT UJIAN NATIVE STREAMLIT (100% BEBAS DARI ISU IFRAME/CROSS-ORIGIN) ---
     if active_quiz_id:
-        if "active_quiz_data" not in st.session_state or st.session_state["active_quiz_data"]["id"] != active_quiz_id:
-            all_t = get_all_tugas_cached(limit=50)
-            st.session_state["active_quiz_data"] = next((t for t in all_t if t["id"] == active_quiz_id), None)
+        all_t = get_all_tugas_cached(limit=100)
+        tg = next((t for t in all_t if t["id"] == active_quiz_id), None)
 
-        tg = st.session_state.get("active_quiz_data")
         if not tg:
             st.session_state["active_quiz_id"] = None
             st.rerun()
 
-        fb_dict = dict(st.secrets["firebase"])
-        fb_config = {
-            "apiKey": fb_dict.get("api_key") or fb_dict.get("apiKey") or st.secrets.get("GEMINI_API_KEY", ""),
-            "authDomain": f"{fb_dict.get('project_id', '')}.firebaseapp.com",
-            "projectId": fb_dict.get("project_id", ""),
-            "storageBucket": f"{fb_dict.get('project_id', '')}.appspot.com",
-            "messagingSenderId": "1234567890",
-            "appId": "1:1234567890:web:1234567890"
-        }
+        st.markdown(f"## 📝 {tg.get('judul')}")
+        st.caption(f"Siswa: **{nama_s}** (@{username_s}) | Kelas: **{kelas_s}** | Tipe: **{tg.get('tipe', '').upper()}**")
+        
+        if tg.get("mode_kertas"):
+            st.info("📄 **MODE UJIAN KERTAS MANUAL ACTIVE:** Tuliskan jawaban Anda pada lembar kertas fisik.")
 
-        fb_config_json = json.dumps(fb_config, default=str).replace("<", "\\u003c")
-        tg_json = json.dumps(tg, default=str).replace("<", "\\u003c")
+        if st.button("⬅️ Kembali ke Dashboard Utama", key="btn_exit_native_cbt"):
+            st.session_state["active_quiz_id"] = None
+            st.rerun()
 
-        col_nav1, col_nav2 = st.columns([2, 2])
-        with col_nav1:
-            if st.button("⬅️ Keluar / Kembali ke Dashboard", key="btn_exit_cbt"):
-                st.session_state["active_quiz_id"] = None
-                st.rerun()
-        with col_nav2:
-            with st.popover("SOS Kendala Kirim Jawaban"):
-                st.info("Gunakan tombol ini jika pengerjaan mengalami masalah jaringan di browser HP.")
-                if st.button("⚡ Submit Langsung via Server Streamlit", type="primary", key="btn_emergency_submit"):
-                    submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers=None, is_forced=False)
+        soal_list = tg.get("soal", [])
+        if not soal_list:
+            st.error("⚠️ Data soal kosong atau tidak ditemukan.")
+            st.stop()
+
+        # Gunakan Streamlit Form untuk Pengumpulan Jawaban yang Stabil
+        with st.form(key=f"cbt_native_form_{tg['id']}"):
+            jawaban_user = []
+            
+            for idx, sq in enumerate(soal_list):
+                q_text = sq.get('pertanyaan', '') if isinstance(sq, dict) else str(sq)
+                st.markdown(f"#### **{idx + 1}. {q_text}**")
+
+                if tg.get("tipe") == "pg":
+                    opsi_list = sq.get("opsi", ["A", "B", "C", "D"]) if isinstance(sq, dict) else ["A", "B", "C", "D"]
+                    
+                    if tg.get("mode_kertas"):
+                        for o_idx, opt_v in enumerate(opsi_list):
+                            letter = ['A', 'B', 'C', 'D'][o_idx] if o_idx < 4 else str(o_idx)
+                            st.write(f"**{letter}.** {opt_v}")
+                        jawaban_user.append(-1)
+                    else:
+                        # Radio Button Pilihan Ganda
+                        ans_choice = st.radio(
+                            f"Pilih Jawaban Soal #{idx+1}:",
+                            options=list(range(len(opsi_list))),
+                            format_func=lambda x: f"{['A','B','C','D'][x] if x < 4 else x}. {opsi_list[x]}",
+                            key=f"native_ans_{tg['id']}_{idx}",
+                            index=None
+                        )
+                        jawaban_user.append(ans_choice if ans_choice is not None else -1)
+                else:
+                    # Soal Essay
+                    if not tg.get("mode_kertas"):
+                        ans_essay = st.text_area(f"Jawaban Soal #{idx+1}:", key=f"native_essay_{tg['id']}_{idx}")
+                        jawaban_user.append(ans_essay)
+                    else:
+                        jawaban_user.append("")
+
+                st.divider()
+
+            submit_clicked = st.form_submit_button("🚀 Selesai & Kirim Jawaban Ujian", type="primary", use_container_width=True)
+
+            if submit_clicked:
+                with st.spinner("Mengirim jawaban dan mengemas nilai ke database..."):
+                    success = submit_jawaban_siswa(
+                        tg=tg,
+                        username_s=username_s,
+                        nama_s=nama_s,
+                        kelas_s=kelas_s,
+                        answers=jawaban_user,
+                        is_forced=False
+                    )
+                if success:
                     st.session_state["active_quiz_id"] = None
                     clear_pengerjaan_cache()
-                    st.success("✅ Ujian berhasil dikumpulkan via Server!")
+                    st.success("✅ Ujian berhasil dikumpulkan dan nilai telah tersimpan di database!")
                     st.rerun()
 
-        cbt_html_code = f"""
-        <!DOCTYPE html>
-        <html lang="id">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>CBT Ujian Online</title>
-            <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
-            <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
-            <style>
-                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; margin: 0; padding: 15px; color: #333; -webkit-user-select: none; user-select: none; }}
-                input, textarea {{ -webkit-user-select: text; user-select: text; }}
-                .cbt-card {{ background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); max-width: 900px; margin: 0 auto; }}
-                .cbt-header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 12px; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }}
-                .status-badge {{ background: #fff3cd; color: #856404; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 14px; }}
-                .q-block {{ background: #fafafa; border: 1px solid #e0e0e0; border-radius: 10px; padding: 16px; margin-bottom: 20px; }}
-                .q-title {{ font-size: 16px; font-weight: bold; margin-bottom: 12px; color: #1e3c72; -webkit-user-select: none; user-select: none; }}
-                .opt-label {{ display: flex; align-items: center; background: white; border: 1px solid #ccc; padding: 12px; border-radius: 8px; margin-bottom: 8px; cursor: pointer; transition: all 0.2s; }}
-                .opt-label:hover {{ background: #eef2f5; border-color: #1e3c72; }}
-                .opt-label input {{ margin-right: 12px; width: 18px; height: 18px; }}
-                textarea {{ width: 100%; height: 100px; border-radius: 8px; border: 1px solid #ccc; padding: 10px; font-size: 15px; box-sizing: border-box; }}
-                .btn-submit {{ background: #28a745; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 15px; transition: background 0.3s; }}
-                .btn-submit:hover {{ background: #218838; }}
-                .btn-submit:disabled {{ background: #6c757d; cursor: not-allowed; }}
-                .btn-server {{ background: #1e3c72; color: white; border: none; padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 10px; }}
-                .lock-overlay {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(220, 53, 69, 0.95); color: white; text-align: center; justify-content: center; align-items: center; flex-direction: column; z-index: 9999; padding: 20px; box-sizing: border-box; }}
-            </style>
-        </head>
-        <body>
-
-            <div id="lockScreen" class="lock-overlay">
-                <h1>🔒 AKSES MENGERJAKAN TERKUNCI</h1>
-                <p>Anda telah mencapai limit 10x pelanggaran / perpindahan tab!</p>
-                <p>Silakan hubungi Guru Anda untuk memberikan izin akses kembali.</p>
-            </div>
-
-            <div class="cbt-card">
-                <div class="cbt-header">
-                    <div>
-                        <h2 style="margin:0; color:#1e3c72;">📝 {tg.get("judul")}</h2>
-                        <span style="font-size:13px; color:#666;">Siswa: <b>{nama_s}</b> (@{username_s}) | Kelas: <b>{kelas_s}</b></span>
-                    </div>
-                    <div id="badgeViolation" class="status-badge">⚠️ Pelanggaran: 0x</div>
-                </div>
-
-                <div id="cbtInfoBanner"></div>
-
-                <div id="questionsContainer">
-                    <div style="text-align:center; padding:30px; color:#666;">
-                        ⏳ Memuat Lembar Ujian & Soal...
-                    </div>
-                </div>
-
-                <button id="btnSubmitExam" class="btn-submit" onclick="submitExam(false)">🚀 Selesai & Kirim Jawaban</button>
-                <button id="btnSubmitServer" class="btn-server" onclick="submitViaServer()">⚡ Kirim Jawaban via Server (Cadangan / Jaringan Lambat)</button>
-            </div>
-
-            <script>
-                window.onerror = function(msg, url, lineNo) {{
-                    const container = document.getElementById("questionsContainer");
-                    if (container) {{
-                        container.innerHTML = `
-                            <div style="color:#721c24; padding:16px; background:#f8d7da; border:1px solid #f5c6cb; border-radius:8px;">
-                                ⚠️ <b>Gagal Memuat Soal:</b> ${{escapeHtml(msg)}}<br>
-                                <small>Silakan muat ulang halaman atau gunakan tombol Kirim Jawaban via Server.</small><br><br>
-                                <button onclick="submitViaServer()" style="padding:8px 16px; border-radius:6px; background:#1e3c72; color:white; border:none; cursor:pointer;">
-                                    ⚡ Kirim Jawaban Langsung via Server
-                                </button>
-                            </div>`;
-                    }}
-                    return false;
-                }};
-
-                const inMemoryStorage = {{}};
-                function safeGetStorage(key) {{
-                    try {{
-                        return localStorage.getItem(key);
-                    }} catch (e) {{
-                        return inMemoryStorage[key] || null;
-                    }}
-                }}
-                function safeSetStorage(key, val) {{
-                    try {{
-                        localStorage.setItem(key, val);
-                    }} catch (e) {{
-                        inMemoryStorage[key] = val;
-                    }}
-                }}
-                function safeRemoveStorage(key) {{
-                    try {{
-                        localStorage.removeItem(key);
-                    }} catch (e) {{
-                        delete inMemoryStorage[key];
-                    }}
-                }}
-
-                let db = null;
-                try {{
-                    const firebaseConfig = {fb_config_json};
-                    if (typeof firebase !== 'undefined') {{
-                        if (!firebase.apps.length) {{
-                            firebase.initializeApp(firebaseConfig);
-                        }}
-                        db = firebase.firestore();
-                        try {{
-                            db.settings({{ experimentalAutoDetectLongPolling: true }});
-                        }} catch(se) {{
-                            console.warn("Firestore settings notice:", se);
-                        }}
-                    }}
-                }} catch(e) {{
-                    console.error("Firebase Initialization Error:", e);
-                }}
-
-                const taskData = {tg_json};
-                const username = "{username_s}";
-                const namaSiswa = "{nama_s}";
-                const kelasSiswa = "{kelas_s}";
-                const docId = username + "_" + (taskData ? taskData.id : "");
-                const localKey = "cbt_ans_" + docId;
-
-                let jawabanSiswa = [];
-                let violationCount = 0;
-                let isLocked = false;
-                let isSubmitted = false;
-
-                function escapeHtml(str) {{
-                    if (str === null || str === undefined) return '';
-                    return String(str)
-                        .replace(/&/g, "&amp;")
-                        .replace(/</g, "&lt;")
-                        .replace(/>/g, "&gt;")
-                        .replace(/"/g, "&quot;")
-                        .replace(/'/g, "&#039;");
-                }}
-
-                async function initCBT() {{
-                    if (!taskData || !taskData.soal) {{
-                        document.getElementById("questionsContainer").innerHTML = "<div style='padding:20px; text-align:center;'>⚠️ Data soal tidak valid atau kosong.</div>";
-                        return;
-                    }}
-
-                    const totalSoal = taskData.soal ? taskData.soal.length : 0;
-                    jawabanSiswa = new Array(totalSoal).fill(null);
-
-                    const savedLocal = safeGetStorage(localKey);
-                    if (savedLocal) {{
-                        try {{ jawabanSiswa = JSON.parse(savedLocal); }} catch(e) {{}}
-                    }}
-
-                    renderQuestions();
-
-                    if (db) {{
-                        try {{
-                            const docRef = db.collection("pengerjaan_siswa").doc(docId);
-                            const docSnap = await docRef.get();
-
-                            if (docSnap.exists) {{
-                                const data = docSnap.data();
-                                if (data.status === "submitted") {{
-                                    isSubmitted = true;
-                                    document.body.innerHTML = `
-                                        <div style='text-align:center; padding:50px 20px; background:white; border-radius:12px; margin:20px auto; max-width:600px;'>
-                                            <h2 style='color:#28a745;'>✅ Jawaban Ujian Berhasil Terkirim!</h2>
-                                            <p>Anda sudah mengumpulkan tugas/ujian ini sebelumnya.</p>
-                                            <button onclick="window.parent.location.reload();" style="background:#1e3c72; color:white; border:none; padding:10px 20px; border-radius:8px; font-weight:bold; margin-top:15px; cursor:pointer;">
-                                                🔄 Kembali ke Dashboard Utama
-                                            </button>
-                                        </div>`;
-                                    return;
-                                }}
-
-                                violationCount = data.violation_count || 0;
-                                if (data.jawaban && Array.isArray(data.jawaban)) {{
-                                    data.jawaban.forEach((cloudAns, idx) => {{
-                                        if ((jawabanSiswa[idx] === null || jawabanSiswa[idx] === undefined || jawabanSiswa[idx] === -1) && cloudAns !== -1 && cloudAns !== null && cloudAns !== undefined) {{
-                                            jawabanSiswa[idx] = cloudAns;
-                                        }}
-                                    }});
-                                    safeSetStorage(localKey, JSON.stringify(jawabanSiswa));
-                                    renderQuestions();
-                                }}
-
-                                if (data.ijin_guru === false) {{
-                                    lockScreenUI();
-                                    return;
-                                }}
-                            }} else {{
-                                await docRef.set({{
-                                    username_siswa: username,
-                                    nama_siswa: namaSiswa,
-                                    kelas_siswa: kelasSiswa,
-                                    id_tugas: taskData.id,
-                                    status: "in_progress",
-                                    ijin_guru: true,
-                                    violation_count: 0,
-                                    jawaban: jawabanSiswa,
-                                    updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                                }}, {{ merge: true }});
-                            }}
-                            updateViolationBadge();
-                        }} catch (err) {{
-                            console.warn("Firestore sync error (melanjutkan mode lokal):", err);
-                            updateViolationBadge();
-                        }}
-                    }}
-                }}
-
-                function renderQuestions() {{
-                    const container = document.getElementById("questionsContainer");
-                    if (!container) return;
-                    const isKertas = taskData.mode_kertas || false;
-                    const isPG = taskData.tipe === "pg";
-
-                    if (isKertas) {{
-                        document.getElementById("cbtInfoBanner").innerHTML = "<div style='background:#e3f2fd; padding:10px; border-radius:8px; margin-bottom:15px; color:#0d47a1;'>📄 <b>MODE UJIAN KERTAS MANUAL ACTIVE:</b> Tulis jawaban Anda pada lembar kertas fisik. Layar ini menjaga sistem Anti-Cheat tetap aktif.</div>";
-                    }}
-
-                    if (!taskData.soal || taskData.soal.length === 0) {{
-                        container.innerHTML = "<div style='padding:20px; text-align:center;'>⚠️ Soal tidak ditemukan atau kosong.</div>";
-                        return;
-                    }}
-
-                    let html = "";
-                    taskData.soal.forEach((sq, idx) => {{
-                        const qText = (typeof sq === 'object' && sq !== null) ? (sq.pertanyaan || '') : String(sq);
-                        html += `<div class="q-block">
-                            <div class="q-title">${{idx + 1}}. ${{escapeHtml(qText)}}</div>`;
-
-                        if (isPG) {{
-                            const opsi = (typeof sq === 'object' && sq !== null && sq.opsi) ? sq.opsi : ["", "", "", ""];
-                            opsi.forEach((optVal, oIdx) => {{
-                                const optLetter = ["A", "B", "C", "D"][oIdx] || oIdx;
-                                const isChecked = (jawabanSiswa[idx] === oIdx || jawabanSiswa[idx] === String(oIdx)) ? "checked" : "";
-
-                                if (isKertas) {{
-                                    html += `<div style="margin-left:15px; padding:4px 0;"><b>${{optLetter}}.</b> ${{escapeHtml(optVal)}}</div>`;
-                                }} else {{
-                                    html += `<label class="opt-label">
-                                        <input type="radio" name="q_${{idx}}" value="${{oIdx}}" ${{isChecked}} onchange="saveAnswer(${{idx}}, ${{oIdx}})">
-                                        <b>${{optLetter}}.</b>&nbsp; ${{escapeHtml(optVal)}}
-                                    </label>`;
-                                }}
-                            }});
-                        }} else {{
-                            if (!isKertas) {{
-                                const valE = jawabanSiswa[idx] || "";
-                                html += `<textarea oninput="saveAnswer(${{idx}}, this.value)">${{escapeHtml(valE)}}</textarea>`;
-                            }}
-                        }}
-
-                        html += `</div>`;
-                    }});
-
-                    container.innerHTML = html;
-                }}
-
-                function saveAnswer(qIdx, val) {{
-                    const numVal = parseInt(val);
-                    jawabanSiswa[qIdx] = isNaN(numVal) ? val : numVal;
-                    safeSetStorage(localKey, JSON.stringify(jawabanSiswa));
-
-                    if (db) {{
-                        const cleanAns = jawabanSiswa.map(a => (a === null || a === undefined || a === "") ? -1 : (isNaN(parseInt(a)) ? a : parseInt(a)));
-                        db.collection("pengerjaan_siswa").doc(docId).set({{
-                            username_siswa: username,
-                            nama_siswa: namaSiswa,
-                            kelas_siswa: kelasSiswa,
-                            id_tugas: taskData.id,
-                            status: "in_progress",
-                            jawaban: cleanAns,
-                            updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                        }}, {{ merge: true }}).catch(e => console.log("saveAnswer error:", e));
-                    }}
-                }}
-
-                let lastViolationTime = 0;
-
-                function recordViolation(reason) {{
-                    if (isLocked || isSubmitted) return;
-
-                    const activeEl = document.activeElement;
-                    if (reason === 'blur' && activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT')) {{
-                        return;
-                    }}
-
-                    const now = Date.now();
-                    if (now - lastViolationTime < 2500) return;
-                    lastViolationTime = now;
-
-                    violationCount++;
-                    updateViolationBadge();
-
-                    if (violationCount >= 15) {{
-                        submitExam(true);
-                    }} else if (violationCount >= 10) {{
-                        isLocked = true;
-                        if (db) {{
-                            db.collection("pengerjaan_siswa").doc(docId).set({{
-                                violation_count: violationCount,
-                                ijin_guru: false,
-                                updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                            }}, {{ merge: true }}).catch(e => console.log(e));
-                        }}
-                        lockScreenUI();
-                    }} else {{
-                        if (db) {{
-                            db.collection("pengerjaan_siswa").doc(docId).set({{
-                                violation_count: violationCount,
-                                updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                            }}, {{ merge: true }}).catch(e => console.log(e));
-                        }}
-                    }}
-                }}
-
-                document.addEventListener("visibilitychange", () => {{
-                    if (document.visibilityState === "hidden") {{
-                        recordViolation("visibility_hidden");
-                    }}
-                }});
-
-                window.addEventListener("pagehide", () => {{
-                    recordViolation("pagehide");
-                }});
-
-                window.addEventListener("blur", () => {{
-                    if (document.hidden) {{
-                        recordViolation("blur_hidden");
-                    }} else {{
-                        setTimeout(() => {{
-                            const activeEl = document.activeElement;
-                            const isInputActive = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'SELECT');
-                            if (!document.hasFocus() && !isInputActive) {{
-                                recordViolation("blur_lost_focus");
-                            }}
-                        }}, 300);
-                    }}
-                }});
-
-                document.addEventListener("contextmenu", e => e.preventDefault());
-                document.addEventListener("copy", e => e.preventDefault());
-                document.addEventListener("cut", e => e.preventDefault());
-                document.addEventListener("paste", e => e.preventDefault());
-
-                function updateViolationBadge() {{
-                    const badge = document.getElementById("badgeViolation");
-                    if (badge) badge.innerText = `⚠️ Pelanggaran: ${{violationCount}}x`;
-                }}
-
-                function lockScreenUI() {{
-                    const lockEl = document.getElementById("lockScreen");
-                    if (lockEl) lockEl.style.display = "flex";
-                }}
-
-                // PERBAIKAN: Menggunakan HTML Form Submit dengan target="_top" agar melewasi batasan Cross-Origin Iframe
-                function submitViaServer() {{
-                    try {{
-                        const cleanAnswers = jawabanSiswa.map(a => (a === null || a === undefined || a === "") ? -1 : (isNaN(parseInt(a)) ? a : parseInt(a)));
-                        const jsonStr = JSON.stringify(cleanAnswers);
-                        const b64Str = btoa(unescape(encodeURIComponent(jsonStr)));
-                        
-                        const form = document.createElement('form');
-                        form.method = 'GET';
-                        form.action = window.location.origin + window.location.pathname;
-                        form.target = '_top';
-
-                        const inputTg = document.createElement('input');
-                        inputTg.type = 'hidden';
-                        inputTg.name = 'submit_tg';
-                        inputTg.value = taskData.id;
-                        form.appendChild(inputTg);
-
-                        const inputAns = document.createElement('input');
-                        inputAns.type = 'hidden';
-                        inputAns.name = 'ans_data';
-                        inputAns.value = b64Str;
-                        form.appendChild(inputAns);
-
-                        document.body.appendChild(form);
-                        form.submit();
-                    }} catch (e) {{
-                        alert("Gagal memproses pengiriman jawaban: " + e.message);
-                    }}
-                }}
-
-                async function submitExam(isAutoViolation = false) {{
-                    if (isSubmitted) return;
-
-                    if (!isAutoViolation) {{
-                        const confirmSubmit = confirm("Apakah Anda yakin ingin menyelesaikan dan mengirim jawaban ujian ini?");
-                        if (!confirmSubmit) return;
-                    }}
-
-                    isSubmitted = true;
-
-                    const btnSubmit = document.getElementById("btnSubmitExam");
-                    if (btnSubmit) {{
-                        btnSubmit.disabled = true;
-                        btnSubmit.innerHTML = "⏳ Sedang Mengirim Jawaban... Mohon Tunggu";
-                        btnSubmit.style.background = "#6c757d";
-                    }}
-
-                    let notes = "Penilaian Otomatis Sistem";
-                    if (isAutoViolation) notes = "⚠️ Submit Otomatis (Mencapai Limit Maksimal Pelanggaran)";
-                    else if (taskData.mode_kertas) notes = "Dikerjakan Manual di Lembar Kertas (Pengawasan Anti-Cheat Aktif)";
-
-                    let finalScore = null;
-                    if (taskData.tipe === "pg" && !taskData.mode_kertas) {{
-                        let correct = 0;
-                        if (Array.isArray(taskData.soal)) {{
-                            taskData.soal.forEach((sq, i) => {{
-                                const userAns = jawabanSiswa[i];
-                                const keyAns = sq.kunci;
-                                if (userAns !== null && userAns !== undefined && userAns !== "" && userAns !== -1 && String(userAns) !== "-1") {{
-                                    if (String(userAns).trim().toLowerCase() === String(keyAns).trim().toLowerCase()) {{
-                                        correct++;
-                                    }}
-                                }}
-                            }});
-                            finalScore = taskData.soal.length > 0 ? Math.round((correct / taskData.soal.length) * 100) : 0;
-                        }}
-                    }}
-
-                    const cleanAnswers = jawabanSiswa.map(a => (a === null || a === undefined || a === "") ? -1 : (isNaN(parseInt(a)) ? a : parseInt(a)));
-
-                    const payload = {{
-                        id_tugas: taskData.id,
-                        judul_tugas: taskData.judul || "",
-                        username_siswa: username,
-                        nama_siswa: namaSiswa,
-                        kelas_siswa: kelasSiswa,
-                        tipe: taskData.tipe || "pg",
-                        jawaban: cleanAnswers,
-                        nilai: finalScore,
-                        catatan_guru: notes,
-                        status: "submitted",
-                        ijin_guru: true,
-                        mode_kertas: taskData.mode_kertas || false,
-                        submitted_at: firebase.firestore.FieldValue.serverTimestamp(),
-                        updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                    }};
-
-                    let successClient = false;
-                    if (db) {{
-                        try {{
-                            const firestorePromise = db.collection("pengerjaan_siswa").doc(docId).set(payload, {{ merge: true }});
-                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout Firestore Client")), 3000));
-                            await Promise.race([firestorePromise, timeoutPromise]);
-                            successClient = true;
-                        }} catch (e) {{
-                            console.warn("Firestore client write failed/timeout, switching to server submit:", e);
-                            successClient = false;
-                        }}
-                    }}
-
-                    if (!successClient) {{
-                        submitViaServer();
-                        return;
-                    }}
-
-                    safeRemoveStorage(localKey);
-
-                    document.body.innerHTML = `
-                        <div style="text-align:center; padding:40px 20px; background:white; border-radius:12px; margin:20px auto; max-width:600px; box-shadow:0 4px 12px rgba(0,0,0,0.1);">
-                            <h2 style="color:#28a745; margin-bottom:15px;">✅ Ujian Berhasil Dikumpulkan!</h2>
-                            <p style="color:#555; font-size:16px;">Nilai Anda: <b>${{finalScore !== null ? finalScore : '-'}}</b> / 100</p>
-                            <div style="margin-top:25px;">
-                                <button onclick="window.parent.location.reload();" style="background:#1e3c72; color:white; border:none; padding:12px 24px; border-radius:8px; font-weight:bold; font-size:15px; cursor:pointer;">
-                                    🔄 Kembali ke Dashboard Utama
-                                </button>
-                            </div>
-                        </div>
-                    `;
-                }}
-
-                initCBT();
-            </script>
-        </body>
-        </html>
-        """
-
-        components.html(cbt_html_code, height=800, scrolling=True)
         st.stop()
 
     # --- DASHBOARD UTAMA SISWA ---
@@ -1936,9 +1479,9 @@ def render_siswa():
                             v_c = sub.get("violation_count", 0)
                             ijin = sub.get("ijin_guru", True)
                             if not ijin:
-                                st.error("🔒 **Status: Terkunci (Perlu Izin Guru)** — Anda melebihi limit 10x pelanggaran/refresh.")
+                                st.error("🔒 **Status: Terkunci (Perlu Izin Guru)** — Anda melebihi limit pelanggaran/refresh.")
                             else:
-                                st.warning(f"⏳ **Status: Sedang Dikerjakan** (Pelanggaran/Refresh: {v_c}x)")
+                                st.warning(f"⏳ **Status: Sedang Dikerjakan**")
 
                     with col_btn:
                         if status_sub != "submitted":
