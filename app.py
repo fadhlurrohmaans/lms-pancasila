@@ -194,18 +194,18 @@ def get_all_materi_cached(limit=100, offset=0):
     docs = db.collection("materi_pancasila").limit(limit).offset(offset).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-# --- CACHE DATA PENGERJAAN SISWA ---
-@st.cache_data(ttl=30)
+# --- CACHE DATA PENGERJAAN SISWA (TTL DIPERPENDEK) ---
+@st.cache_data(ttl=5)
 def get_user_pengerjaan_cached(username, limit=50):
     docs = db.collection("pengerjaan_siswa").where("username_siswa", "==", username).limit(limit).stream()
     return {d.to_dict().get("id_tugas"): {"id": d.id, **d.to_dict()} for d in docs}
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=5)
 def get_pengerjaan_by_tugas_kelas_cached(tugas_id, kelas, limit=150, offset=0):
     docs = db.collection("pengerjaan_siswa").where("id_tugas", "==", tugas_id).where("kelas_siswa", "==", kelas).limit(limit).offset(offset).stream()
     return [{"id": d.id, **d.to_dict()} for d in docs]
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=5)
 def get_all_pengerjaan_by_kelas_cached(kelas, limit=300):
     docs = db.collection("pengerjaan_siswa").where("kelas_siswa", "==", kelas).limit(limit).stream()
     return [d.to_dict() for d in docs]
@@ -353,15 +353,37 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers=None, is_force
         catatan = "Penilaian Otomatis Sistem"
     
     doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
+    existing_snap = doc_ref.get()
+
+    # JIKA JAWABAN KOSONG / SOS BUTTON, AMBIL JAWABAN TERAKHIR YANG AUTO-SAVED DI FIRESTORE
+    if (not answers) and existing_snap.exists:
+        existing_data = existing_snap.to_dict()
+        answers = existing_data.get("jawaban", [])
 
     if tg.get("tipe") == "pg":
         correct_count = 0
         formatted_ans = []
         for idx_q, sq in enumerate(soal_list):
             user_a = answers[idx_q] if (answers and idx_q < len(answers)) else None
-            formatted_ans.append(user_a if user_a is not None else -1)
-            if not mode_kertas and user_a is not None and user_a == sq.get("kunci"):
-                correct_count += 1
+            
+            if user_a is None or user_a == "" or user_a == -1 or str(user_a) == "-1":
+                clean_ans = -1
+            else:
+                try:
+                    clean_ans = int(user_a)
+                except (ValueError, TypeError):
+                    clean_ans = user_a
+
+            formatted_ans.append(clean_ans)
+            
+            kunci = sq.get("kunci")
+            if not mode_kertas and clean_ans != -1 and kunci is not None:
+                try:
+                    if int(clean_ans) == int(kunci):
+                        correct_count += 1
+                except (ValueError, TypeError):
+                    if str(clean_ans).strip().lower() == str(kunci).strip().lower():
+                        correct_count += 1
         
         score = None if mode_kertas else (round((correct_count / total_soal) * 100) if total_soal > 0 else 0)
 
@@ -1075,7 +1097,7 @@ def render_guru():
                 for s_unsub in siswa_belum_submit:
                     submit_jawaban_siswa(
                         selected_tugas, s_unsub["username"], s_unsub.get("nama", s_unsub["username"]), 
-                        selected_kelas, answers=[], is_forced=True
+                        selected_kelas, answers=None, is_forced=True
                     )
                 st.success(f"✅ Berhasil melakukan Submit Paksa untuk {len(siswa_belum_submit)} siswa!")
                 st.rerun()
@@ -1335,8 +1357,9 @@ def render_siswa():
             with st.popover("🆘 Kendala Kirim Jawaban? (Bantuan HP)"):
                 st.info("Gunakan tombol ini jika tombol di dalam lembar soal tidak merespon akibat koneksi HP terputus.")
                 if st.button("⚡ Submit Langsung Lewat Server Streamlit", type="primary", key="btn_emergency_submit"):
-                    submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers=[], is_forced=False)
+                    submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers=None, is_forced=False)
                     st.session_state["active_quiz_id"] = None
+                    clear_pengerjaan_cache()
                     st.success("✅ Ujian berhasil dikumpulkan via Server!")
                     st.rerun()
 
@@ -1418,7 +1441,7 @@ def render_siswa():
                     return String(str)
                         .replace(/&/g, "&amp;")
                         .replace(/</g, "&lt;")
-                        .replace(/>/g, "&gt;")
+                        .replace/>/g, "&gt;")
                         .replace(/"/g, "&quot;")
                         .replace(/'/g, "&#039;");
                 }}
@@ -1456,7 +1479,11 @@ def render_siswa():
 
                                 violationCount = data.violation_count || 0;
                                 if (data.jawaban && Array.isArray(data.jawaban)) {{
-                                    jawabanSiswa = data.jawaban;
+                                    data.jawaban.forEach((cloudAns, idx) => {{
+                                        if ((jawabanSiswa[idx] === null || jawabanSiswa[idx] === undefined || jawabanSiswa[idx] === -1) && cloudAns !== -1 && cloudAns !== null && cloudAns !== undefined) {{
+                                            jawabanSiswa[idx] = cloudAns;
+                                        }}
+                                    }});
                                     localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
                                     renderQuestions();
                                 }}
@@ -1511,7 +1538,7 @@ def render_siswa():
                             const opsi = (typeof sq === 'object' && sq !== null && sq.opsi) ? sq.opsi : ["", "", "", ""];
                             opsi.forEach((optVal, oIdx) => {{
                                 const optLetter = ["A", "B", "C", "D"][oIdx] || oIdx;
-                                const isChecked = (jawabanSiswa[idx] === oIdx) ? "checked" : "";
+                                const isChecked = (jawabanSiswa[idx] === oIdx || jawabanSiswa[idx] === String(oIdx)) ? "checked" : "";
 
                                 if (isKertas) {{
                                     html += `<div style="margin-left:15px; padding:4px 0;"><b>${{optLetter}}.</b> ${{escapeHtml(optVal)}}</div>`;
@@ -1536,14 +1563,21 @@ def render_siswa():
                 }}
 
                 function saveAnswer(qIdx, val) {{
-                    jawabanSiswa[qIdx] = val;
+                    const numVal = parseInt(val);
+                    jawabanSiswa[qIdx] = isNaN(numVal) ? val : numVal;
                     localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
 
                     if (db) {{
-                        db.collection("pengerjaan_siswa").doc(docId).update({{
-                            jawaban: jawabanSiswa,
+                        const cleanAns = jawabanSiswa.map(a => (a === null || a === undefined || a === "") ? -1 : (isNaN(parseInt(a)) ? a : parseInt(a)));
+                        db.collection("pengerjaan_siswa").doc(docId).set({{
+                            username_siswa: username,
+                            nama_siswa: namaSiswa,
+                            kelas_siswa: kelasSiswa,
+                            id_tugas: taskData.id,
+                            status: "in_progress",
+                            jawaban: cleanAns,
                             updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                        }}).catch(e => console.log(e));
+                        }}, {{ merge: true }}).catch(e => console.log("saveAnswer error:", e));
                     }}
                 }}
 
@@ -1570,19 +1604,19 @@ def render_siswa():
                     }} else if (violationCount >= 10) {{
                         isLocked = true;
                         if (db) {{
-                            db.collection("pengerjaan_siswa").doc(docId).update({{
+                            db.collection("pengerjaan_siswa").doc(docId).set({{
                                 violation_count: violationCount,
                                 ijin_guru: false,
                                 updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                            }}).catch(e => console.log(e));
+                            }}, {{ merge: true }}).catch(e => console.log(e));
                         }}
                         lockScreenUI();
                     }} else {{
                         if (db) {{
-                            db.collection("pengerjaan_siswa").doc(docId).update({{
+                            db.collection("pengerjaan_siswa").doc(docId).set({{
                                 violation_count: violationCount,
                                 updated_at: firebase.firestore.FieldValue.serverTimestamp()
-                            }}).catch(e => console.log(e));
+                            }}, {{ merge: true }}).catch(e => console.log(e));
                         }}
                     }}
                 }}
@@ -1652,15 +1686,19 @@ def render_siswa():
                         let correct = 0;
                         if (Array.isArray(taskData.soal)) {{
                             taskData.soal.forEach((sq, i) => {{
-                                if (jawabanSiswa[i] !== null && jawabanSiswa[i] !== undefined && jawabanSiswa[i] === sq.kunci) {{
-                                    correct++;
+                                const userAns = jawabanSiswa[i];
+                                const keyAns = sq.kunci;
+                                if (userAns !== null && userAns !== undefined && userAns !== "" && userAns !== -1 && String(userAns) !== "-1") {{
+                                    if (String(userAns).trim().toLowerCase() === String(keyAns).trim().toLowerCase()) {{
+                                        correct++;
+                                    }}
                                 }}
                             }});
                             finalScore = taskData.soal.length > 0 ? Math.round((correct / taskData.soal.length) * 100) : 0;
                         }}
                     }}
 
-                    const cleanAnswers = jawabanSiswa.map(a => (a === null || a === undefined) ? "" : a);
+                    const cleanAnswers = jawabanSiswa.map(a => (a === null || a === undefined || a === "") ? -1 : (isNaN(parseInt(a)) ? a : parseInt(a)));
 
                     const payload = {{
                         id_tugas: taskData.id,
@@ -1694,7 +1732,7 @@ def render_siswa():
                     document.body.innerHTML = `
                         <div style="text-align:center; padding:40px 20px; background:white; border-radius:12px; margin:20px auto; max-width:600px; box-shadow:0 4px 12px rgba(0,0,0,0.1);">
                             <h2 style="color:#28a745; margin-bottom:15px;">✅ Ujian Berhasil Dikumpulkan!</h2>
-                            <p style="color:#555; font-size:16px;">Terima kasih, jawaban Anda telah tersimpan ke sistem.</p>
+                            <p style="color:#555; font-size:16px;">Nilai Anda: <b>${{finalScore !== null ? finalScore : '-'}}</b> / 100</p>
                             <div style="margin-top:25px;">
                                 <button onclick="window.parent.location.reload();" style="background:#1e3c72; color:white; border:none; padding:12px 24px; border-radius:8px; font-weight:bold; font-size:15px; cursor:pointer;">
                                     🔄 Kembali ke Dashboard Utama
