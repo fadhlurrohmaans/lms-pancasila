@@ -60,11 +60,6 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 6px; overflow-x: auto; white-space: nowrap; border-bottom: 2px solid #eaeaea; padding-bottom: 4px; }
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 20px; font-weight: 600; }
     .stTabs [aria-selected="true"] { background-color: #1e3c72 !important; color: white !important; }
-    
-    /* Hide localStorage bridge input element */
-    div[data-testid="stTextInput"]:has(input[aria-label="Draft Bridge Input"]) {
-        display: none !important;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -368,7 +363,6 @@ def submit_jawaban_siswa(tg, username_s, nama_s, kelas_s, answers, is_forced=Fal
             if not mode_kertas and user_a is not None and user_a == sq.get("kunci"):
                 correct_count += 1
         
-        # Jika mode kertas, nilai awal diisi None (perlu dikoreksi manual/diinput guru)
         score = None if mode_kertas else (round((correct_count / total_soal) * 100) if total_soal > 0 else 0)
 
         doc_ref.set({
@@ -904,10 +898,7 @@ def render_guru():
             instruksi = st.text_area("Instruksi")
             target_k = st.multiselect("Target Kelas", options=pilihan_kelas, default=pilihan_kelas)
             jenis_tugas = st.radio("Jenis Pelaksanaan Tugas / Ujian", ["Ulangan Harian", "Tugas Biasa"], horizontal=True)
-            
-            # --- OPSI MODE KERTAS MANUAL ---
             mode_kertas = st.checkbox("📄 **Mode Ujian Kertas (Manual)**", value=False, help="Jika diaktifkan, layar HP/Laptop siswa hanya akan menampilkan daftar soal & opsi. Siswa menjawab di kertas manual, namun sistem Anti-Cheat tetap mengawasi layar!")
-
             status_t = st.radio("Status Publikasi", ["terbit", "draft"], format_func=lambda x: "🟢 Terbit" if x == "terbit" else "🔴 Draft", horizontal=True)
             tipe_t = st.radio("Tipe Soal", ["Pilihan Ganda", "Essay"])
 
@@ -961,10 +952,7 @@ def render_guru():
                     
                     curr_jenis = target_tg.get("jenis_tugas", "Ulangan Harian")
                     e_jenis = st.radio("Jenis Pelaksanaan Tugas / Ujian", ["Ulangan Harian", "Tugas Biasa"], index=0 if curr_jenis == "Ulangan Harian" else 1, horizontal=True, key=f"e_jenis_{sel_id}")
-                    
-                    # --- EDIT MODE KERTAS ---
                     e_mode_kertas = st.checkbox("📄 Mode Ujian Kertas (Manual - Hanya Tampil Soal & Anti Cheat)", value=target_tg.get("mode_kertas", False), key=f"e_mk_{sel_id}")
-
                     e_status = st.radio("Status Publikasi", ["terbit", "draft"], index=0 if target_tg.get("status", "terbit") == "terbit" else 1, format_func=lambda x: "🟢 Terbit" if x == "terbit" else "🔴 Draft", horizontal=True, key=f"e_status_{sel_id}")
                     
                     tipe_tugas = target_tg.get("tipe", "pg")
@@ -1143,8 +1131,8 @@ def render_guru():
                                     st.caption("Jawaban diisi di kertas manual oleh siswa.")
                                 else:
                                     ans_idx = a if isinstance(a, int) else 0
-                                    ans_text = opsi_list[ans_idx] if ans_idx < len(opsi_list) and ans_idx >= 0 else str(a)
-                                    is_correct = (ans_idx == q.get("kunci", 0))
+                                    ans_text = opsi_list[ans_idx] if isinstance(ans_idx, int) and 0 <= ans_idx < len(opsi_list) else str(a)
+                                    is_correct = (isinstance(ans_idx, int) and ans_idx == q.get("kunci", 0))
                                     st.write(f"Jawaban: **{ans_text}** ({'✅ Benar' if is_correct else '❌ Salah'})")
                             else:
                                 st.info(a or "(Kosong/Jawaban Kertas)")
@@ -1304,7 +1292,7 @@ def render_guru():
             st.download_button("💾 Unduh Rekap Transkrip Nilai (.csv)", df_daftar_nilai.to_csv(index=False).encode('utf-8-sig'), f"rekap_nilai_kelas_{selected_kelas}.csv", "text/csv", use_container_width=True)
 
 # ==========================================
-# 10. PANEL SISWA
+# 10. PANEL SISWA (HTML/JS STATIS CLIENT-SIDE CBT)
 # ==========================================
 def render_siswa():
     kelas_s = user_info.get("kelas", "-")
@@ -1324,275 +1312,289 @@ def render_siswa():
             st.session_state["active_quiz_id"] = None
             st.rerun()
 
-        tg_id = tg["id"]
-        jenis_tugas = tg.get("jenis_tugas", "Ulangan Harian")
-        mode_kertas = tg.get("mode_kertas", False)
-        is_ulangan = (jenis_tugas == "Ulangan Harian")
+        # Ekstraksi Firebase Credentials untuk JS SDK Client-Side
+        fb_dict = dict(st.secrets["firebase"])
+        fb_config = {
+            "apiKey": fb_dict.get("api_key") or fb_dict.get("apiKey") or st.secrets.get("GEMINI_API_KEY", ""),
+            "authDomain": f"{fb_dict.get('project_id', '')}.firebaseapp.com",
+            "projectId": fb_dict.get("project_id", ""),
+            "storageBucket": f"{fb_dict.get('project_id', '')}.appspot.com",
+            "messagingSenderId": "1234567890",
+            "appId": "1:1234567890:web:1234567890"
+        }
 
-        if f"quiz_soal_{tg_id}" not in st.session_state:
-            st.session_state[f"quiz_soal_{tg_id}"] = tg.get("soal", [])
-        soal_list = st.session_state[f"quiz_soal_{tg_id}"]
-        total_soal = len(soal_list)
+        # Tombol navigasi keluar dari mode ujian
+        if st.button("⬅️ Keluar / Kembali ke Dashboard", key="btn_exit_cbt"):
+            st.session_state["active_quiz_id"] = None
+            st.rerun()
 
-        doc_ref = db.collection("pengerjaan_siswa").document(f"{username_s}_{tg_id}")
+        # HTML / JS CBT Application Statis
+        cbt_html_code = f"""
+        <!DOCTYPE html>
+        <html lang="id">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>CBT Ujian Online</title>
+            <!-- Firebase SDK v10 Compat -->
+            <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+            <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; margin: 0; padding: 15px; color: #333; }}
+                .cbt-card {{ background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); max-width: 900px; margin: 0 auto; }}
+                .cbt-header {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 12px; margin-bottom: 15px; }}
+                .status-badge {{ background: #fff3cd; color: #856404; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 14px; }}
+                .q-block {{ background: #fafafa; border: 1px solid #e0e0e0; border-radius: 10px; padding: 16px; margin-bottom: 20px; }}
+                .q-title {{ font-size: 16px; font-weight: bold; margin-bottom: 12px; color: #1e3c72; }}
+                .opt-label {{ display: flex; align-items: center; background: white; border: 1px solid #ccc; padding: 12px; border-radius: 8px; margin-bottom: 8px; cursor: pointer; transition: all 0.2s; }}
+                .opt-label:hover {{ background: #eef2f5; border-color: #1e3c72; }}
+                .opt-label input {{ margin-right: 12px; width: 18px; height: 18px; }}
+                textarea {{ width: 100%; height: 100px; border-radius: 8px; border: 1px solid #ccc; padding: 10px; font-size: 15px; box-sizing: border-box; }}
+                .btn-submit {{ background: #28a745; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 20px; }}
+                .btn-submit:hover {{ background: #218838; }}
+                .lock-overlay {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(220, 53, 69, 0.95); color: white; text-align: center; justify-content: center; align-items: center; flex-direction: column; z-index: 9999; padding: 20px; box-sizing: border-box; }}
+            </style>
+        </head>
+        <body>
 
-        # Inisialisasi awal & Pemulihan status dari Database
-        if f"quiz_loaded_{tg_id}" not in st.session_state:
-            doc_snap = doc_ref.get()
-            existing_sub = doc_snap.to_dict() if doc_snap.exists else {}
+            <div id="lockScreen" class="lock-overlay">
+                <h1>🔒 AKSE MENGERJAKAN TERKUNCI</h1>
+                <p>Anda telah mencapai limit 10x pelanggaran / perpindahan tab!</p>
+                <p>Silakan hubungi Guru Anda untuk memberikan izin akses kembali.</p>
+            </div>
 
-            saved_ans = existing_sub.get("jawaban")
-            if isinstance(saved_ans, list) and len(saved_ans) == total_soal:
-                st.session_state[f"quiz_answers_{tg_id}"] = saved_ans
-            else:
-                st.session_state[f"quiz_answers_{tg_id}"] = [None] * total_soal
+            <div class="cbt-card">
+                <div class="cbt-header">
+                    <div>
+                        <h2 style="margin:0; color:#1e3c72;">📝 {tg.get("judul")}</h2>
+                        <span style="font-size:13px; color:#666;">Siswa: <b>{nama_s}</b> (@{username_s}) | Kelas: <b>{kelas_s}</b></span>
+                    </div>
+                    <div id="badgeViolation" class="status-badge">⚠️ Pelanggaran: 0x</div>
+                </div>
 
-            v_count = existing_sub.get("violation_count", 0)
-            ijin_val = existing_sub.get("ijin_guru", True)
+                <div id="cbtInfoBanner"></div>
 
-            # Deteksi Refresh / Keluar Halaman (Sesi Browser Ter-reset)
-            if f"quiz_session_active_{tg_id}" not in st.session_state:
-                if existing_sub.get("status") == "in_progress":
-                    v_count += 1
-                    
-                    if v_count >= 15:
-                        tg_submit = dict(tg)
-                        tg_submit["soal"] = soal_list
-                        submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, st.session_state[f"quiz_answers_{tg_id}"], is_violation=True)
-                        st.session_state["active_quiz_id"] = None
-                        clear_pengerjaan_cache()
-                        st.rerun()
-                    
-                    elif v_count == 10:
-                        ijin_val = False
+                <div id="questionsContainer">Loading Soal...</div>
 
-                    doc_ref.set({
-                        "username_siswa": username_s, "nama_siswa": nama_s, "kelas_siswa": kelas_s,
-                        "id_tugas": tg_id, "status": "in_progress", "ijin_guru": ijin_val,
-                        "violation_count": v_count, "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
-                        "mode_kertas": mode_kertas, "updated_at": firestore.SERVER_TIMESTAMP
-                    }, merge=True)
-                    clear_pengerjaan_cache()
-                else:
-                    doc_ref.set({
-                        "username_siswa": username_s, "nama_siswa": nama_s, "kelas_siswa": kelas_s,
-                        "id_tugas": tg_id, "status": "in_progress", "ijin_guru": True,
-                        "violation_count": v_count, "jawaban": st.session_state[f"quiz_answers_{tg_id}"],
-                        "mode_kertas": mode_kertas, "updated_at": firestore.SERVER_TIMESTAMP
-                    }, merge=True)
-                    clear_pengerjaan_cache()
+                <button id="btnSubmitExam" class="btn-submit" onclick="submitExam(false)">🚀 Selesai & Kirim Jawaban</button>
+            </div>
 
-            st.session_state[f"violation_count_{tg_id}"] = v_count
-            st.session_state[f"ijin_guru_{tg_id}"] = ijin_val
-            st.session_state[f"quiz_session_active_{tg_id}"] = True
-            st.session_state[f"quiz_page_{tg_id}"] = 0
-            st.session_state[f"quiz_loaded_{tg_id}"] = True
+            <script>
+                // 1. INIT FIREBASE SDK CLIENT-SIDE
+                const firebaseConfig = {json.dumps(fb_config)};
+                if (!firebase.apps.length) {{ firebase.initializeApp(firebaseConfig); }}
+                const db = firebase.firestore();
 
-        answers = st.session_state[f"quiz_answers_{tg_id}"]
-        curr_page = st.session_state[f"quiz_page_{tg_id}"]
-        violation_count = st.session_state.get(f"violation_count_{tg_id}", 0)
-        ijin_guru = st.session_state.get(f"ijin_guru_{tg_id}", True)
-        is_locked = not ijin_guru
+                const taskData = {json.dumps(tg)};
+                const username = "{username_s}";
+                const namaSiswa = "{nama_s}";
+                const kelasSiswa = "{kelas_s}";
+                const docId = username + "_" + taskData.id;
+                const localKey = "cbt_ans_" + docId;
 
-        # --- SISTEM ANTI-CHEAT (JS BLUR LISTENER) ---
-        if is_ulangan:
-            if st.button("⚠️ Catat Pelanggaran", key=f"btn_record_violation_{tg_id}", type="secondary"):
-                if not is_locked:
-                    st.session_state[f"violation_count_{tg_id}"] += 1
-                    new_v = st.session_state[f"violation_count_{tg_id}"]
-                    
-                    if new_v >= 15:
-                        tg_submit = dict(tg)
-                        tg_submit["soal"] = soal_list
-                        submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers, is_violation=True)
-                        st.session_state["active_quiz_id"] = None
-                        for k in [
-                            f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
-                            f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                            f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}"
-                        ]:
-                            st.session_state.pop(k, None)
-                        st.rerun()
+                let jawabanSiswa = [];
+                let violationCount = 0;
+                let isLocked = false;
+                let isSubmitted = false;
 
-                    elif new_v == 10:
-                        st.session_state[f"ijin_guru_{tg_id}"] = False
-                        doc_ref.set({
-                            "username_siswa": username_s, "id_tugas": tg_id, 
-                            "violation_count": new_v, "status": "in_progress", "ijin_guru": False,
-                            "jawaban": answers, "updated_at": firestore.SERVER_TIMESTAMP
-                        }, merge=True)
-                        clear_pengerjaan_cache()
-                        st.rerun()
+                // 2. AUTO-RESUME & INIT ON LOAD
+                async function initCBT() {{
+                    const totalSoal = taskData.soal ? taskData.soal.length : 0;
+                    jawabanSiswa = new Array(totalSoal).fill(null);
 
-                    else:
-                        doc_ref.set({
-                            "username_siswa": username_s, "id_tugas": tg_id, 
-                            "violation_count": new_v, "status": "in_progress", 
-                            "jawaban": answers, "updated_at": firestore.SERVER_TIMESTAMP
-                        }, merge=True)
-                        clear_pengerjaan_cache()
-                        st.rerun()
+                    // A. Ambil dari LocalStorage (Instan)
+                    const savedLocal = localStorage.getItem(localKey);
+                    if (savedLocal) {{
+                        try {{ jawabanSiswa = JSON.parse(savedLocal); }} catch(e) {{}}
+                    }}
 
-            if not is_locked:
-                components.html(f"""
-                    <script>
-                    (function() {{
-                        const parentDoc = window.parent.document;
-                        let lastTriggerViolation = 0;
+                    // B. Sinkronisasi Firestore Background
+                    const docRef = db.collection("pengerjaan_siswa").doc(docId);
+                    const docSnap = await docRef.get();
 
-                        function getBtnByText(text) {{
-                            const buttons = Array.from(parentDoc.querySelectorAll('button'));
-                            return buttons.find(b => b.innerText.includes(text));
+                    if (docSnap.exists) {{
+                        const data = docSnap.data();
+                        if (data.status === "submitted") {{
+                            alert("Anda sudah mengumpulkan tugas/ujian ini!");
+                            document.body.innerHTML = "<h2 style='text-align:center; padding-top:50px; color:#28a745;'>✅ Jawaban Ujian Berhasil Terkirim!</h2>";
+                            return;
                         }}
 
-                        function hideActionButtons() {{
-                            const btn = getBtnByText('Catat Pelanggaran');
-                            if (btn && btn.parentElement) {{
-                                const container = btn.closest('[data-testid="stElementContainer"]') || btn.parentElement;
-                                if (container) container.style.display = 'none';
+                        violationCount = data.violation_count || 0;
+                        if (data.jawaban && Array.isArray(data.jawaban)) {{
+                            jawabanSiswa = data.jawaban;
+                            localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
+                        }}
+
+                        if (data.ijin_guru === false) {{
+                            lockScreenUI();
+                            return;
+                        }}
+                    }} else {{
+                        // Buat dokumen pengerjaan baru
+                        await docRef.set({{
+                            username_siswa: username,
+                            nama_siswa: namaSiswa,
+                            kelas_siswa: kelasSiswa,
+                            id_tugas: taskData.id,
+                            status: "in_progress",
+                            ijin_guru: true,
+                            violation_count: 0,
+                            jawaban: jawabanSiswa,
+                            updated_at: firebase.firestore.FieldValue.serverTimestamp()
+                        }}, {{ merge: true }});
+                    }}
+
+                    updateViolationBadge();
+                    renderQuestions();
+                }}
+
+                // 3. RENDER SOAL (FULL HYBRID SUPPORT: CBT & KERTAS)
+                function renderQuestions() {{
+                    const container = document.getElementById("questionsContainer");
+                    const isKertas = taskData.mode_kertas || false;
+                    const isPG = taskData.tipe === "pg";
+
+                    if (isKertas) {{
+                        document.getElementById("cbtInfoBanner").innerHTML = "<div style='background:#e3f2fd; padding:10px; border-radius:8px; margin-bottom:15px; color:#0d47a1;'>📄 <b>MODE UJIAN KERTAS MANUAL ACTIVE:</b> Tulis jawaban Anda pada lembar kertas fisik. Layar ini menjaga sistem Anti-Cheat tetap aktif.</div>";
+                    }}
+
+                    let html = "";
+                    taskData.soal.forEach((sq, idx) => {{
+                        const qText = typeof sq === 'object' ? sq.pertanyaan : sq;
+                        html += `<div class="q-block">
+                            <div class="q-title">${{idx + 1}}. ${{qText}}</div>`;
+
+                        if (isPG) {{
+                            const opsi = sq.opsi || ["", "", "", ""];
+                            opsi.forEach((optVal, oIdx) => {{
+                                const optLetter = ["A", "B", "C", "D"][oIdx] || oIdx;
+                                const isChecked = (jawabanSiswa[idx] === oIdx) ? "checked" : "";
+
+                                if (isKertas) {{
+                                    html += `<div style="margin-left:15px; padding:4px 0;"><b>${{optLetter}}.</b> ${{optVal}}</div>`;
+                                }} else {{
+                                    html += `<label class="opt-label">
+                                        <input type="radio" name="q_${{idx}}" value="${{oIdx}}" ${{isChecked}} onchange="saveAnswer(${{idx}}, ${{oIdx}})">
+                                        <b>${{optLetter}}.</b>&nbsp; ${{optVal}}
+                                    </label>`;
+                                }}
+                            }});
+                        }} else {{
+                            if (!isKertas) {{
+                                const valE = jawabanSiswa[idx] || "";
+                                html += `<textarea oninput="saveAnswer(${{idx}}, this.value)">${{valE}}</textarea>`;
                             }}
                         }}
 
-                        function triggerViolation() {{
-                            const now = Date.now();
-                            if (now - lastTriggerViolation < 3000) return;
-                            lastTriggerViolation = now;
-                            
-                            const btn = getBtnByText('Catat Pelanggaran');
-                            if (btn) btn.click();
-                        }}
+                        html += `</div>`;
+                    }});
 
-                        window.addEventListener('blur', triggerViolation);
-                        document.addEventListener('visibilitychange', function() {{
-                            if (document.hidden) triggerViolation();
+                    container.innerHTML = html;
+                }}
+
+                // 4. AUTO-SAVE JAWABAN (LOCALSTORAGE + FIRESTORE SYNC)
+                function saveAnswer(qIdx, val) {{
+                    jawabanSiswa[qIdx] = val;
+                    localStorage.setItem(localKey, JSON.stringify(jawabanSiswa));
+
+                    // Sync Firestore di Latar Belakang (Debounced)
+                    db.collection("pengerjaan_siswa").doc(docId).update({{
+                        jawaban: jawabanSiswa,
+                        updated_at: firebase.firestore.FieldValue.serverTimestamp()
+                    }}).catch(e => console.log(e));
+                }}
+
+                // 5. SISTEM ANTI-CHEAT (BLUR & TAB SWITCH)
+                let lastViolationTime = 0;
+                function recordViolation() {{
+                    if (isLocked || isSubmitted) return;
+                    
+                    const now = Date.now();
+                    if (now - lastViolationTime < 3000) return; // Throttle 3 detik
+                    lastViolationTime = now;
+
+                    violationCount++;
+                    updateViolationBadge();
+
+                    if (violationCount >= 15) {{
+                        submitExam(true);
+                    }} else if (violationCount >= 10) {{
+                        isLocked = true;
+                        db.collection("pengerjaan_siswa").doc(docId).update({{
+                            violation_count: violationCount,
+                            ijin_guru: false,
+                            updated_at: firebase.firestore.FieldValue.serverTimestamp()
                         }});
+                        lockScreenUI();
+                    }} else {{
+                        db.collection("pengerjaan_siswa").doc(docId).update({{
+                            violation_count: violationCount,
+                            updated_at: firebase.firestore.FieldValue.serverTimestamp()
+                        }});
+                    }}
+                }}
 
-                        hideActionButtons();
-                        setInterval(hideActionButtons, 500);
-                    }})();
-                    </script>
-                """, height=0)
+                window.addEventListener("blur", recordViolation);
+                document.addEventListener("visibilitychange", () => {{
+                    if (document.hidden) recordViolation();
+                }});
 
-        st.markdown(f"### 📝 {tg.get('judul')}")
-        if is_ulangan and violation_count > 0:
-            st.warning(f"⚠️ **Deteksi Pelanggaran / Refresh:** {violation_count}x (Batas Kunci: 10x | Batas Auto-Submit: 15x)")
+                function updateViolationBadge() {{
+                    document.getElementById("badgeViolation").innerText = `⚠️ Pelanggaran: ${{violationCount}}x`;
+                }}
 
-        if is_locked:
-            st.error("🔒 **Akses Pengerjaan Terkunci!** Anda telah mencapai limit 10x pelanggaran/refresh. Silakan hubungi Guru Anda untuk membuka kunci akses.")
-            st.stop()
+                function lockScreenUI() {{
+                    document.getElementById("lockScreen").style.display = "flex";
+                }}
 
-        # ==========================================
-        # PENAMPILAN UJIAN (ONLINE VS KERTAS MANUAL)
-        # ==========================================
-        if mode_kertas:
-            st.info("📄 **MODE UJIAN KERTAS AKTIF**: Tuliskan seluruh jawaban Anda di lembar kertas fisik yang disediakan Guru. Layar ini menampilkan daftar soal dan menjaga pengawasan **Anti-Cheat** tetap berjalan aktif.")
-            st.divider()
+                // 6. SUBMIT EXAM
+                async function submitExam(isAutoViolation = false) {{
+                    if (isSubmitted) return;
+                    isSubmitted = true;
 
-            # Menampilkan seluruh daftar soal & pilihan jawaban sekaligus
-            for idx_k, sq_k in enumerate(soal_list, 1):
-                q_text_k = sq_k.get("pertanyaan", "") if isinstance(sq_k, dict) else str(sq_k)
-                st.markdown(f"#### {idx_k}. {q_text_k}")
+                    let notes = "Penilaian Otomatis Sistem";
+                    if (isAutoViolation) notes = "⚠️ Submit Otomatis (Mencapai Limit Maksimal Pelanggaran)";
+                    else if (taskData.mode_kertas) notes = "Dikerjakan Manual di Lembar Kertas (Pengawasan Anti-Cheat Aktif)";
 
-                if tg.get("tipe") == "pg":
-                    opsi_k = sq_k.get("opsi", ["", "", "", ""]) if isinstance(sq_k, dict) else ["", "", "", ""]
-                    for o_idx, o_val in enumerate(opsi_k):
-                        label_o = ['A', 'B', 'C', 'D'][o_idx] if o_idx < 4 else str(o_idx)
-                        st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;**{label_o}.** {o_val}")
-                st.divider()
+                    let finalScore = null;
+                    if (taskData.tipe === "pg" && !taskData.mode_kertas) {{
+                        let correct = 0;
+                        taskData.soal.forEach((sq, i) => {{
+                            if (jawabanSiswa[i] !== null && jawabanSiswa[i] === sq.kunci) {{ correct++; }}
+                        }});
+                        finalScore = Math.round((correct / taskData.soal.length) * 100);
+                    }}
 
-            if st.button("🚀 Selesai & Serahkan Ujian Kertas", type="primary", use_container_width=True):
-                tg_submit = dict(tg)
-                tg_submit["soal"] = soal_list
-                # Kirim penanda bahwa siswa sudah mengumpulkan lembar jawabannya
-                submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, ["Jawaban Manual Kertas"] * total_soal)
-                st.session_state["active_quiz_id"] = None
-                for k in [
-                    f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
-                    f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                    f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}"
-                ]:
-                    st.session_state.pop(k, None)
-                st.success("✅ Selesai! Ujian kertas Anda telah berhasil dicatat.")
-                st.rerun()
+                    await db.collection("pengerjaan_siswa").doc(docId).set({{
+                        id_tugas: taskData.id,
+                        judul_tugas: taskData.judul,
+                        username_siswa: username,
+                        nama_siswa: namaSiswa,
+                        kelas_siswa: kelasSiswa,
+                        tipe: taskData.tipe,
+                        jawaban: jawabanSiswa,
+                        nilai: finalScore,
+                        catatan_guru: notes,
+                        status: "submitted",
+                        ijin_guru: true,
+                        mode_kertas: taskData.mode_kertas || false,
+                        submitted_at: firebase.firestore.FieldValue.serverTimestamp(),
+                        updated_at: firebase.firestore.FieldValue.serverTimestamp()
+                    }}, {{ merge: true }});
 
-        else:
-            # --- MODE FULL ONLINE CBT (SATU PER SATU) ---
-            terjawab_count = sum(1 for a in answers if a is not None and (not isinstance(a, str) or a.strip() != ""))
-            st.progress((curr_page + 1) / max(1, total_soal))
-            
-            col_info_soal, col_select_soal = st.columns([2, 1])
-            with col_info_soal:
-                st.write(f"Soal **{curr_page + 1}** dari **{total_soal}** | Terjawab: **{terjawab_count}/{total_soal}**")
-            with col_select_soal:
-                options_soal = list(range(total_soal))
-                def label_soal(i):
-                    ans = answers[i]
-                    filled = ans is not None and (not isinstance(ans, str) or ans.strip() != "")
-                    return f"{'✅' if filled else '⚪'} Soal {i + 1}"
+                    localStorage.removeItem(localKey);
+                    document.body.innerHTML = "<h2 style='text-align:center; padding-top:50px; color:#28a745;'>✅ Ujian Berhasil Dikumpulkan! Terima kasih.</h2>";
+                }}
 
-                jump_page = st.selectbox(
-                    "Pindah Nomor Soal",
-                    options=options_soal,
-                    index=curr_page,
-                    format_func=label_soal,
-                    key=f"jump_soal_{tg_id}_{curr_page}"
-                )
-                if jump_page != curr_page:
-                    st.session_state[f"quiz_page_{tg_id}"] = jump_page
-                    st.rerun()
+                initCBT();
+            </script>
+        </body>
+        </html>
+        """
 
-            if 0 <= curr_page < total_soal:
-                sq = soal_list[curr_page]
-                q_text = sq.get("pertanyaan", "") if isinstance(sq, dict) else str(sq)
-                st.markdown(f"#### {curr_page + 1}. {q_text}")
-
-                if tg.get("tipe") == "pg":
-                    opsi = sq.get("opsi", ["", "", "", ""]) if isinstance(sq, dict) else ["", "", "", ""]
-                    curr_a = answers[curr_page]
-                    curr_idx = curr_a if isinstance(curr_a, int) and 0 <= curr_a <= 3 else None
-
-                    sel_o = st.radio("Pilih Jawaban:", opsi, index=curr_idx, key=f"q_rad_{tg_id}_{curr_page}")
-                    if sel_o in opsi:
-                        new_idx = opsi.index(sel_o)
-                        if answers[curr_page] != new_idx:
-                            answers[curr_page] = new_idx
-                            st.session_state[f"quiz_answers_{tg_id}"] = answers
-                            doc_ref.set({"jawaban": answers, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
-                else:
-                    curr_essay = answers[curr_page] if answers[curr_page] is not None else ""
-                    val_e = st.text_area("Jawaban Anda:", value=curr_essay, key=f"q_txt_{tg_id}_{curr_page}")
-                    if answers[curr_page] != val_e:
-                        answers[curr_page] = val_e
-                        st.session_state[f"quiz_answers_{tg_id}"] = answers
-                        doc_ref.set({"jawaban": answers, "updated_at": firestore.SERVER_TIMESTAMP}, merge=True)
-
-            st.divider()
-            col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 1])
-            with col_nav1:
-                if curr_page > 0 and st.button("⬅️ Sebelumnya"):
-                    st.session_state[f"quiz_page_{tg_id}"] -= 1
-                    st.rerun()
-
-            with col_nav2:
-                if curr_page < total_soal - 1 and st.button("Berikutnya ➡️"):
-                    st.session_state[f"quiz_page_{tg_id}"] += 1
-                    st.rerun()
-
-            with col_nav3:
-                if curr_page == total_soal - 1:
-                    if st.button("🚀 Selesai & Kirim Jawaban", type="primary"):
-                        tg_submit = dict(tg)
-                        tg_submit["soal"] = soal_list
-                        submit_jawaban_siswa(tg_submit, username_s, nama_s, kelas_s, answers)
-                        st.session_state["active_quiz_id"] = None
-                        for k in [
-                            f"active_quiz_data", f"quiz_answers_{tg_id}", f"quiz_page_{tg_id}", 
-                            f"quiz_soal_{tg_id}", f"quiz_loaded_{tg_id}", f"is_submitting_{tg_id}",
-                            f"quiz_session_active_{tg_id}", f"ijin_guru_{tg_id}", f"violation_count_{tg_id}"
-                        ]:
-                            st.session_state.pop(k, None)
-                        st.success("✅ Jawaban berhasil dikirim!")
-                        st.rerun()
+        # Render HTML/JS Application Statis di Streamlit iFrame
+        components.html(cbt_html_code, height=800, scrolling=True)
         st.stop()
 
     # --- DASHBOARD UTAMA SISWA ---
