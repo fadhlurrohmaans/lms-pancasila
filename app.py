@@ -16,6 +16,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import pandas as pd
 import google.generativeai as genai
+from fpdf import FPDF # Library baru untuk export PDF
 
 # Impor FirestoreBundle untuk penanganan Firestore Data Bundles
 try:
@@ -285,6 +286,7 @@ def generate_firestore_data_bundle():
 # ==========================================
 # 4. UTILITY & PAGINATION UI HELPERS
 # ==========================================
+
 def render_pagination_controls(total_items, default_page_size=10, key_prefix="pg"):
     if total_items <= 0:
         return 1, default_page_size, 0
@@ -440,6 +442,99 @@ def reset_pengerjaan_siswa(username_siswa, tugas_id):
     doc_ref.delete()
     clear_pengerjaan_cache()
     return True
+
+# ==========================================
+# 4b. PDF GENERATION HELPERS (PRINT SOAL & ANALISIS)
+# ==========================================
+def clean_text_for_fpdf(text):
+    if not isinstance(text, str):
+        text = str(text)
+    # Ganti karakter khusus yang sering bermasalah di fpdf latin-1
+    replacements = {'“': '"', '”': '"', '‘': "'", '’': "'", '–': '-', '—': '-', '…': '...'}
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    return text.encode('latin-1', 'ignore').decode('latin-1')
+
+def generate_pdf_soal(tugas):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Header Title
+    pdf.set_font("Arial", 'B', 14)
+    pdf.multi_cell(0, 8, txt=clean_text_for_fpdf(f"Soal: {tugas.get('judul', 'Tanpa Judul')}"), align='C')
+    pdf.ln(2)
+    
+    # Instructions
+    pdf.set_font("Arial", 'I', 11)
+    pdf.multi_cell(0, 6, txt=clean_text_for_fpdf(f"Instruksi: {tugas.get('instruksi', '-')}"))
+    pdf.ln(5)
+    
+    # List Soal
+    for i, q in enumerate(tugas.get("soal", [])):
+        q_text = q.get("pertanyaan", "") if isinstance(q, dict) else str(q)
+        pdf.set_font("Arial", 'B', 11)
+        pdf.multi_cell(0, 6, txt=clean_text_for_fpdf(f"{i+1}. {q_text}"))
+        
+        if tugas.get("tipe") == "pg":
+            pdf.set_font("Arial", '', 11)
+            opsi = q.get("opsi", ["", "", "", ""]) if isinstance(q, dict) else ["", "", "", ""]
+            labels = ['A', 'B', 'C', 'D']
+            for j, opt in enumerate(opsi):
+                if j < 4:
+                    pdf.multi_cell(0, 6, txt=clean_text_for_fpdf(f"   {labels[j]}. {opt}"))
+        pdf.ln(3)
+        
+    try:
+        return pdf.output(dest='S').encode('latin-1')
+    except AttributeError:
+        # Fallback jika output() mengembalikan bytearray (fpdf2)
+        return bytes(pdf.output(dest='S'))
+    except Exception:
+        return bytes(pdf.output(dest='S'), 'latin-1')
+
+def generate_pdf_analisis(tugas, total_responden, rata_rata, nilai_tertinggi, nilai_terendah):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Header Title
+    pdf.set_font("Arial", 'B', 14)
+    pdf.multi_cell(0, 8, txt=clean_text_for_fpdf(f"Analisis Soal: {tugas.get('judul', 'Tanpa Judul')}"), align='C')
+    pdf.ln(5)
+    
+    # Metrik Info
+    pdf.set_font("Arial", '', 11)
+    pdf.cell(0, 6, txt=clean_text_for_fpdf(f"Total Responden : {total_responden} Siswa"), ln=True)
+    pdf.cell(0, 6, txt=clean_text_for_fpdf(f"Rata-rata Kelas : {rata_rata}"), ln=True)
+    pdf.cell(0, 6, txt=clean_text_for_fpdf(f"Nilai Tertinggi : {nilai_tertinggi}"), ln=True)
+    pdf.cell(0, 6, txt=clean_text_for_fpdf(f"Nilai Terendah  : {nilai_terendah}"), ln=True)
+    pdf.ln(5)
+    
+    # Tabel Analisis Header
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(15, 8, "No", border=1, align='C')
+    pdf.cell(150, 8, "Potongan Soal", border=1, align='C')
+    pdf.cell(25, 8, "Kunci", border=1, align='C', ln=True)
+    
+    # Tabel Isi
+    pdf.set_font("Arial", '', 10)
+    for i, q in enumerate(tugas.get("soal", [])):
+        q_text = q.get("pertanyaan", "") if isinstance(q, dict) else str(q)
+        q_snippet = clean_text_for_fpdf(q_text[:65].replace('\n', ' ') + ("..." if len(q_text) > 65 else ""))
+        
+        kunci_idx = q.get("kunci", 0) if isinstance(q, dict) else 0
+        kunci_str = ['A', 'B', 'C', 'D'][kunci_idx] if 0 <= kunci_idx <= 3 else "A"
+        
+        pdf.cell(15, 8, str(i+1), border=1, align='C')
+        pdf.cell(150, 8, q_snippet, border=1)
+        pdf.cell(25, 8, kunci_str, border=1, align='C', ln=True)
+        
+    try:
+        return pdf.output(dest='S').encode('latin-1')
+    except AttributeError:
+        return bytes(pdf.output(dest='S'))
+    except Exception:
+        return bytes(pdf.output(dest='S'), 'latin-1')
+
 
 # ==========================================
 # 5. AI EVALUATION HELPER
@@ -918,7 +1013,7 @@ def render_guru():
                         st.write(f"**Instruksi:** {tg.get('instruksi')}")
                         st.write(f"**Jumlah Soal:** {len(tg.get('soal', []))}")
                         
-                        col_t1, col_t2 = st.columns(2)
+                        col_t1, col_t2, col_t3 = st.columns(3)
                         with col_t1:
                             new_st = "draft" if is_published else "terbit"
                             btn_st_label = "🔴 Ubah ke Draft" if is_published else "🟢 Terbitkan Tugas"
@@ -931,6 +1026,15 @@ def render_guru():
                                 delete_tugas_and_submissions(tg["id"])
                                 st.success("✅ Berhasil! Tugas berhasil dihapus.")
                                 st.rerun()
+                        with col_t3:
+                            pdf_soal_bytes = generate_pdf_soal(tg)
+                            st.download_button(
+                                label="📄 Cetak Soal (PDF)",
+                                data=pdf_soal_bytes,
+                                file_name=f"Soal_{tg.get('judul', 'Tugas')}.pdf",
+                                mime="application/pdf",
+                                key=f"print_soal_{tg['id']}"
+                            )
 
         with t_buat:
             judul = st.text_input("Judul Tugas")
@@ -1216,11 +1320,28 @@ def render_guru():
                 total_responden = len(submitted_docs)
                 scores = [s.get("nilai", 0) for s in submitted_docs if s.get("nilai") is not None]
 
+                avg_score = round(sum(scores)/len(scores), 1) if scores else 0
+                max_score = max(scores) if scores else 0
+                min_score = min(scores) if scores else 0
+
+                # Fitur Tambahan: Cetak PDF Analisis
+                pdf_analisis_bytes = generate_pdf_analisis(
+                    selected_tugas, total_responden, avg_score, max_score, min_score
+                )
+                st.download_button(
+                    label="📄 Cetak Analisis Soal (PDF)",
+                    data=pdf_analisis_bytes,
+                    file_name=f"Analisis_{selected_tugas.get('judul', 'Tugas')}.pdf",
+                    mime="application/pdf",
+                    key="dl_analisis_pdf"
+                )
+                st.divider()
+
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Total Responden", f"{total_responden} Siswa")
-                m2.metric("Rata-rata Kelas", f"{round(sum(scores)/len(scores), 1) if scores else 0}")
-                m3.metric("Nilai Tertinggi", f"{max(scores) if scores else 0}")
-                m4.metric("Nilai Terendah", f"{min(scores) if scores else 0}")
+                m2.metric("Rata-rata Kelas", f"{avg_score}")
+                m3.metric("Nilai Tertinggi", f"{max_score}")
+                m4.metric("Nilai Terendah", f"{min_score}")
                 st.divider()
 
                 analisis_rows = []
