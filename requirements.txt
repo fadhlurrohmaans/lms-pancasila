@@ -3,4 +3,4 @@ firebase-admin
 pandas
 openpyxl
 google-generativeai
-
+fpdf
