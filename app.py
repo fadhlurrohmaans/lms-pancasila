@@ -653,30 +653,10 @@ def render_guru():
 
     elif menu == "📝 Buat & Kelola Tugas":
         st.header("📝 Buat & Kelola Tugas")
-        t_list, t_kisi = st.tabs(["📋 Daftar Tugas", "🖨️ Cetak Kisi-Kisi"])
-        with t_list:
         tugas_cached = get_all_tugas_cached(limit=50)
-            for tg in tugas_cached:
-                with st.expander(f"[{'PG' if tg.get('tipe')=='pg' else 'Essay'}] {tg.get('judul')}"):
-                    st.write(f"Instruksi: {tg.get('instruksi')}")
-        with t_kisi:
-            st.subheader("🖨️ Cetak Kisi-Kisi Soal")
-            if tugas_cached:
-                tg_options_k = {t["id"]: t.get("judul", "Tanpa Judul") for t in tugas_cached}
-                sel_id_k = st.selectbox("Pilih Tugas/Ujian", list(tg_options_k.keys()), format_func=lambda x: tg_options_k[x])
-                selected_tg_k = next(t for t in tugas_cached if t["id"] == sel_id_k)
-                if st.button("Cetak Kisi-Kisi"): 
-                    kisi_kisi_data = []
-                    for idx, q in enumerate(selected_tg_k.get("soal", [])):
-                        q_text = q.get("pertanyaan", "") if isinstance(q, dict) else str(q)
-                        opsi = q.get("opsi", []) if isinstance(q, dict) else []
-                        kunci = ['A','B','C','D'][q.get("kunci", 0)] if isinstance(q, dict) and "kunci" in q and 0 <= q["kunci"] <= 3 else "-"
-                        kisi_kisi_data.append({"No": idx + 1, "Pertanyaan": q_text, "Opsi": ", ".join(opsi) if opsi else "-", "Kunci": kunci})
-                    df_kisi = pd.DataFrame(kisi_kisi_data)
-                    st.dataframe(df_kisi, use_container_width=True)
-                    st.download_button("💾 Unduh Kisi-Kisi (.csv)", df_kisi.to_csv(index=False).encode('utf-8-sig'), f"kisi_kisi_{sel_id_k}.csv", "text/csv", use_container_width=True)
-            else:
-                st.info("Belum ada tugas yang dibuat.")
+        for tg in tugas_cached:
+            with st.expander(f"[{'PG' if tg.get('tipe')=='pg' else 'Essay'}] {tg.get('judul')}"):
+                st.write(f"Instruksi: {tg.get('instruksi')}")
 
     elif menu == "📊 Rekap, Analisis & Remedial":
         st.header("📊 Rekap, Analisis Butir Soal & Program Remedial")
